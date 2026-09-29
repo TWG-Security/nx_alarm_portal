@@ -1,0 +1,84 @@
+import httpx
+import respx
+from sqlalchemy import func, select
+
+from app.models import Alarm, AuditLog, Site
+from app.services.bus import bus
+from app.services.poller import ingest, manager
+from tests.conftest import NX, make_site, nx_row
+
+
+async def test_ingest_dedupes_and_collapses_action_rows(session, admin):
+    tenant, _ = admin
+    site = await make_site(session, tenant)
+    rows = [
+        # One NX event fired three rules: email, push, and a forced-ack notification.
+        nx_row(2_000_000, action_id="email", action_type="sendEmail"),
+        nx_row(2_000_000, action_id="push", action_type="pushNotification"),
+        nx_row(2_000_000, action_id="ack-me", ack=True, server="srv-9"),
+        nx_row(2_000_500, action_id="b", type_="deviceDisconnected", caption="Camera offline"),
+        nx_row(2_000_600, action_id="c", type_="integrationDiagnostic"),
+    ]
+    created = await ingest(session, site, rows, {})
+    await session.commit()
+    assert len(created) == 2
+    door = next(a for a in created if a.event_type == "generic")
+    assert (door.nx_action_id, door.nx_action_server_id, door.nx_ack_required, door.priority) == ("ack-me", "srv-9", True, 1)
+
+    # The same rows again (poll overlap) create nothing new.
+    assert await ingest(session, site, rows, {}) == []
+    await session.commit()
+    assert await session.scalar(select(func.count()).select_from(Alarm)) == 2
+    assert await session.scalar(select(func.count()).select_from(AuditLog).where(AuditLog.action == "alarm.received")) == 2
+
+
+async def test_later_ack_row_upgrades_existing_alarm(session, admin):
+    tenant, _ = admin
+    site = await make_site(session, tenant)
+    await ingest(session, site, [nx_row(3_000_000, action_id="email", action_type="sendEmail")], {})
+    await session.commit()
+    await ingest(session, site, [nx_row(3_000_000, action_id="ack-me", ack=True)], {})
+    await session.commit()
+    alarm = await session.scalar(select(Alarm))
+    assert alarm.nx_ack_required and alarm.nx_action_id == "ack-me" and alarm.priority == 1
+
+
+@respx.mock
+async def test_poll_once_advances_cursor_and_publishes(session, admin):
+    tenant, _ = admin
+    site = await make_site(session, tenant, cursor=5_000_000)
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[{"id": "{dev-1}", "name": "Lobby"}]))
+    events = respx.get(f"{NX}/rest/v4/events/log").mock(return_value=httpx.Response(200, json=[
+        nx_row(5_001_000, action_id="x1"), nx_row(5_002_000, action_id="x2", caption="Gate open"),
+    ]))
+    sub = bus.subscribe(tenant.id)
+    rt = manager._runtime(site)
+
+    created = await manager.poll_once(rt)
+
+    assert len(created) == 2
+    sent = events.calls.last.request.url.params
+    assert sent["startTimeMs"] == str(5_000_000 - 5000) and sent["order"] == "asc"
+    await session.refresh(site)
+    assert site.event_cursor_ms == 5_002_000 and site.camera_count == 1 and site.status == "online"
+    names = [sub.queue.get_nowait()[0] for _ in range(sub.queue.qsize())]
+    assert names.count("alarm.new") == 2
+    bus.unsubscribe(sub)
+
+
+@respx.mock
+async def test_poll_failure_marks_site_auth_error(session, admin):
+    tenant, _ = admin
+    site = await make_site(session, tenant)
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(401))
+    rt = manager._runtime(site)
+    try:
+        await manager.poll_once(rt)
+        raise AssertionError("expected failure")
+    except httpx.HTTPStatusError as exc:
+        from app.services.sites import describe_http_error
+        err = describe_http_error(exc)
+        await manager._set_status(rt, err.status, str(err))
+    s = (await session.execute(select(Site).execution_options(populate_existing=True))).scalar_one()
+    assert s.status == "auth_error"

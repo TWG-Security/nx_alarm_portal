@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Audit log{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1>Audit log</h1></div>
+  <div class="filters">
+    <select id="f-action" aria-label="Action">
+      <option value="">All actions</option>
+      <option value="alarm.acknowledged">Alarm acknowledged</option>
+      <option value="alarm.received">Alarm received</option>
+      <option value="site.">Site changes &amp; status</option>
+      <option value="login">Sign-ins</option>
+      <option value="user.">User changes</option>
+    </select>
+    <select id="f-site" aria-label="Site"><option value="">All sites</option></select>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Time</th><th>Action</th><th>User</th><th>Site</th><th>Details</th></tr></thead>
+      <tbody id="audit-rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="list-footer"><button class="btn" id="load-more" hidden>Load more</button></div>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/audit.js"></script>{% endblock %}

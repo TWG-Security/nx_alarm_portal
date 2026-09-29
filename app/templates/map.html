@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Map{% endblock %}
+{% block content %}
+<div class="map-layout">
+  <aside class="map-side">
+    <div class="map-side-section">
+      <div class="stat-row">
+        <div class="stat stat--alarm"><b id="stat-alarm">–</b><span>Security alarms</span></div>
+        <div class="stat stat--warn"><b id="stat-warn">–</b><span>System issues</span></div>
+        <div class="stat"><b id="stat-offline">–</b><span>Sites offline</span></div>
+      </div>
+    </div>
+    <div class="map-side-section" id="site-detail" hidden></div>
+    <div class="map-side-section" style="padding-bottom:6px"><h3>Sites</h3></div>
+    <ul class="site-list" id="site-list"><li class="empty">Loading…</li></ul>
+  </aside>
+  <section class="map-canvas">
+    <div id="map"></div>
+    <div class="map-notice" id="map-notice" hidden></div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/map.js"></script>{% endblock %}

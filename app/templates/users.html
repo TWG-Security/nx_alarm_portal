@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1>Users</h1></div>
+  <div class="table-wrap" style="margin-bottom:20px">
+    <table>
+      <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
+      <tbody id="user-rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <form class="card" id="user-form" style="max-width:640px">
+    <h2>Add user</h2>
+    <div class="row">
+      <div class="field"><label for="u-email">Email</label><input id="u-email" type="email" required></div>
+      <div class="field"><label for="u-name">Name</label><input id="u-name" type="text"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="u-pass">Temporary password</label><input id="u-pass" type="password" minlength="12" required autocomplete="new-password"><small>At least 12 characters.</small></div>
+      <div class="field"><label for="u-role">Role</label><select id="u-role"><option value="operator">Operator</option><option value="admin">Admin</option></select></div>
+    </div>
+    <button class="btn btn-primary" type="submit">Create user</button>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/users.js"></script>{% endblock %}

@@ -1,0 +1,144 @@
+"""ORM models. Every table carries tenant_id so the portal can go multi-tenant later."""
+
+from datetime import datetime, timezone
+
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
+                        String, Text, UniqueConstraint)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db import Base
+
+JSONType = JSON().with_variant(JSONB(), "postgresql")
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Tenant(Base):
+    __tablename__ = "tenants"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    display_name: Mapped[str] = mapped_column(String(200), default="")
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(20), default="operator")  # admin | operator
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def is_admin(self) -> bool:
+        return self.role == "admin"
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.email
+
+
+class Site(Base):
+    """One NX Witness deployment (an NX "site"), usually reached through the vmsproxy relay."""
+
+    __tablename__ = "sites"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_sites_tenant_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    cloud_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    host: Mapped[str] = mapped_column(String(500))
+    nx_user: Mapped[str] = mapped_column(String(200))
+    nx_pass_enc: Mapped[str] = mapped_column(Text)
+    address: Mapped[str] = mapped_column(String(500), default="")
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    alarm_types: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # per-site filter override
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|online|offline|auth_error
+    status_detail: Mapped[str] = mapped_column(Text, default="")
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    event_cursor_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    nx_site_name: Mapped[str] = mapped_column(String(200), default="")
+    nx_version: Mapped[str] = mapped_column(String(50), default="")
+    camera_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Alarm(Base):
+    __tablename__ = "alarms"
+    __table_args__ = (
+        # One NX event can produce several event-log rows (one per rule action);
+        # event_key collapses them so the operator sees a single alarm.
+        UniqueConstraint("site_id", "event_key", name="uq_alarms_site_event"),
+        Index("ix_alarms_tenant_state", "tenant_id", "state"),
+        Index("ix_alarms_site_state", "site_id", "state"),
+        Index("ix_alarms_event_ts", "event_ts_ms"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id"))
+    event_key: Mapped[str] = mapped_column(String(64))
+
+    nx_action_id: Mapped[str] = mapped_column(String(64), default="")
+    nx_action_server_id: Mapped[str] = mapped_column(String(64), default="")
+    nx_ack_required: Mapped[bool] = mapped_column(Boolean, default=False)
+    rule_id: Mapped[str] = mapped_column(String(64), default="")
+
+    event_type: Mapped[str] = mapped_column(String(100))
+    event_subtype: Mapped[str] = mapped_column(String(200), default="")
+    category: Mapped[str] = mapped_column(String(20), default="security")  # security | system
+    priority: Mapped[int] = mapped_column(Integer, default=2)              # 1 critical, 2 high, 3 medium
+    caption: Mapped[str] = mapped_column(String(500), default="")
+    description: Mapped[str] = mapped_column(Text, default="")
+    source_name: Mapped[str] = mapped_column(String(300), default="")
+    device_id: Mapped[str] = mapped_column(String(64), default="")
+    event_ts_ms: Mapped[int] = mapped_column(BigInteger)
+
+    state: Mapped[str] = mapped_column(String(20), default="new")  # new | acknowledged
+    received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    acked_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ack_note: Mapped[str] = mapped_column(Text, default="")
+    nx_ack_result: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+
+    raw: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+    site: Mapped[Site] = relationship(lazy="joined")
+    acked_by: Mapped[User | None] = relationship(lazy="joined")
+
+
+class AuditLog(Base):
+    """Append-only record of everything operators and the system did."""
+
+    __tablename__ = "audit_log"
+    __table_args__ = (Index("ix_audit_tenant_ts", "tenant_id", "ts"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    site_id: Mapped[int | None] = mapped_column(ForeignKey("sites.id"), nullable=True)
+    alarm_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id"), nullable=True)
+    action: Mapped[str] = mapped_column(String(64), index=True)
+    detail: Mapped[dict] = mapped_column(JSONType, default=dict)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[User | None] = relationship(lazy="joined")
+    site: Mapped[Site | None] = relationship(lazy="joined")

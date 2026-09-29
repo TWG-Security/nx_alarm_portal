@@ -1,0 +1,14 @@
+# Serves the portal over HTTPS. "tls internal" uses Caddy's own CA, which is fine on the LAN.
+# With a real DNS name pointing here, drop "tls internal" and Caddy fetches a public certificate.
+{$PORTAL_HOST}, localhost {
+	tls internal
+	encode gzip
+	reverse_proxy app:8080 {
+		# Server-Sent Events must not be buffered.
+		flush_interval -1
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}

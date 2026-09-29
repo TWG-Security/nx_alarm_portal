@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}Sign in{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <form class="card login-card" method="post" action="/login">
+    <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
+    <h1 style="text-align:center">Alarm Portal</h1>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" value="{{ email or '' }}" required autofocus></div>
+    <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
+    <button class="btn btn-primary" style="width:100%" type="submit">Sign in</button>
+  </form>
+</div>
+{% endblock %}

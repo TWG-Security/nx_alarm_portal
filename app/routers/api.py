@@ -1,0 +1,341 @@
+"""JSON API used by the portal's own pages."""
+
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field, field_validator
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.audit import audit
+from app.db import get_db
+from app.deps import client_ip, csrf_protect, current_user, require_admin
+from app.models import Alarm, AuditLog, Site, User
+from app.security import decrypt, encrypt, hash_password
+from app.services import ack as ack_service
+from app.services.bus import bus
+from app.services.poller import manager, now_ms
+from app.services.serialize import alarm_dict, audit_dict, site_dict
+from app.services.sites import ConnectError, make_client, probe, resolve_host
+from app.config import get_settings
+
+router = APIRouter(prefix="/api", dependencies=[Depends(csrf_protect)])
+
+
+# --------------------------------------------------------------------------- sites
+
+class SiteIn(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    host: str = Field(min_length=1, max_length=500)          # Nx Cloud id or URL
+    nx_user: str = Field(min_length=1, max_length=200)
+    nx_pass: str = Field(default="", max_length=500)         # blank on edit = keep current
+    address: str = Field(default="", max_length=500)
+    lat: float | None = Field(default=None, ge=-90, le=90)
+    lng: float | None = Field(default=None, ge=-180, le=180)
+    notes: str = Field(default="", max_length=5000)
+    connect: bool = True                                     # False = save without testing
+
+    @field_validator("name", "host", "nx_user")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return v.strip()
+
+
+class ConnTest(BaseModel):
+    host: str
+    nx_user: str
+    nx_pass: str = ""
+    site_id: int | None = None
+
+
+async def _open_counts(db: AsyncSession, tenant_id: int) -> dict[int, dict]:
+    rows = await db.execute(
+        select(Alarm.site_id, Alarm.category, func.count())
+        .where(Alarm.tenant_id == tenant_id, Alarm.state == "new")
+        .group_by(Alarm.site_id, Alarm.category)
+    )
+    out: dict[int, dict] = {}
+    for site_id, category, n in rows.all():
+        out.setdefault(site_id, {})[category] = n
+    return out
+
+
+async def _get_site(db: AsyncSession, user: User, site_id: int) -> Site:
+    site = await db.scalar(select(Site).where(Site.id == site_id, Site.tenant_id == user.tenant_id))
+    if site is None:
+        raise HTTPException(404, "Site not found")
+    return site
+
+
+async def _probe(host: str, nx_user: str, nx_pass: str) -> dict:
+    client = make_client(host, nx_user, nx_pass)
+    try:
+        return await probe(client)
+    except ConnectError as exc:
+        raise HTTPException(400, {"message": str(exc), "status": exc.status}) from exc
+    finally:
+        await client.close()
+
+
+@router.get("/sites")
+async def list_sites(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    sites = (await db.scalars(
+        select(Site).where(Site.tenant_id == user.tenant_id, Site.archived_at.is_(None)).order_by(Site.name)
+    )).all()
+    counts = await _open_counts(db, user.tenant_id)
+    return [site_dict(s, counts.get(s.id)) for s in sites]
+
+
+@router.post("/sites/test")
+async def test_connection(body: ConnTest, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    try:
+        host, _ = resolve_host(body.host)
+    except ValueError as exc:
+        raise HTTPException(400, {"message": str(exc)}) from exc
+    password = body.nx_pass
+    if not password and body.site_id:
+        password = decrypt((await _get_site(db, user, body.site_id)).nx_pass_enc)
+    info = await _probe(host, body.nx_user, password)
+    info.pop("devices", None)
+    return {"host": host, **info}
+
+
+@router.post("/sites")
+async def create_site(body: SiteIn, request: Request, user: User = Depends(require_admin),
+                      db: AsyncSession = Depends(get_db)):
+    try:
+        host, cloud_id = resolve_host(body.host)
+    except ValueError as exc:
+        raise HTTPException(400, {"message": str(exc)}) from exc
+    if not body.nx_pass:
+        raise HTTPException(400, {"message": "NX password is required"})
+    site = Site(tenant_id=user.tenant_id, name=body.name, host=host, cloud_id=cloud_id, nx_user=body.nx_user,
+                nx_pass_enc=encrypt(body.nx_pass), address=body.address, lat=body.lat, lng=body.lng,
+                notes=body.notes)
+    if body.connect:
+        info = await _probe(host, body.nx_user, body.nx_pass)
+        site.nx_site_name, site.nx_version = info["nx_site_name"], info["nx_version"]
+        site.camera_count, site.cloud_id = info["camera_count"], info["cloud_id"] or cloud_id
+        site.status = "online"
+        site.last_seen_at = datetime.now(timezone.utc)
+    # Start from "now": the portal does not import a site's historical backlog.
+    site.event_cursor_ms = now_ms() - get_settings().initial_lookback_ms
+    db.add(site)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, {"message": f"A site named '{body.name}' already exists"}) from exc
+    audit(db, user.tenant_id, "site.created", user_id=user.id, site_id=site.id, ip=client_ip(request),
+          name=site.name, host=host, connected=body.connect)
+    await db.commit()
+    manager.start(site)
+    data = site_dict(site)
+    bus.publish(user.tenant_id, "site.updated", data)
+    return data
+
+
+@router.put("/sites/{site_id}")
+async def update_site(site_id: int, body: SiteIn, request: Request, user: User = Depends(require_admin),
+                      db: AsyncSession = Depends(get_db)):
+    site = await _get_site(db, user, site_id)
+    try:
+        host, cloud_id = resolve_host(body.host)
+    except ValueError as exc:
+        raise HTTPException(400, {"message": str(exc)}) from exc
+    password = body.nx_pass or decrypt(site.nx_pass_enc)
+    creds_changed = host != site.host or body.nx_user != site.nx_user or bool(body.nx_pass)
+    if creds_changed and body.connect:
+        info = await _probe(host, body.nx_user, password)
+        site.nx_site_name, site.nx_version, site.camera_count = info["nx_site_name"], info["nx_version"], info["camera_count"]
+        cloud_id = info["cloud_id"] or cloud_id
+    changed = sorted(k for k, v in {"name": body.name, "host": host, "nx_user": body.nx_user, "address": body.address,
+                                    "lat": body.lat, "lng": body.lng, "notes": body.notes}.items()
+                     if getattr(site, k) != v)
+    if body.nx_pass:
+        changed.append("nx_pass")
+    site.name, site.host, site.cloud_id, site.nx_user = body.name, host, cloud_id, body.nx_user
+    site.nx_pass_enc = encrypt(password)
+    site.address, site.lat, site.lng, site.notes = body.address, body.lat, body.lng, body.notes
+    audit(db, user.tenant_id, "site.updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, {"message": f"A site named '{body.name}' already exists"}) from exc
+    if creds_changed:
+        await manager.restart(site)
+    counts = await _open_counts(db, user.tenant_id)
+    data = site_dict(site, counts.get(site.id))
+    bus.publish(user.tenant_id, "site.updated", data)
+    return data
+
+
+@router.post("/sites/{site_id}/{op}")
+async def site_op(site_id: int, op: str, request: Request, user: User = Depends(require_admin),
+                  db: AsyncSession = Depends(get_db)):
+    if op not in ("enable", "disable", "archive"):
+        raise HTTPException(404)
+    site = await _get_site(db, user, site_id)
+    if op == "enable":
+        site.enabled = True
+    elif op == "disable":
+        site.enabled = False
+    else:
+        site.enabled = False
+        site.archived_at = datetime.now(timezone.utc)
+    audit(db, user.tenant_id, f"site.{op}d" if op != "archive" else "site.archived",
+          user_id=user.id, site_id=site.id, ip=client_ip(request))
+    await db.commit()
+    await manager.restart(site)
+    data = site_dict(site)
+    bus.publish(user.tenant_id, "site.removed" if op == "archive" else "site.updated", data)
+    return data
+
+
+# -------------------------------------------------------------------------- alarms
+
+class AckIn(BaseModel):
+    note: str = Field(default="", max_length=4000)
+
+
+@router.get("/alarms")
+async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+                      state: str = Query("open", pattern="^(open|acknowledged|all)$"),
+                      site_id: int | None = None, category: str | None = Query(None, pattern="^(security|system)$"),
+                      q: str | None = Query(None, max_length=200),
+                      before_id: int | None = None, limit: int = Query(100, ge=1, le=500)):
+    stmt = select(Alarm).where(Alarm.tenant_id == user.tenant_id)
+    if state == "open":
+        stmt = stmt.where(Alarm.state == "new")
+    elif state == "acknowledged":
+        stmt = stmt.where(Alarm.state == "acknowledged")
+    if site_id:
+        stmt = stmt.where(Alarm.site_id == site_id)
+    if category:
+        stmt = stmt.where(Alarm.category == category)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(Alarm.caption.ilike(like) | Alarm.source_name.ilike(like) | Alarm.description.ilike(like))
+    if before_id:
+        stmt = stmt.where(Alarm.id < before_id)
+    rows = (await db.scalars(stmt.order_by(Alarm.id.desc()).limit(limit))).unique().all()
+    return [alarm_dict(a) for a in rows]
+
+
+async def _get_alarm(db: AsyncSession, user: User, alarm_id: int) -> Alarm:
+    alarm = await db.scalar(select(Alarm).where(Alarm.id == alarm_id, Alarm.tenant_id == user.tenant_id))
+    if alarm is None:
+        raise HTTPException(404, "Alarm not found")
+    return alarm
+
+
+@router.get("/alarms/{alarm_id}")
+async def get_alarm(alarm_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    return alarm_dict(await _get_alarm(db, user, alarm_id))
+
+
+@router.post("/alarms/{alarm_id}/ack")
+async def ack_alarm(alarm_id: int, body: AckIn, request: Request, user: User = Depends(current_user),
+                    db: AsyncSession = Depends(get_db)):
+    alarm = await _get_alarm(db, user, alarm_id)
+    try:
+        alarm = await ack_service.acknowledge(db, alarm, user, body.note, ip=client_ip(request))
+    except ack_service.AlreadyAcknowledged as exc:
+        raise HTTPException(409, "Alarm was already acknowledged") from exc
+    return alarm_dict(alarm)
+
+
+@router.get("/summary")
+async def summary(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    counts = await _open_counts(db, user.tenant_id)
+    return {
+        "open_security": sum(c.get("security", 0) for c in counts.values()),
+        "open_system": sum(c.get("system", 0) for c in counts.values()),
+    }
+
+
+# --------------------------------------------------------------------------- audit
+
+@router.get("/audit")
+async def list_audit(user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+                     action: str | None = Query(None, max_length=64), site_id: int | None = None,
+                     alarm_id: int | None = None, before_id: int | None = None,
+                     limit: int = Query(100, ge=1, le=500)):
+    stmt = select(AuditLog).where(AuditLog.tenant_id == user.tenant_id)
+    if action:
+        stmt = stmt.where(AuditLog.action.startswith(action))
+    if site_id:
+        stmt = stmt.where(AuditLog.site_id == site_id)
+    if alarm_id:
+        stmt = stmt.where(AuditLog.alarm_id == alarm_id)
+    if before_id:
+        stmt = stmt.where(AuditLog.id < before_id)
+    rows = (await db.scalars(stmt.order_by(AuditLog.id.desc()).limit(limit))).unique().all()
+    return [audit_dict(r) for r in rows]
+
+
+# --------------------------------------------------------------------------- users
+
+class UserIn(BaseModel):
+    email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
+    display_name: str = Field(default="", max_length=200)
+    password: str = Field(min_length=12, max_length=200)
+    role: str = Field(default="operator", pattern="^(admin|operator)$")
+
+
+class UserUpdate(BaseModel):
+    display_name: str | None = Field(default=None, max_length=200)
+    role: str | None = Field(default=None, pattern="^(admin|operator)$")
+    is_active: bool | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=200)
+
+
+def _user_dict(u: User) -> dict:
+    return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
+            "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None}
+
+
+@router.get("/users")
+async def list_users(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    rows = (await db.scalars(select(User).where(User.tenant_id == user.tenant_id).order_by(User.email))).all()
+    return [_user_dict(u) for u in rows]
+
+
+@router.post("/users")
+async def create_user(body: UserIn, request: Request, user: User = Depends(require_admin),
+                      db: AsyncSession = Depends(get_db)):
+    new = User(tenant_id=user.tenant_id, email=body.email.strip().lower(), display_name=body.display_name.strip(),
+               password_hash=hash_password(body.password), role=body.role)
+    db.add(new)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, "A user with that email already exists") from exc
+    audit(db, user.tenant_id, "user.created", user_id=user.id, ip=client_ip(request), email=new.email, role=new.role)
+    await db.commit()
+    return _user_dict(new)
+
+
+@router.put("/users/{user_id}")
+async def update_user(user_id: int, body: UserUpdate, request: Request, user: User = Depends(require_admin),
+                      db: AsyncSession = Depends(get_db)):
+    target = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == user.tenant_id))
+    if target is None:
+        raise HTTPException(404)
+    if target.id == user.id and (body.role == "operator" or body.is_active is False):
+        raise HTTPException(400, "You can't demote or deactivate your own account")
+    fields = []
+    for name in ("display_name", "role", "is_active"):
+        value = getattr(body, name)
+        if value is not None and getattr(target, name) != value:
+            setattr(target, name, value)
+            fields.append(name)
+    if body.password:
+        target.password_hash = hash_password(body.password)
+        fields.append("password")
+    audit(db, user.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
+    await db.commit()
+    return _user_dict(target)
