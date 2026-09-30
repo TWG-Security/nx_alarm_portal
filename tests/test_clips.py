@@ -78,11 +78,36 @@ async def test_h264_clip_is_only_rewrapped(session, admin, tmp_path):
     assert info.status == "ready" and not info.transcoded
 
 
-async def test_clip_pending_until_footage_exists(session, admin):
+async def test_video_first_available_five_seconds_after_the_alarm(session, admin):
     tenant, _ = admin
     alarm = await _alarm(session, tenant, int(time.time() * 1000))
     info = await clips.get_clip(alarm)
-    assert info.status == "pending" and 20 <= info.ready_in_s <= 25
+    assert info.status == "pending" and 4 <= info.ready_in_s <= 5 and 22 <= info.final_in_s <= 25
+
+
+@respx.mock
+async def test_growing_clip_while_recording_then_full_clip(session, admin, tmp_path, monkeypatch):
+    tenant, _ = admin
+    now = int(time.time() * 1000)
+    alarm = await _alarm(session, tenant, now - 8_000)              # 8 s ago: 5 s of "after" is recorded
+    route = _mock_nx(synthetic_clip(tmp_path / "src.mp4", "libx264", now - 18_000))
+
+    info = await clips.get_clip(alarm, wait_s=60)
+
+    assert info.status == "ready" and info.partial and 15 <= info.final_in_s <= 17
+    q = route.calls.last.request.url.params
+    requested_end = int(q["positionMs"]) + int(q["durationMs"])
+    assert int(q["positionMs"]) == alarm.event_ts_ms - 10_000
+    assert abs(requested_end - (now - clips.PARTIAL_LAG_MS)) < 1500     # up to ~3 s behind live
+    assert "_g" in info.url
+    # Asking again right away returns the same growing clip (no rebuild until 5 s more exists).
+    again = await clips.get_clip(alarm, wait_s=60)
+    assert again.url == info.url and route.call_count == 1
+
+    # Later, once the whole window is recorded, the full clip replaces it.
+    monkeypatch.setattr(clips.time, "time", lambda: (now + 30_000) / 1000)
+    final = await clips.get_clip(alarm, wait_s=60)
+    assert final.status == "ready" and not final.partial and "_g" not in final.url
 
 
 @respx.mock

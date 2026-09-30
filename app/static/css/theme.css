@@ -394,6 +394,10 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; b
 }
 .player-clock span { font-weight: 400; color: #ccc; margin-left: 6px; }
 .live-dot { color: #ff5a4a; }
+.player-grow {
+  position: absolute; right: 8px; top: 8px; background: rgba(192, 57, 43, .85); color: #fff; padding: 3px 8px;
+  border-radius: 4px; font: 700 11px var(--font);
+}
 .player-timeline { margin-top: 8px; }
 .tl-track { position: relative; height: 22px; background: var(--surface-3); border-radius: 4px; overflow: hidden; }
 .tl-progress { position: absolute; left: 0; top: 0; bottom: 0; background: rgba(224, 138, 48, .28); pointer-events: none; }

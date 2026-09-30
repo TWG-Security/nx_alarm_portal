@@ -26,6 +26,7 @@ export function mountPlayer(root, alarm, { autoplay = true } = {}) {
         <canvas class="player-boxes"></canvas>
         <div class="player-msg"><span class="spinner"></span><span class="txt">Preparing clip…</span></div>
         <div class="player-clock" hidden></div>
+        <div class="player-grow" hidden></div>
       </div>
       <div class="player-timeline" hidden>
         <div class="tl-track">
@@ -77,7 +78,8 @@ export function mountPlayer(root, alarm, { autoplay = true } = {}) {
     }
     if (destroyed) return;
     if (r.status === "pending") {
-      say(`Recording in progress: clip ready in ${Math.ceil(r.ready_in_s)}s`);
+      say(quality === "hd" ? `HD clip ready in ${Math.ceil(r.ready_in_s)}s (full window must be recorded)`
+                           : `Video in ${Math.ceil(r.ready_in_s)}s`);
       pollTimer = setTimeout(() => load(keepAbsMs), Math.min(3000, r.ready_in_s * 1000 + 200));
       return;
     }
@@ -87,12 +89,16 @@ export function mountPlayer(root, alarm, { autoplay = true } = {}) {
       return;
     }
     if (r.status === "error") return say(`No clip: ${r.message}`, false);
+    if (info && r.url === info.url) { scheduleGrow(r); return; }       // nothing newer yet
+    const swapping = !!info && !video.hidden;
+    const resume = swapping ? { abs: absNow(), paused: video.paused } : null;
     info = r;
     video.src = r.url;
+    scheduleGrow(r);
     const dl = $('[data-c="download"]');
     dl.href = r.url; dl.download = `alarm-${alarm.id}-${quality}.mp4`; dl.hidden = false;
     video.addEventListener("loadedmetadata", () => {
-      const target = keepAbsMs ?? alarm.event_ts_ms - 3000;   // start just before the alarm
+      const target = resume?.abs ?? keepAbsMs ?? alarm.event_ts_ms - 3000;   // start just before the alarm
       video.currentTime = Math.max(0, Math.min(video.duration - 0.1, (target - info.start_ms) / 1000));
       video.playbackRate = Number($(".player-speed").value);
       video.hidden = false; poster.hidden = true; say("");
@@ -100,10 +106,20 @@ export function mountPlayer(root, alarm, { autoplay = true } = {}) {
       $(".tl-start").textContent = clock(info.start_ms);
       $(".tl-end").textContent = clock(info.start_ms + info.duration_ms);
       placeAlarmMarker();
-      if (autoplay) video.play().catch(() => {});
+      if (resume ? !resume.paused : autoplay) video.play().catch(() => {});
       loadObjects();
     }, { once: true });
     video.addEventListener("error", () => say("This browser couldn't play the clip.", false), { once: true });
+  }
+
+  // Growing clip: ask for a longer version every few seconds until the full window is recorded.
+  function scheduleGrow(r) {
+    clearTimeout(pollTimer);
+    const grow = $(".player-grow");
+    grow.hidden = !r.partial;
+    if (!r.partial) return;
+    grow.textContent = `● Recording: clip grows, full ${Math.ceil(r.final_in_s)}s`;
+    pollTimer = setTimeout(() => load(), 4000);
   }
 
   async function loadObjects() {

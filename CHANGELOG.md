@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 ### Added
+- **Growing clips**: video starts about 7 s after an alarm (was about 30 s). The clip covers the footage recorded so far, is extended every 5 s in place, and is replaced by the full clip once recorded. Prefetch builds the first growing clip at +5 s.
+- The portal logs the lag of every event NX pushes, which shows delays upstream of the portal.
 - **Push delivery from NX**: a per-site JSON-RPC websocket (`rest.v4.events.log.subscribe`) gets alarms to the screen in about 0.1 s. Polling continues as a backstop, and a per-site lock serializes push and poll ingest.
 - **No silent delays in the browser**:
   - auto-reconnect after any stream error, including the 502 that permanently killed EventSource during restarts

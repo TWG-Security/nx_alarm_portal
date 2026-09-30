@@ -33,7 +33,15 @@ log = logging.getLogger("portal.clips")
 QUALITIES = ("sd", "hd")
 READY_MARGIN_MS = 4000          # archive for the last few seconds may not be written yet
 
+# Growing clips: while the post-alarm footage is still being recorded, serve what exists.
+# NX serves archive up to ~1 s behind live, but a request ending that close waits in real
+# time (6-7 s on the TWG sites); ending 3 s back returns in ~1-3 s. Measured 2026-09-30.
+PARTIAL_LAG_MS = 3000           # a growing clip ends this far behind "now"
+FIRST_PARTIAL_AFTER_MS = 5000   # first growing clip once 2 s after the alarm is recorded
+GROW_EVERY_MS = 5000            # then extend it this often while someone is watching
+
 _inflight: dict[str, asyncio.Task] = {}
+_latest_partial: dict[str, "ClipInfo"] = {}          # final key -> newest growing clip
 _errors: dict[str, tuple[float, str]] = {}          # key -> (when, message); retried after a minute
 _nx_slots = asyncio.Semaphore(3)
 _ffmpeg_slots = asyncio.Semaphore(1)                # 2-vCPU box: one transcode at a time
@@ -54,6 +62,9 @@ class ClipInfo:
     transcoded: bool = False
     ready_in_s: float = 0       # for "pending": when the footage will exist
     message: str = ""
+    partial: bool = False       # still recording: this clip will be replaced by a longer one
+    covers_to_ms: int = 0       # end of the window that was requested from NX
+    final_in_s: float = 0       # for partial clips: when the full window will be recorded
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -148,9 +159,8 @@ async def _download(alarm: Alarm, start_ms: int, end_ms: int, quality: str, dest
                 raise ClipError(f"Could not download the clip from NX ({exc.__class__.__name__})") from exc
 
 
-async def _build(alarm: Alarm, key: str, pre_s: int, post_s: int, quality: str) -> ClipInfo:
+async def _build(alarm: Alarm, key: str, start_ms: int, end_ms: int, quality: str, partial: bool = False) -> ClipInfo:
     settings = get_settings()
-    start_ms, end_ms = window(alarm, pre_s, post_s)
     raw = _cache_dir() / f"{key}.raw.mp4"
     out = clip_path(key)
     tmp = _cache_dir() / f"{key}.tmp.mp4"
@@ -172,7 +182,8 @@ async def _build(alarm: Alarm, key: str, pre_s: int, post_s: int, quality: str) 
         os.replace(tmp, out)
         info = ClipInfo(status="ready", start_ms=meta["start_ms"] or start_ms,
                         duration_ms=int(meta["duration_s"] * 1000), event_ts_ms=alarm.event_ts_ms,
-                        url=f"/media/clips/{key}.mp4", codec=meta["codec"], transcoded=transcode)
+                        url=f"/media/clips/{key}.mp4", codec=meta["codec"], transcoded=transcode, partial=partial,
+                        covers_to_ms=end_ms)
         _meta_path(key).write_text(json.dumps(info.to_dict()))
         log.info("clip %s ready (%s%s, %.1fs)", key, meta["codec"], " -> h264" if transcode else "", meta["duration_s"])
         _evict()
@@ -194,9 +205,39 @@ def cached(key: str) -> ClipInfo | None:
     return None
 
 
+def _start_build(key: str, coro) -> asyncio.Task:
+    task = _inflight.get(key)
+    if task is None:
+        task = asyncio.create_task(coro)
+        _inflight[key] = task
+
+        def _done(t: asyncio.Task, key=key):
+            _inflight.pop(key, None)
+            if not t.cancelled() and t.exception():
+                _errors[key] = (time.time(), str(t.exception()))
+                log.warning("clip %s failed: %s", key, t.exception())
+        task.add_done_callback(_done)
+    else:
+        coro.close()
+    return task
+
+
+async def _await(task: asyncio.Task, wait_s: float, alarm: Alarm) -> ClipInfo | None:
+    try:
+        return await asyncio.wait_for(asyncio.shield(task), wait_s)
+    except asyncio.TimeoutError:
+        return None
+    except ClipError as exc:
+        return ClipInfo(status="error", event_ts_ms=alarm.event_ts_ms, message=str(exc))
+
+
 async def get_clip(alarm: Alarm, pre_s: int | None = None, post_s: int | None = None, quality: str = "sd",
                    wait_s: float = 1.5) -> ClipInfo:
-    """Return the clip if cached; otherwise start building it and report progress."""
+    """Return the clip if cached; otherwise start building it and report progress.
+
+    While the post-alarm footage is still being recorded, returns a *growing* clip
+    (partial=True) that covers everything recorded so far; ask again to get a longer one.
+    """
     if quality not in QUALITIES:
         raise ClipError("Unknown quality")
     if not alarm.device_id:
@@ -206,31 +247,49 @@ async def get_clip(alarm: Alarm, pre_s: int | None = None, post_s: int | None = 
     info = cached(key)
     if info:
         return info
-    _, end_ms = window(alarm, pre, post)
-    wait_ms = end_ms + READY_MARGIN_MS - int(time.time() * 1000)
-    if wait_ms > 0:
-        return ClipInfo(status="pending", event_ts_ms=alarm.event_ts_ms, ready_in_s=round(wait_ms / 1000, 1),
-                        message="Recording is still in progress")
+    start_ms, end_ms = window(alarm, pre, post)
+    now = int(time.time() * 1000)
+    final_wait_ms = end_ms + READY_MARGIN_MS - now
     err = _errors.get(key)
     if err and time.time() - err[0] < 60:
         return ClipInfo(status="error", event_ts_ms=alarm.event_ts_ms, message=err[1])
-    task = _inflight.get(key)
-    if task is None:
-        task = asyncio.create_task(_build(alarm, key, pre, post, quality))
-        _inflight[key] = task
 
-        def _done(t: asyncio.Task, key=key):
-            _inflight.pop(key, None)
-            if not t.cancelled() and t.exception():
-                _errors[key] = (time.time(), str(t.exception()))
-                log.warning("clip %s failed: %s", key, t.exception())
-        task.add_done_callback(_done)
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), wait_s)
-    except asyncio.TimeoutError:
-        return ClipInfo(status="processing", event_ts_ms=alarm.event_ts_ms, message="Preparing clip")
-    except ClipError as exc:
-        return ClipInfo(status="error", event_ts_ms=alarm.event_ts_ms, message=str(exc))
+    if final_wait_ms <= 0:                                   # everything is recorded: the full clip
+        _latest_partial.pop(key, None)
+        task = _start_build(key, _build(alarm, key, start_ms, end_ms, quality))
+        return await _await(task, wait_s, alarm) or _processing(alarm, key)
+
+    # Still recording. HD goes through NX transcoding (slow), so it waits for the full window.
+    first_at = alarm.event_ts_ms + FIRST_PARTIAL_AFTER_MS
+    if quality == "hd" or now < first_at:
+        ready_at = end_ms + READY_MARGIN_MS if quality == "hd" else first_at
+        return ClipInfo(status="pending", event_ts_ms=alarm.event_ts_ms, ready_in_s=round((ready_at - now) / 1000, 1),
+                        final_in_s=round(final_wait_ms / 1000, 1), message="Recording is still in progress")
+    latest = _latest_partial.get(key)
+    grow_to = min(end_ms, now - PARTIAL_LAG_MS)
+    # Measured against what we asked for, not the clip length: cameras that record on motion
+    # only return less, and must not trigger a rebuild on every request.
+    if latest is None or grow_to - latest.covers_to_ms >= GROW_EVERY_MS:
+        pkey = f"{key}_g{grow_to // 1000}"
+        task = _start_build(pkey, _build_partial(alarm, key, pkey, start_ms, grow_to, quality))
+        fresh = await _await(task, wait_s if latest is None else 0.05, alarm)
+        if fresh and fresh.status == "ready":
+            latest = fresh
+    if latest is None:
+        return _processing(alarm, key)
+    return ClipInfo(**{**latest.to_dict(), "final_in_s": round(max(0, final_wait_ms) / 1000, 1)})
+
+
+def _processing(alarm: Alarm, key: str) -> ClipInfo:
+    return ClipInfo(status="processing", event_ts_ms=alarm.event_ts_ms, message="Preparing clip")
+
+
+async def _build_partial(alarm: Alarm, key: str, pkey: str, start_ms: int, end_ms: int, quality: str) -> ClipInfo:
+    info = await _build(alarm, pkey, start_ms, end_ms, quality, partial=True)
+    prev = _latest_partial.get(key)
+    if prev is None or info.covers_to_ms > prev.covers_to_ms:
+        _latest_partial[key] = info
+    return info
 
 
 def _evict() -> None:
@@ -250,18 +309,20 @@ _prefetch: set[asyncio.Task] = set()
 
 
 def schedule_prefetch(alarm: Alarm) -> None:
-    """Build the default clip for loud alarms as soon as the footage exists."""
+    """For loud alarms: build the first growing clip ~5 s after the event, then the full clip."""
     if not get_settings().prefetch_clips or not alarm.device_id or alarm.priority > 2:
         return
     settings = get_settings()
 
-    async def run(alarm_id: int = alarm.id, site_id: int = alarm.site_id):
-        _, end_ms = alarm.event_ts_ms - settings.clip_pre_s * 1000, alarm.event_ts_ms + settings.clip_post_s * 1000
-        await asyncio.sleep(max(0, (end_ms + READY_MARGIN_MS) / 1000 - time.time()))
+    async def run(alarm_id: int = alarm.id, event_ms: int = alarm.event_ts_ms):
         from app.db import sessionmaker
-        async with sessionmaker()() as db:
-            a = await db.get(Alarm, alarm_id)
-            if a is not None:
+        final_at = (event_ms + settings.clip_post_s * 1000 + READY_MARGIN_MS) / 1000
+        for when in ((event_ms + FIRST_PARTIAL_AFTER_MS) / 1000, final_at):
+            await asyncio.sleep(max(0, when - time.time()))
+            async with sessionmaker()() as db:
+                a = await db.get(Alarm, alarm_id)
+                if a is None:
+                    return
                 await get_clip(a, wait_s=600)
 
     t = asyncio.create_task(run())

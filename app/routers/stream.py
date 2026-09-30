@@ -114,7 +114,7 @@ async def alarm_clip(alarm_id: int, user: User = Depends(current_user), db: Asyn
     return info.to_dict()
 
 
-_CLIP_NAME = re.compile(r"^a(\d+)_\d+_\d+_(sd|hd)$")
+_CLIP_NAME = re.compile(r"^a(\d+)_\d+_\d+_(sd|hd)(_g\d+)?$")
 
 
 @router.get("/media/clips/{name}.mp4")

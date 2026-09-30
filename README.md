@@ -56,6 +56,8 @@ The top bar always shows **● Live** or **Reconnecting…**; the site panel sho
 
 NX quirk: over JSON-RPC, `startTimeMs` is ignored, and the subscribe returns the whole event log (104k rows / 145 MB on the TWG site). The portal subscribes with `limit=1`. NX still takes about 10 s to set the subscription up; polling covers that window.
 
+**Camera-generated (ONVIF) analytics can arrive late.** Events such as "Object Class – Human", "Line Detector – Crossed" and "Audio Detected" are produced by the camera and collected by NX over ONVIF. They carry the camera's whole-second time stamp, and on the TWG site they reached the portal 2–8 s late, sometimes up to a minute. NX-native events (soft triggers) and NX server plugins (CVEDIA) arrive in about 0.1 s. The portal logs every pushed event's lag (`pushed … ms after its timestamp`) so the upstream delay is visible.
+
 **NX rule setting that delays alarms:** a rule's *Interval of action* ("once in 1 min") makes NX hold back repeats inside that interval. Turn it off on rules that should alarm.
 
 - **Pollers** (`app/services/poller.py`): one asyncio task per site reads new event-log rows every `POLL_INTERVAL_S`.
@@ -85,6 +87,10 @@ NX quirk: over JSON-RPC, `startTimeMs` is ignored, and the subscribe returns the
   - HD is the primary stream, converted by NX to 720p H.264.
 - NX starts the clip on the keyframe before the requested time and writes the true start time into the MP4 comment tag. ffprobe reads it, so boxes line up with the video to the frame.
 - ffmpeg rewraps H.264 as-is. H.265 and MPEG-4 Part 2, which many NX secondary streams use, are converted to H.264 so every browser can play them. On the TWG sites, a 30 s clip including conversion takes about 2 s.
+- **Growing clips:** video starts about 7 s after the alarm, not after the full window is recorded.
+  - NX serves archive up to about 1 s behind live, but a request ending that close waits in real time. So a growing clip ends 3 s behind live and downloads in 1–3 s.
+  - The first clip is built 5 s after the event (10 s before through 2 s after the alarm). It's extended every 5 s while someone is watching, and replaced by the full clip at about +24 s. The player keeps its position through each swap.
+  - Measured on the TWG sites: **video playing 6.9 s after the event**, previously about 30 s.
 - Clips are cached in the `mediacache` volume (4 GB cap, oldest evicted first) and served with HTTP range support, so the video can seek and loop.
 - Bounding boxes come from `/rest/v4/analytics/objectTracks` plus each track's per-frame `objectMetadata`. Cameras whose analytics don't produce object tracks (for example camera-side ONVIF line crossing) have no boxes to draw.
 

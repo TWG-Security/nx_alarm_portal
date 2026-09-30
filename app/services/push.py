@@ -64,10 +64,14 @@ async def _session(manager, rt) -> None:
             msg = json.loads(raw)
             if msg.get("method") == UPDATE and isinstance(msg.get("params"), dict):
                 row = msg["params"]
+                lag = int(time.time() * 1000) - int(row.get("timestampMs") or 0)
                 created = await manager.ingest_pushed(rt, [row])
-                if created:
-                    lag = int(time.time() * 1000) - int(row.get("timestampMs") or 0)
-                    log.info("site %s: alarm %s via push (%d ms after the event)", rt.site_id, created[0].id, lag)
+                ev = row.get("eventData") or {}
+                # Delivery metric: how long after its own timestamp NX pushed the event.
+                # A large lag here is upstream of the portal (camera -> NX), not portal delay.
+                log.info("site %s: pushed %s %s %d ms after its timestamp -> %s", rt.site_id, ev.get("type"),
+                         (ev.get("eventTypeId") or "")[:60], lag,
+                         f"new alarm {created[0].id}" if created else "no new alarm (duplicate or not an alarm)")
             elif msg.get("id") == 1:
                 if "error" in msg:
                     raise RuntimeError(f"NX refused the event subscription: {msg['error']}")
