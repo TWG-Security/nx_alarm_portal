@@ -21,6 +21,7 @@ def alarm_dict(a: Alarm) -> dict:
         "site_name": a.site.name if a.site else "",
         "site_address": a.site.address if a.site else "",
         "level": LEVEL_NAMES.get(a.priority, "warning"),
+        "level_source": a.level_source,
         "event_type": a.event_type,
         "event_subtype": a.event_subtype,
         "category": a.category,

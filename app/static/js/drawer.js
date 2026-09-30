@@ -3,6 +3,10 @@
 import { api, esc, fmtTime, relTime, timerHtml, acknowledge, on, toast, PRIORITY } from "./common.js";
 import { mountPlayer } from "./player.js";
 
+const LEVEL_SOURCE = {
+  rule_tag: "set by a #tag on the NX rule", force_ack: "NX rule forces acknowledgement",
+  site: "site override", tenant: "Settings → Alarm levels", default: "default for this event type",
+};
 const drawer = document.getElementById("drawer");
 const backdrop = document.getElementById("drawer-backdrop");
 let current = null, player = null;
@@ -32,6 +36,7 @@ function render(a) {
       <dt>Received</dt><dd>${fmtTime(a.received_at)}</dd>
       <dt>Type</dt><dd>${esc(a.event_type)}${a.event_subtype ? ` <span class="muted mono">${esc(a.event_subtype)}</span>` : ""}</dd>
       ${a.description ? `<dt>Description</dt><dd style="white-space:pre-wrap">${esc(a.description)}</dd>` : ""}
+      <dt>Level</dt><dd>${PRIORITY[a.priority]} <span class="muted">· ${esc(LEVEL_SOURCE[a.level_source] || "event type")}</span></dd>
       <dt>In NX</dt><dd>${a.nx_ack_required ? "Acknowledging here also clears it in NX" : "A bookmark is added in NX on acknowledge"}</dd>
     </dl>
     <div class="ack-box">

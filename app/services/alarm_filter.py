@@ -6,13 +6,18 @@ Levels (priority number in brackets):
   warning  (3) - amber card in the live feed, one soft tone
   ignore       - not stored
 
-Each tenant can remap any event type (Settings page); a site can override further
-via sites.alarm_types = {"<eventType>": "<level>"}.
+How a level is chosen (first match wins):
+  1. NX rule tag: the rule's "Title or Comment" contains #critical, #alarm, #warning or #ignore
+  2. the NX rule forces acknowledgement -> critical (tenant toggle)
+  3. per-site override: sites.alarm_types = {"<eventType>": "<level>"}
+  4. tenant setting for the event type (Settings page)
+  5. built-in default for the event type (unknown types -> warning)
 
 NX only logs events that some rule fired on, so an event must be covered by at least
 one NX rule (any action, e.g. "Write to log") to reach the portal.
 """
 
+import re
 from dataclasses import dataclass, field
 
 LEVELS = {"critical": 1, "alarm": 2, "warning": 3}
@@ -70,11 +75,21 @@ class Policy:
 DEFAULT_POLICY = Policy()
 
 
+RULE_TAG = re.compile(r"(?<![\w#])#(critical|alarm|warning|ignore)\b", re.I)
+
+
+def rule_tag(comment: str | None) -> str | None:
+    """Level tag in an NX rule's Title/Comment, e.g. "Front gate panic #critical"."""
+    m = RULE_TAG.search(comment or "")
+    return m.group(1).lower() if m else None
+
+
 @dataclass(frozen=True)
 class Classification:
     is_alarm: bool
     category: str = ""
     priority: int = 0
+    source: str = ""        # why this level: rule_tag | force_ack | site | tenant | default
 
     @property
     def level(self) -> str:
@@ -85,7 +100,9 @@ def category_of(event_type: str) -> str:
     return EVENT_TYPES.get(event_type, ("", "system", ""))[1]
 
 
-def classify(row: dict, policy: Policy = DEFAULT_POLICY, site_override: dict | None = None) -> Classification:
+def classify(row: dict, policy: Policy = DEFAULT_POLICY, site_override: dict | None = None,
+             rule_levels: dict[str, str] | None = None) -> Classification:
+    """rule_levels: {nx_rule_id: level} parsed from NX rule comments (see rule_tag)."""
     event = row.get("eventData") or {}
     action = row.get("actionData") or {}
     event_type = event.get("type", "")
@@ -94,10 +111,17 @@ def classify(row: dict, policy: Policy = DEFAULT_POLICY, site_override: dict | N
     if event.get("state") == "stopped":
         return Classification(False)
 
-    if policy.force_ack_critical and action.get("acknowledge"):
-        level = "critical"
+    rule_id = (row.get("ruleId") or "").strip("{}")
+    if rule_levels and rule_id in rule_levels:
+        level, source = rule_levels[rule_id], "rule_tag"
+    elif policy.force_ack_critical and action.get("acknowledge"):
+        level, source = "critical", "force_ack"
+    elif site_override and site_override.get(event_type) in CHOICES:
+        level, source = site_override[event_type], "site"
+    elif event_type in policy.levels:
+        level, source = policy.levels[event_type], "tenant"
     else:
-        level = policy.level_for(event_type, site_override)
+        level, source = policy.level_for(event_type), "default"
     if level == "ignore":
-        return Classification(False)
-    return Classification(True, category_of(event_type), LEVELS[level])
+        return Classification(False, source=source)
+    return Classification(True, category_of(event_type), LEVELS[level], source)

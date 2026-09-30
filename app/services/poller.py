@@ -20,7 +20,7 @@ from app.db import sessionmaker
 from app.models import Alarm, Site, Tenant
 from app.nx.client import NXClient
 from app.security import decrypt
-from app.services.alarm_filter import DEFAULT_POLICY, Policy, classify
+from app.services.alarm_filter import DEFAULT_POLICY, Policy, classify, rule_tag
 from app.services.bus import bus
 from app.services.nx_events import event_key, summarize
 from app.services.serialize import alarm_dict
@@ -40,23 +40,28 @@ class SiteRuntime:
     client: NXClient
     device_names: dict[str, str] = field(default_factory=dict)
     user_names: dict[str, str] = field(default_factory=dict)
+    rule_levels: dict[str, str] = field(default_factory=dict)   # NX rule id -> level from its #tag
+    rule_ids: set[str] = field(default_factory=set)
+    rules_refreshed: float = 0.0
     devices_refreshed: float = 0.0
     failing_since: float | None = None
     task: asyncio.Task | None = None
 
 
 async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str],
-                 user_names: dict[str, str] | None = None, policy: Policy = DEFAULT_POLICY) -> list[Alarm]:
+                 user_names: dict[str, str] | None = None, policy: Policy = DEFAULT_POLICY,
+                 rule_levels: dict[str, str] | None = None) -> list[Alarm]:
     """Store qualifying rows as alarms. Returns only the newly created alarms."""
     candidates: dict[str, tuple[dict, object]] = {}
+    acks = lambda r: bool((r.get("actionData") or {}).get("acknowledge"))  # noqa: E731
     for row in rows:
-        c = classify(row, policy, site.alarm_types)
+        c = classify(row, policy, site.alarm_types, rule_levels)
         if not c.is_alarm:
             continue
         key = event_key(row)
         prev = candidates.get(key)
-        # Several action rows per event: keep the one NX can acknowledge, if any.
-        if prev is None or (row.get("actionData") or {}).get("acknowledge") and not (prev[0].get("actionData") or {}).get("acknowledge"):
+        # Several rules can fire for one event: keep the loudest; on a tie, the one NX can acknowledge.
+        if prev is None or (c.priority, not acks(row)) < (prev[1].priority, not acks(prev[0])):
             candidates[key] = (row, c)
     if not candidates:
         return []
@@ -74,16 +79,21 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
         info = summarize(row, device_names, user_names)
         prior = existing.get(key)
         if prior is not None:
-            if info["nx_ack_required"] and not prior.nx_ack_required and prior.state == "new":
+            if prior.state != "new":
+                continue
+            changed = False
+            if info["nx_ack_required"] and not prior.nx_ack_required:
                 prior.nx_ack_required = True
                 prior.nx_action_id = info["nx_action_id"]
                 prior.nx_action_server_id = info["nx_action_server_id"]
-                if c.priority < prior.priority:
-                    prior.priority = c.priority
-                    upgraded.append(prior)
+            if c.priority < prior.priority:
+                prior.priority, prior.level_source = c.priority, c.source
+                changed = True
+            if changed:
+                upgraded.append(prior)
             continue
         alarm = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=key,
-                      category=c.category, priority=c.priority, raw=row, **info)
+                      category=c.category, priority=c.priority, level_source=c.source, raw=row, **info)
         alarm.site = site
         db.add(alarm)
         created.append(alarm)
@@ -193,13 +203,17 @@ class PollerManager:
                 except Exception:  # noqa: BLE001
                     pass
                 rt.devices_refreshed = time.monotonic()
+            await self._refresh_rules(rt, force=False)
             tenant = await db.get(Tenant, site.tenant_id)
             policy = Policy.from_settings(tenant.settings if tenant else None)
 
             cursor = site.event_cursor_ms or (now_ms() - settings.initial_lookback_ms)
             rows = await rt.client.get_events(limit=500, from_ms=max(1, cursor - settings.poll_overlap_ms),
                                               descending=False) or []
-            created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy)
+            # A rule we haven't seen (just created or edited in NX): re-read rules, at most once a minute.
+            if any((r.get("ruleId") or "").strip("{}") not in rt.rule_ids for r in rows):
+                await self._refresh_rules(rt, force=True)
+            created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy, rt.rule_levels)
             rt.failing_since = None
             site.event_cursor_ms = max([cursor] + [int(r.get("timestampMs") or 0) for r in rows])
 
@@ -217,6 +231,21 @@ class PollerManager:
                 bus.publish(site.tenant_id, "alarm.new", alarm_dict(a))
                 clips.schedule_prefetch(a)
             return created
+
+    async def _refresh_rules(self, rt: SiteRuntime, force: bool) -> None:
+        """Read NX rules for #critical/#alarm/#warning/#ignore tags in their Title/Comment."""
+        age = time.monotonic() - rt.rules_refreshed
+        if age < (60 if force else get_settings().device_refresh_s):
+            return
+        rt.rules_refreshed = time.monotonic()
+        try:
+            rules = await rt.client.get_rules() or []
+        except Exception as exc:  # noqa: BLE001 — needs rule-read rights; levels fall back to event type
+            log.info("site %s: could not read NX rules (%s); rule tags ignored", rt.site_id, exc)
+            return
+        rt.rule_ids = {(r.get("id") or "").strip("{}") for r in rules}
+        rt.rule_levels = {rid: lvl for r in rules
+                          if (lvl := rule_tag(r.get("comment"))) and (rid := (r.get("id") or "").strip("{}"))}
 
     async def _set_status(self, rt: SiteRuntime, status: str, detail: str) -> None:
         async with sessionmaker()() as db:

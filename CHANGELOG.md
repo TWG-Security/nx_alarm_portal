@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Level per NX rule**: `#critical`, `#alarm`, `#warning` or `#ignore` in an NX rule's Title/Comment sets the level for that rule and overrides everything else. When several rules fire for one event, the loudest wins. The alarm details show where the level came from (`alarms.level_source`, migration 0003).
 - **Alarm video clips**:
   - A looping clip around each alarm (default −10 s / +20 s) in the drawer and the critical pop-up.
   - Timeline with an alarm marker and object-presence marks; play/pause, frame step, speed, jump to alarm, widen earlier/later, HD, live and download.

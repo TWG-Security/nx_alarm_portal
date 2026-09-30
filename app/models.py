@@ -105,7 +105,8 @@ class Alarm(Base):
     event_type: Mapped[str] = mapped_column(String(100))
     event_subtype: Mapped[str] = mapped_column(String(200), default="")
     category: Mapped[str] = mapped_column(String(20), default="security")  # security | system
-    priority: Mapped[int] = mapped_column(Integer, default=2)              # 1 critical, 2 high, 3 medium
+    priority: Mapped[int] = mapped_column(Integer, default=2)              # 1 critical, 2 alarm, 3 warning
+    level_source: Mapped[str] = mapped_column(String(20), default="")       # rule_tag | force_ack | site | tenant | default
     caption: Mapped[str] = mapped_column(String(500), default="")
     description: Mapped[str] = mapped_column(Text, default="")
     source_name: Mapped[str] = mapped_column(String(300), default="")

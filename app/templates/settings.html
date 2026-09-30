@@ -9,6 +9,14 @@
     <div class="card"><span class="chip p3">Warning</span><p>An amber card in the live feed and one soft tone when it arrives.</p><button class="btn btn-sm" data-test="warning">▶ Test sound</button></div>
     <div class="card"><span class="chip">Ignore</span><p>Not stored or shown. The event still appears in NX.</p></div>
   </div>
+  <div class="card" style="margin-bottom:16px">
+    <h2>Set the level per NX rule</h2>
+    <p>In the NX rule editor, type a tag in <b>Add Title or Comment</b>. The tag overrides everything on this page, for that rule only:
+      <code>#critical</code> · <code>#alarm</code> · <code>#warning</code> · <code>#ignore</code><br>
+      <span class="muted">Example: "Front gate panic button #critical", or "Truss 8 soft trigger test #warning". The portal picks up rule edits within a minute.
+      When several rules fire for the same event, the loudest level wins.</span></p>
+    <p class="muted" style="margin-bottom:0">Priority order: rule tag → Force acknowledgement (below) → event type (table below).</p>
+  </div>
   <label class="check"><input type="checkbox" id="force-ack"> NX rules with <b>Force acknowledgement</b> are always Critical, whatever their event type</label>
   <div class="table-wrap">
     <table>

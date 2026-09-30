@@ -104,3 +104,27 @@ async def test_poll_failure_marks_site_auth_error(session, admin):
         await manager._set_status(rt, err.status, str(err))
     s = (await session.execute(select(Site).execution_options(populate_existing=True))).scalar_one()
     assert s.status == "auth_error"
+
+
+@respx.mock
+async def test_nx_rule_tags_set_levels_and_loudest_rule_wins(session, admin):
+    tenant, _ = admin
+    site = await make_site(session, tenant, cursor=6_000_000)
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[]))
+    rules = respx.get(f"{NX}/rest/v4/events/rules").mock(return_value=httpx.Response(200, json=[
+        {"id": "{rule-log}", "comment": "Truss 8 test trigger #warning"},
+        {"id": "{rule-panic}", "comment": "Panic #critical"},
+        {"id": "{rule-plain}", "comment": ""}]))
+    soft = [nx_row(6_001_000, type_="softTrigger", action_id="w"), nx_row(6_002_000, type_="softTrigger", action_id="x")]
+    soft[0]["ruleId"] = "rule-log"                        # only the #warning rule fired
+    soft[1]["ruleId"] = "rule-log"                        # event 2: both rules fired
+    both = dict(soft[1]); both["ruleId"] = "rule-panic"; both["actionData"] = {**soft[1]["actionData"], "id": "y"}
+    respx.get(f"{NX}/rest/v4/events/log").mock(return_value=httpx.Response(200, json=[soft[0], soft[1], both]))
+
+    created = await manager.poll_once(manager._runtime(site))
+
+    by_ts = {a.event_ts_ms: a for a in created}
+    assert (by_ts[6_001_000].priority, by_ts[6_001_000].level_source) == (3, "rule_tag")
+    assert (by_ts[6_002_000].priority, by_ts[6_002_000].level_source) == (1, "rule_tag")
+    assert rules.called

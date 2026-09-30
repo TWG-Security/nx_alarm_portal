@@ -17,6 +17,9 @@ One place where TWG Security operators see alarms from every NX Witness deployme
   | **Warning** | Amber card in the feed, one soft tone |
   | **Ignore** | Not stored or shown |
 
+  **Per NX rule:** type `#critical`, `#alarm`, `#warning` or `#ignore` in the rule's **Title or Comment** in NX. The tag overrides everything else, and the portal picks up rule edits within a minute.
+  Levels are chosen in this order: rule tag → "Force acknowledgement" → per-site override → Settings → built-in default. The alarm details show which one applied.
+
   **Silence 2 min** pauses the repeats (a new critical breaks the silence). With several portal tabs open, only one plays sound.
 - **Unified alarm queue**: filter by site, level and state.
 - **Alarm video**:
@@ -83,6 +86,8 @@ Create a dedicated NX user for the portal on each site. It needs to be able to:
 - add bookmarks
 
 For NX-side acknowledgement to work, this user must also be one of the **target users** on any rule set to force acknowledgement.
+
+To use rule `#tags`, the user must be allowed to read event rules (`GET /rest/v4/events/rules`). A 403 there means tags are ignored for that site, and the portal logs `could not read NX rules`.
 
 ## Deploy (Docker)
 
