@@ -185,18 +185,41 @@ async def test_polls_fast_while_push_is_down(session, admin):
     assert manager.poll_delay(rt) == 5.0
 
 
-def test_rule_delays_flags_alarm_rules_with_interval_of_action():
+def test_rule_delays_reports_the_effective_delay_per_event():
+    """Shapes from a real NX 6.1 site: default notification rules plus a few security rules."""
     from app.services.alarm_filter import Policy
     from app.services.poller import rule_delays
+    cam = lambda *ids: {"acceptAll": False, "ids": list(ids)}  # noqa: E731
+    kw = {"caption": {"checkType": "containsKeywords"}, "description": {"checkType": "containsKeywords"}}
     rules = [
-        {"id": "{a}", "comment": "Truss 8 test trigger #warning", "enabled": True,
-         "event": {"type": "softTrigger"}, "action": {"type": "writeToLog", "intervalS": 60}},
-        {"id": "b", "comment": "", "event": {"type": "analytics"}, "action": {"intervalS": 300}},
-        {"id": "c", "comment": "Motion log", "event": {"type": "motion"}, "action": {"intervalS": 30}},     # ignored level
-        {"id": "d", "comment": "Off", "enabled": False, "event": {"type": "softTrigger"}, "action": {"intervalS": 60}},
-        {"id": "e", "comment": "No interval", "event": {"type": "softTrigger"}, "action": {"intervalS": 0}},
-        {"id": "f", "comment": "Noise #ignore", "event": {"type": "analytics"}, "action": {"intervalS": 10}},
+        # storageIssue: email every 24 h + desktop every 30 s -> repeats reach us within 30 s
+        {"id": "s1", "event": {"type": "storageIssue"}, "action": {"type": "sendEmail", "intervalS": 86400}},
+        {"id": "s2", "event": {"type": "storageIssue"}, "action": {"type": "desktopNotification", "intervalS": 30}},
+        {"id": "l1", "event": {"type": "ldapSyncIssue"}, "action": {"type": "sendEmail", "intervalS": 21600}},
+        {"id": "st", "event": {"type": "serverStarted"}, "action": {"type": "sendEmail", "intervalS": 21600}},  # ignored level
+        # Human on camera A: push every 60 s, nothing faster -> 60 s
+        {"id": "h1", "event": {**kw, "type": "analytics", "devices": cam("A"), "state": "instant",
+                               "eventTypeId": "nx.onvif.VideoAnalytics.ObjectClass.Human"},
+         "action": {"type": "pushNotification", "intervalS": 60}},
+        # Line crossing on A: push 60 s, but a no-interval log rule for all cameras covers it -> fine
+        {"id": "x1", "event": {**kw, "type": "analytics", "devices": cam("A"), "eventTypeId": "line"},
+         "action": {"type": "pushNotification", "intervalS": 60}},
+        {"id": "x2", "event": {**kw, "type": "analytics", "devices": {"acceptAll": True}, "eventTypeId": "line"},
+         "action": {"type": "writeToLog", "intervalS": 0}},
+        # A disabled no-interval rule doesn't help; a keyword-filtered one doesn't cover the unfiltered rule.
+        {"id": "p1", "event": {"type": "softTrigger", "triggerId": "t1", "triggerName": "Nx testing", "devices": cam("B")},
+         "action": {"type": "speak", "intervalS": 60}},
+        {"id": "p2", "enabled": False, "event": {"type": "softTrigger", "triggerId": "t1", "devices": cam("B")},
+         "action": {"type": "writeToLog", "intervalS": 0}},
+        {"id": "p3", "event": {"type": "softTrigger", "triggerId": "t1", "devices": cam("B"),
+                               "caption": {"checkType": "containsKeywords", "value": "smoke"}},
+         "action": {"type": "writeToLog", "intervalS": 0}},
+        {"id": "o1", "event": {"type": "analyticsObject", "devices": cam("C")}, "action": {"type": "textOverlay", "durationS": 5}},
     ]
-    out = rule_delays(rules, Policy())
-    assert [(d["id"], d["name"], d["interval_s"], d["level"]) for d in out] == \
-        [("b", "analytics", 300, "alarm"), ("a", "Truss 8 test trigger #warning", 60, "warning")]
+    out = {d["id"]: (d["name"], d["category"], d["interval_s"]) for d in rule_delays(rules, Policy())}
+    assert out == {
+        "h1": ("Analytics event (Human, 1 camera)", "security", 60),
+        "p1": ("Soft trigger (Nx testing, 1 camera)", "security", 60),
+        "l1": ("LDAP sync issue", "system", 21600),
+        "s1": ("Storage issue", "system", 30),
+    }

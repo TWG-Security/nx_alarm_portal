@@ -6,7 +6,9 @@ A failing site backs off on its own; it never blocks the others.
 """
 
 import asyncio
+import json
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -138,26 +140,76 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     return [a for a in created if a.state == "new"] + promoted
 
 
-def rule_delays(rules: list[dict], policy: Policy, site_override: dict | None = None) -> list[dict]:
-    """Enabled rules that would raise portal alarms but have NX's "Interval of action" set.
+_SCOPE_IGNORE = {"type", "omitLogging"}
 
-    NX merges repeat events inside that interval into one log row and writes it only when the
-    interval ends, so a second alarm from the same rule reaches us up to intervalS late.
-    """
-    out = []
-    for r in rules:
-        interval = int((r.get("action") or {}).get("intervalS") or 0)
-        if interval <= 0 or r.get("enabled") is False:
+
+def _covers(c: dict, r: dict) -> bool:
+    """Does rule event filter c match at least every event rule event filter r matches?"""
+    if c.get("type") != r.get("type"):
+        return False
+    for k, cv in c.items():
+        if k in _SCOPE_IGNORE:
             continue
-        event_type = (r.get("event") or {}).get("type", "")
-        level = rule_tag(r.get("comment")) or (
-            "critical" if policy.force_ack_critical and (r.get("action") or {}).get("acknowledge")
-            else policy.level_for(event_type, site_override))
+        rv = r.get(k)
+        if isinstance(cv, dict) and ("acceptAll" in cv or "ids" in cv):        # devices / users
+            if cv.get("acceptAll"):
+                continue
+            if not isinstance(rv, dict) or rv.get("acceptAll") or not set(rv.get("ids") or []) <= set(cv.get("ids") or []):
+                return False
+        elif isinstance(cv, dict) and "checkType" in cv:                         # caption/description filters
+            if cv.get("value") and (not isinstance(rv, dict) or rv != cv):
+                return False
+        elif cv not in (None, "", [], {}) and cv != rv:                          # eventTypeId, triggerId, state...
+            return False
+    return True
+
+
+def _rule_label(r: dict) -> str:
+    from app.services.alarm_filter import EVENT_TYPES
+    ev = r.get("event") or {}
+    t = ev.get("type", "")
+    if (r.get("comment") or "").strip():
+        return r["comment"].strip()
+    label = re.sub(r"\s*\([^)]*\)$", "", EVENT_TYPES.get(t, (t,))[0])     # drop a trailing explanation
+    bits = [ev.get("triggerName") or "", (ev.get("eventTypeId") or ev.get("objectTypeId") or "").rsplit(".", 2)[-1]]
+    ids = (ev.get("devices") or {}).get("ids") or []
+    if ids:
+        bits.append(f"{len(ids)} camera{'s' if len(ids) > 1 else ''}")
+    extra = ", ".join(b for b in bits if b)
+    return f"{label} ({extra})" if extra else label
+
+
+def rule_delays(rules: list[dict], policy: Policy, site_override: dict | None = None) -> list[dict]:
+    """Events that reach the portal late because of NX's "Interval of action".
+
+    NX logs each rule separately and merges repeat events inside a rule's interval into one
+    row written when the interval ends. So a repeat reaches us as soon as the quickest rule
+    covering that event logs it: the delay is the smallest interval among the enabled rules
+    whose filter covers it. The first event always comes through immediately. One entry per
+    distinct event filter, with that effective delay.
+    """
+    from app.services.alarm_filter import category_of
+    enabled = [r for r in rules if r.get("enabled") is not False]
+    seen, out = set(), []
+    for r in enabled:
+        ev = r.get("event") or {}
+        own = int((r.get("action") or {}).get("intervalS") or 0)
+        if own <= 0:
+            continue
+        key = json.dumps(ev, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        delay = min(int((c.get("action") or {}).get("intervalS") or 0)
+                    for c in enabled if _covers(c.get("event") or {}, ev))
+        if delay <= 0:
+            continue
+        level = rule_tag(r.get("comment")) or policy.level_for(ev.get("type", ""), site_override)
         if level == "ignore":
             continue
-        out.append({"id": (r.get("id") or "").strip("{}"), "name": (r.get("comment") or "").strip() or event_type,
-                    "event_type": event_type, "interval_s": interval, "level": level})
-    return sorted(out, key=lambda d: -d["interval_s"])
+        out.append({"id": (r.get("id") or "").strip("{}"), "name": _rule_label(r), "event_type": ev.get("type", ""),
+                    "category": category_of(ev.get("type", "")), "interval_s": delay, "level": level})
+    return sorted(out, key=lambda d: (d["category"] != "security", -d["interval_s"], d["name"]))
 
 
 class PollerManager:
@@ -202,8 +254,12 @@ class PollerManager:
         """For the Sites/map pages: can we read the site's NX rules, and which alarm rules delay repeats."""
         rt = self._rt.get(site_id)
         if rt is None or not rt.rules_refreshed:
-            return {"rules_readable": None, "rule_delays": []}
-        return {"rules_readable": not rt.rules_forbidden, "rule_delays": rt.rule_delays}
+            return {"rules_readable": None, "rule_delays": [], "system_delays": {"count": 0, "max_s": 0}}
+        sec = [d for d in rt.rule_delays if d["category"] == "security"]
+        system = [d for d in rt.rule_delays if d["category"] != "security"]
+        return {"rules_readable": not rt.rules_forbidden, "rule_delays": sec,
+                "system_delays": {"count": len(system), "max_s": max((d["interval_s"] for d in system), default=0),
+                                  "worst": max(system, key=lambda d: d["interval_s"])["name"] if system else ""}}
 
     def push_state(self, site_id: int) -> bool | None:
         rt = self._rt.get(site_id)

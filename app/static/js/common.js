@@ -109,17 +109,24 @@ export function applyAlarm(a) {
 }
 
 // ---------------------------------------------------------------- NX rule health (poller.rule_delays)
-// Rules with NX's "Interval of action" set hold repeat alarms back by up to that long.
+// NX's "Interval of action" merges repeat events and logs them when the interval ends, so a
+// repeat reaches the portal up to that late (the first event always comes straight through).
+const dur = (s) => (s >= 3600 ? `${+(s / 3600).toFixed(1)} h` : s >= 60 ? `${+(s / 60).toFixed(1)} min` : `${s} s`);
 export function ruleHealthHtml(site, { brief = false } = {}) {
-  const d = site.rule_delays || [];
-  if (brief) {
-    if (d.length) return `<span class="chip p3" title="${esc(d.map((r) => `“${r.name}”: ${r.interval_s} s`).join("\n"))}">${d.length} NX ${d.length > 1 ? "rules delay" : "rule delays"} repeats</span>`;
-    return site.rules_readable === false ? '<span class="chip" title="The NX account cannot read rules: #tags, #24h and this check don\'t work">Rules unreadable</span>' : "";
+  const d = site.rule_delays || [], sys = site.system_delays || { count: 0 };
+  if (site.rules_readable === false) {
+    return brief ? '<span class="chip" title="The portal\'s NX account can\'t read rules, so #tags, #24h and the repeat-delay check don\'t work">Rules unreadable</span>'
+      : '<span class="chip">Can\'t read NX rules</span><div class="arm-line">Give the portal\'s NX account rule-read rights (e.g. Power Users) so #tags, #24h and this check work.</div>';
   }
-  if (site.rules_readable === false) return '<span class="chip">Can\'t read NX rules</span><div class="arm-line">Give the portal\'s NX account rule-read rights (e.g. Power Users) so #tags, #24h and this check work.</div>';
-  if (!d.length) return site.rules_readable ? '<span class="chip online">OK</span>' : "—";
-  return `<span class="chip p3">${d.length} ${d.length > 1 ? "rules delay" : "rule delays"} repeats</span>` + d.map((r) =>
-    `<div class="arm-line">“${esc(r.name)}” holds repeats up to <b>${r.interval_s} s</b>. In NX, turn off its “Interval of action”.</div>`).join("");
+  if (brief) {
+    return d.length ? `<span class="chip p3" title="${esc(d.map((r) => `${r.name}: repeats up to ${dur(r.interval_s)} late`).join("\n"))}">Repeat alarms delayed (${d.length})</span>` : "";
+  }
+  if (site.rules_readable == null) return "—";
+  const sysLine = sys.count ? `<div class="arm-line">System events (${sys.count} types): repeats held up to ${dur(sys.max_s)}${sys.worst ? ` (${esc(sys.worst)})` : ""} by NX's default notification rules. Usually fine.</div>` : "";
+  if (!d.length) return `<span class="chip online">Security alarms on time</span>${sysLine}`;
+  const shown = d.slice(0, 5).map((r) => `<div class="arm-line">${esc(r.name)}: repeats up to <b>${dur(r.interval_s)}</b> late</div>`).join("");
+  return `<span class="chip p3">Repeat alarms delayed</span>${shown}${d.length > 5 ? `<div class="arm-line">…and ${d.length - 5} more</div>` : ""}
+    <div class="arm-line">Fix: in NX, add a rule for the same event with action <b>Write to log</b> and <b>Interval of action</b> off. Your existing notification rules can keep their limits.</div>${sysLine}`;
 }
 
 // ---------------------------------------------------------------- arming (app/services/arming.py)
