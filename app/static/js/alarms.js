@@ -105,6 +105,7 @@ let qTimer;
 qIn.addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(() => { filt.q = qIn.value.trim(); syncUrl(); load(); }, 300); });
 
 on("store", ({ alarm } = {}) => { if (alarm) upsert(alarm); });
+on("alarm.arrived", upsert);   // includes alarms caught up by a resync while the live stream was down
 on("alarms.reload", () => load().catch(() => {}));
 on("reconnect", () => load().catch(() => {}));
 

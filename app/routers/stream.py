@@ -22,7 +22,7 @@ from app.services.sites import describe_http_error
 
 router = APIRouter()
 
-KEEPALIVE_S = 15
+KEEPALIVE_S = 5      # the page reconnects if it hears nothing for 12 s
 
 
 @router.get("/api/events")
@@ -42,7 +42,7 @@ async def events(request: Request):
                 try:
                     event, data = await asyncio.wait_for(sub.queue.get(), KEEPALIVE_S)
                 except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+                    yield "event: ping\ndata: {}\n\n"   # heartbeat the page's watchdog listens for
                     continue
                 yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
         finally:

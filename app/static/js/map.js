@@ -55,6 +55,7 @@ function renderDetail() {
       <dt>Status</dt><dd><span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : ' <span class="chip">disabled</span>'}</dd>
       ${s.status_detail ? `<dt>Detail</dt><dd>${esc(s.status_detail)}</dd>` : ""}
       <dt>Last contact</dt><dd>${relTime(s.last_seen_at)}</dd>
+      <dt>Alarm feed</dt><dd>${s.push ? '<span class="chip online">Live push</span>' : s.push === false ? '<span class="chip">Polling only (5 s)</span>' : "—"}</dd>
       <dt>NX</dt><dd>${esc(s.nx_site_name || "—")} ${s.nx_version ? `<span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
       <dt>Cameras</dt><dd>${s.camera_count}</dd>
       ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
@@ -187,7 +188,8 @@ on("site.status", ({ site_id, status, detail }) => {
   const s = sites.get(site_id);
   if (s) { s.status = status; s.status_detail = detail || ""; if (status === "online") s.last_seen_at = new Date().toISOString(); renderAll(); }
 });
-on("site.updated", (s) => { sites.set(s.id, s); renderAll(); });
+on("site.updated", (s) => { sites.set(s.id, { ...sites.get(s.id), ...s }); renderAll(); });
+on("site.push", ({ site_id, push }) => { const s = sites.get(site_id); if (s) { s.push = push; renderDetail(); } });
 on("site.removed", (s) => { sites.delete(s.id); markers.get(s.id)?.remove(); markers.delete(s.id); renderAll(); });
 on("reconnect", () => loadSites().then(renderAll).catch(() => {}));
 on("focus-alarm", focusAlarm);

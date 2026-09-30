@@ -48,6 +48,9 @@ class SiteRuntime:
     devices_refreshed: float = 0.0
     failing_since: float | None = None
     task: asyncio.Task | None = None
+    push_task: asyncio.Task | None = None
+    push_connected: bool = False
+    ingest_lock: asyncio.Lock = field(default_factory=asyncio.Lock)   # push and poll never ingest at once
 
 
 async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str],
@@ -137,22 +140,31 @@ class PollerManager:
         log.info("started %d site pollers", len(sites))
 
     def start(self, site: Site) -> None:
-        if not get_settings().start_pollers:
+        settings = get_settings()
+        if not settings.start_pollers:
             return
         rt = self._rt.get(site.id) or self._runtime(site)
         if rt.task is None or rt.task.done():
             rt.task = asyncio.create_task(self._run(rt), name=f"poller-site-{site.id}")
+        if settings.push_enabled and (rt.push_task is None or rt.push_task.done()):
+            from app.services.push import run_push  # late import: push uses this module
+            rt.push_task = asyncio.create_task(run_push(self, rt), name=f"push-site-{site.id}")
+
+    def push_state(self, site_id: int) -> bool | None:
+        rt = self._rt.get(site_id)
+        return rt.push_connected if rt and rt.push_task else None
 
     async def stop(self, site_id: int) -> None:
         rt = self._rt.pop(site_id, None)
         if rt is None:
             return
-        if rt.task:
-            rt.task.cancel()
-            try:
-                await rt.task
-            except (asyncio.CancelledError, Exception):
-                pass
+        for task in (rt.task, rt.push_task):
+            if task:
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):
+                    pass
         await rt.client.close()
 
     async def restart(self, site: Site) -> None:
@@ -185,7 +197,7 @@ class PollerManager:
                     await self._set_status(rt, err.status, str(err))
                     delay = min(max(delay * 2, settings.poll_interval_s), settings.poll_max_backoff_s)
                 else:
-                    delay = settings.poll_interval_s
+                    delay = settings.poll_retry_s      # don't lose a whole cycle to a one-off relay error
             await asyncio.sleep(delay)
 
     async def poll_once(self, rt: SiteRuntime) -> list[Alarm]:
@@ -212,10 +224,8 @@ class PollerManager:
             cursor = site.event_cursor_ms or (now_ms() - settings.initial_lookback_ms)
             rows = await rt.client.get_events(limit=500, from_ms=max(1, cursor - settings.poll_overlap_ms),
                                               descending=False) or []
-            # A rule we haven't seen yet (just created in NX): re-read rules now.
-            if not rt.rules_forbidden and any((r.get("ruleId") or "").strip("{}") not in rt.rule_ids for r in rows):
-                relevelled += await self._refresh_rules(rt, db, site, policy, force=True)
-            created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy, rt.rule_levels)
+            created, more = await self._ingest_rows(rt, db, site, policy, rows)
+            relevelled += more
             rt.failing_since = None
             site.event_cursor_ms = max([cursor] + [int(r.get("timestampMs") or 0) for r in rows])
 
@@ -227,13 +237,43 @@ class PollerManager:
             if status_changed:
                 audit(db, site.tenant_id, "site.online", site_id=site.id)
                 await db.commit()
+                await self._mark_restored(db, site)
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": "online"})
             if relevelled:
                 bus.publish(site.tenant_id, "alarms.reload", {})
-            from app.services import clips  # late import: clips uses this module's manager
-            for a in created:
-                bus.publish(site.tenant_id, "alarm.new", alarm_dict(a))
-                clips.schedule_prefetch(a)
+            self._announce(created)
+            return created
+
+    async def _ingest_rows(self, rt: SiteRuntime, db: AsyncSession, site: Site, policy: Policy,
+                           rows: list[dict]) -> tuple[list[Alarm], int]:
+        """Shared by push and poll. Returns (new alarms, alarms re-levelled by a rule refresh)."""
+        relevelled = 0
+        # A rule we haven't seen yet (just created in NX): re-read rules now.
+        if not rt.rules_forbidden and any((r.get("ruleId") or "").strip("{}") not in rt.rule_ids for r in rows):
+            relevelled = await self._refresh_rules(rt, db, site, policy, force=True)
+        async with rt.ingest_lock:
+            created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy, rt.rule_levels)
+            await db.commit()
+        return created, relevelled
+
+    def _announce(self, created: list[Alarm]) -> None:
+        from app.services import clips  # late import: clips uses this module's manager
+        for a in created:
+            bus.publish(a.tenant_id, "alarm.new", alarm_dict(a))
+            clips.schedule_prefetch(a)
+
+    async def ingest_pushed(self, rt: SiteRuntime, rows: list[dict]) -> list[Alarm]:
+        """Rows pushed by NX over the JSON-RPC websocket: store and announce immediately."""
+        async with sessionmaker()() as db:
+            site = await db.get(Site, rt.site_id)
+            if site is None or not site.enabled or site.archived_at is not None:
+                return []
+            tenant = await db.get(Tenant, site.tenant_id)
+            policy = Policy.from_settings(tenant.settings if tenant else None)
+            created, relevelled = await self._ingest_rows(rt, db, site, policy, rows)
+            if relevelled:
+                bus.publish(site.tenant_id, "alarms.reload", {})
+            self._announce(created)
             return created
 
     async def _refresh_rules(self, rt: SiteRuntime, db: AsyncSession, site: Site, policy: Policy,
@@ -287,11 +327,37 @@ class PollerManager:
                 return
             changed = site.status != status
             site.status, site.status_detail = status, detail[:1000]
+            created: list[Alarm] = []
             if changed:
                 audit(db, site.tenant_id, f"site.{status}", site_id=site.id, detail_text=detail[:500])
+                # Losing contact means the site is not being monitored: that is an alarm in itself.
+                tenant = await db.get(Tenant, site.tenant_id)
+                policy = Policy.from_settings(tenant.settings if tenant else None)
+                ts = now_ms()
+                row = {"timestampMs": ts, "ruleId": "", "actionData": {},
+                       "eventData": {"type": "portalSiteOffline", "timestamp": str(ts * 1000), "state": "instant",
+                                     "source": site.name, "caption": "Site connection lost",
+                                     "description": f"The portal cannot reach this NX site: {detail}. "
+                                                    "Alarms from this site are not being received until the connection is back."}}
+                async with rt.ingest_lock:
+                    created = await ingest(db, site, [row], {}, policy=policy)
             await db.commit()
             if changed:
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": status, "detail": detail})
+            self._announce(created)
+
+    async def _mark_restored(self, db: AsyncSession, site: Site) -> None:
+        """Note the reconnect on any still-open 'connection lost' alarm (the operator still acknowledges it)."""
+        rows = (await db.scalars(select(Alarm).where(Alarm.site_id == site.id, Alarm.state == "new",
+                                                     Alarm.event_type == "portalSiteOffline"))).all()
+        stamp = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")
+        for a in rows:
+            if "Connection restored" not in a.description:
+                a.description = f"{a.description}\nConnection restored at {stamp}."
+        if rows:
+            await db.commit()
+            for a in rows:
+                bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
 
 
 manager = PollerManager()

@@ -80,11 +80,21 @@ export function emit(event, data) { (handlers[event] || []).forEach((fn) => { tr
 // ---------------------------------------------------------------- open-alarm store
 // Every page keeps the full set of unacknowledged alarms so sound, pop-ups, badge and feed agree.
 export const openAlarms = new Map();
+let storeLoaded = false;
+const CATCH_UP_MS = 15 * 60 * 1000;   // alarms newer than this found by a resync are raised like live ones
 export async function loadOpenAlarms() {
   const rows = await api("/api/alarms?state=open&limit=500");
+  const known = new Set(openAlarms.keys());
   openAlarms.clear();
   rows.forEach((a) => openAlarms.set(a.id, a));
   emit("store", { reason: "load" });
+  // Anything that arrived while the live stream was down: sound it / pop it up now.
+  if (storeLoaded) {
+    rows.filter((a) => !known.has(a.id) && Date.now() - a.event_ts_ms < CATCH_UP_MS)
+        .sort((a, b) => a.event_ts_ms - b.event_ts_ms)
+        .forEach((a) => emit("alarm.arrived", a));
+  }
+  storeLoaded = true;
 }
 export function openCounts(siteId) {
   const c = { 1: 0, 2: 0, 3: 0 };
@@ -150,13 +160,73 @@ document.getElementById("theme-toggle")?.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------- live events (SSE)
-let started = false;
-export function startLive() {
-  if (started || !CFG.user) return;
-  started = true;
-  const es = new EventSource("/api/events");
-  for (const name of ["alarm.new", "alarm.acked", "alarm.updated", "alarms.reload", "site.status", "site.updated", "site.removed"]) {
+// EventSource gives up for good on an HTTP error (e.g. a 502 while the server restarts), and a
+// silently dropped connection can look open forever. So: reconnect with backoff on any failure,
+// watch the server's 15 s heartbeat, resync the open-alarm list on every (re)connect and every
+// minute, and show the connection state in the top bar.
+const HEARTBEAT_TIMEOUT_MS = 12_000;   // server pings every 5 s
+const RESYNC_MS = 60_000;              // belt and braces while the stream is healthy
+const FALLBACK_POLL_MS = 2_000;        // while the stream is down, poll so alarms still arrive within ~2 s
+const LOUD_AFTER_MS = 10_000;          // then shout: banner + tone
+let started = false, es = null, lastBeat = 0, backoff = 1000, reconnectTimer = null;
+let downSince = null, fallbackTimer = null;
+const liveEl = document.getElementById("live-status");
+const bannerEl = document.getElementById("conn-banner");
+
+function setDown(down) {
+  if (down && downSince === null) {
+    downSince = Date.now();
+    clearInterval(fallbackTimer);
+    fallbackTimer = setInterval(() => {
+      loadOpenAlarms().catch(() => {});
+      const loud = Date.now() - downSince >= LOUD_AFTER_MS;
+      if (bannerEl) bannerEl.hidden = !loud;
+      emit("connection", { down: true, loud });
+    }, FALLBACK_POLL_MS);
+  } else if (!down && downSince !== null) {
+    downSince = null;
+    clearInterval(fallbackTimer); fallbackTimer = null;
+    if (bannerEl) bannerEl.hidden = true;
+    emit("connection", { down: false, loud: false });
+  }
+}
+
+function paintLive(state) {
+  setDown(state === "down");
+  if (!liveEl) return;
+  liveEl.className = `live-status ${state === "ok" ? "ok" : state === "down" ? "down" : ""}`;
+  liveEl.textContent = state === "ok" ? "Live" : state === "down" ? "Reconnecting…" : "Connecting…";
+  liveEl.title = state === "ok" ? "Receiving live alarm updates"
+    : "Live updates are interrupted. Alarms may be delayed until the connection is back";
+}
+
+function scheduleReconnect() {
+  if (reconnectTimer) return;
+  es?.close();
+  paintLive("down");
+  reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, backoff);
+  backoff = Math.min(backoff * 2, 15_000);
+}
+
+const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push"];
+function connect() {
+  es = new EventSource("/api/events");
+  lastBeat = Date.now();
+  es.addEventListener("open", () => {
+    backoff = 1000;
+    lastBeat = Date.now();
+    paintLive("ok");
+    loadOpenAlarms().catch(() => {});
+    emit("reconnect");
+  });
+  es.addEventListener("error", () => {
+    // CLOSED = the browser gave up (HTTP error); CONNECTING = it is retrying itself.
+    if (es.readyState === EventSource.CLOSED) scheduleReconnect(); else paintLive("down");
+  });
+  es.addEventListener("ping", () => { lastBeat = Date.now(); });
+  for (const name of EVENTS) {
     es.addEventListener(name, async (ev) => {
+      lastBeat = Date.now();
       const data = JSON.parse(ev.data);
       if (name === "alarm.new") {
         const known = openAlarms.has(data.id);
@@ -171,8 +241,19 @@ export function startLive() {
       emit(name, data);
     });
   }
-  // Re-sync after (re)connecting so nothing is missed while the stream was down.
-  es.addEventListener("open", () => { loadOpenAlarms().catch(() => {}); emit("reconnect"); });
+}
+
+export function startLive() {
+  if (started || !CFG.user) return;
+  started = true;
+  paintLive("connecting");
+  connect();
+  setInterval(() => { if (Date.now() - lastBeat > HEARTBEAT_TIMEOUT_MS) scheduleReconnect(); }, 5000);
+  setInterval(() => { loadOpenAlarms().catch(() => {}); }, RESYNC_MS);
+  // Laptops waking from sleep: check right away instead of waiting for the watchdog.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && Date.now() - lastBeat > 20_000) scheduleReconnect();
+  });
 }
 
 // ---------------------------------------------------------------- maps (Leaflet + OpenStreetMap)

@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Push delivery from NX**: a per-site JSON-RPC websocket (`rest.v4.events.log.subscribe`) gets alarms to the screen in about 0.1 s. Polling continues as a backstop, and a per-site lock serializes push and poll ingest.
+- **No silent delays in the browser**:
+  - auto-reconnect after any stream error, including the 502 that permanently killed EventSource during restarts
+  - a 5 s heartbeat with a 12 s watchdog
+  - polling open alarms every 2 s while the stream is down, with catch-up alarms raised with sound and pop-up
+  - a red "LIVE UPDATES LOST" banner and a tone after 10 s
+  - a "● Live" indicator in the top bar
+- **Site connection lost** alarm when a site is unreachable for 60 s; the reconnect time is noted on it.
+- Failed polls are retried after 1 s instead of a full cycle. Graceful shutdown is capped at 2 s, so restarts don't stall for 10 s.
 - **Level per NX rule**: `#critical`, `#alarm`, `#warning` or `#ignore` in an NX rule's Title/Comment sets the level for that rule and overrides everything else. When several rules fire for one event, the loudest wins. The alarm details show where the level came from (`alarms.level_source`, migration 0003).
 - **Alarm video clips**:
   - A looping clip around each alarm (default −10 s / +20 s) in the drawer and the critical pop-up.

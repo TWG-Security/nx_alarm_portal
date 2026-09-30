@@ -48,11 +48,20 @@ export function play(level, { force = false } = {}) {
     for (let i = 0; i < 4; i++) tone(i % 2 ? 1250 : 650, t + i * 0.36, 0.34, { type: "square", gain: 0.16, freqEnd: i % 2 ? 650 : 1250 });
   } else if (level === "alarm") {
     [0, 0.2, 0.4].forEach((d) => tone(988, t + d, 0.13, { gain: 0.28 }));
+  } else if (level === "connection") {
+    [0, 0.3, 0.6].forEach((d, i) => tone(784 - i * 150, t + d, 0.25, { type: "triangle", gain: 0.2 }));
   } else {
     tone(587, t, 0.18, { gain: 0.14 });
     tone(440, t + 0.2, 0.26, { gain: 0.12 });
   }
 }
+
+// Losing the live connection means alarms could be late: say so out loud, every 10 s.
+let lastConnTone = 0;
+on("connection", ({ down, loud }) => {
+  if (down && loud && Date.now() - lastConnTone >= 10_000) { play("connection"); lastConnTone = Date.now(); }
+  if (!down) lastConnTone = 0;
+});
 
 // ---------------------------------------------------------------- one tab plays
 const TAB_ID = Math.random().toString(36).slice(2);

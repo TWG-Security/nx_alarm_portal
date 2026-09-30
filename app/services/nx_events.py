@@ -8,6 +8,7 @@ ZERO_UUID = "00000000-0000-0000-0000-000000000000"
 
 # Short captions for events that don't carry their own.
 SHORT_LABELS = {
+    "portalSiteOffline": "Site connection lost",
     "softTrigger": "Soft trigger", "cameraInput": "Input signal", "generic": "Generic event",
     "analytics": "Analytics event", "analyticsObject": "Object detected", "motion": "Motion",
     "deviceDisconnected": "Camera disconnected", "serverFailure": "Server failure",

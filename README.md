@@ -36,12 +36,27 @@ One place where TWG Security operators see alarms from every NX Witness deployme
 ## How it works
 
 ```
- NX site A ─┐                                   ┌─> browser (map)
- NX site B ─┼─ poller per site ─> Postgres ─> SSE bus ─> browser (alarm queue)
- NX site … ─┘  every 5 s, /rest/v4/events/log   └─> browser …
+ NX site A ─┬─ push: JSON-RPC websocket (rest.v4.events.log.subscribe) ─┐
+            └─ poll: /rest/v4/events/log every 5 s (backstop) ──────────┼─> Postgres ─> SSE ─> browsers
+ NX site … ─── (same, per site) ────────────────────────────────────────┘
        ▲
-       └── acknowledge / bookmark / snapshot (portal -> NX, credentials never reach the browser)
+       └── acknowledge / bookmark / clips (portal -> NX, credentials never reach the browser)
 ```
+
+### Alarm delivery: no silent delays
+
+| Path | Normal | If it breaks |
+|---|---|---|
+| NX → portal | **push**, ~0.1 s (measured 87 ms on the TWG site) | 5 s poll backstop; a failed poll is retried after 1 s; push reconnects with backoff |
+| Portal → browser | SSE, instant; 5 s heartbeat | the page reconnects on any error (including 502s during restarts); after 12 s of silence it polls open alarms every 2 s; after 10 s a red **LIVE UPDATES LOST** banner and a tone every 10 s |
+| Site unreachable ≥ 60 s | — | a **Site connection lost** alarm (level Alarm, configurable), with the reconnect time noted on it |
+
+Alarms picked up by any catch-up path are raised exactly like live ones: sound, pop-up and feed.
+The top bar always shows **● Live** or **Reconnecting…**; the site panel shows **Live push** or **Polling only**.
+
+NX quirk: over JSON-RPC, `startTimeMs` is ignored, and the subscribe returns the whole event log (104k rows / 145 MB on the TWG site). The portal subscribes with `limit=1`. NX still takes about 10 s to set the subscription up; polling covers that window.
+
+**NX rule setting that delays alarms:** a rule's *Interval of action* ("once in 1 min") makes NX hold back repeats inside that interval. Turn it off on rules that should alarm.
 
 - **Pollers** (`app/services/poller.py`): one asyncio task per site reads new event-log rows every `POLL_INTERVAL_S`.
   - Each read re-covers the last 5 seconds, so late events aren't missed.

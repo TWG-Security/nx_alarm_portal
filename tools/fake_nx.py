@@ -8,18 +8,39 @@ Fire events:  curl -X POST localhost:8199/_inject/panic   (critical: soft trigge
 Inspect NX-side write-backs:  curl localhost:8199/_state
 Clips: /rest/v4/devices/{id}/media.mp4 returns an ffmpeg test pattern (MPEG-4 Part 2, like many
 NX secondary streams) tagged with NX's startTimeMs comment; set FAKE_NX_FFMPEG if ffmpeg isn't on PATH.
+Injected events are also pushed to JSON-RPC subscribers (wss /jsonrpc), like NX 6.1.
 Every injected event also gets an analytics object track with a box that moves across the frame.
 """
 import json, os, subprocess, tempfile, time, uuid
-from fastapi import FastAPI, Request
+import asyncio
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, JSONResponse
 app = FastAPI()
 EVENTS, ACKS, BOOKMARKS, TRACKS = [], [], [], []
+SUBSCRIBERS: set = set()   # JSON-RPC websockets subscribed to rest.v4.events.log
 FFMPEG = os.environ.get("FAKE_NX_FFMPEG", "ffmpeg")
 DEV = [{"id": "{11111111-1111-1111-1111-111111111111}", "name": "Front Gate PTZ", "deviceType": "Camera"},
        {"id": "{22222222-2222-2222-2222-222222222222}", "name": "Loading Dock", "deviceType": "Camera"}]
 # 1x1 grey JPEG
 JPG = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00fbfcffd9")
+
+@app.post("/rest/v4/login/tickets")
+async def ticket(): return {"token": "ticket"}
+
+@app.websocket("/jsonrpc")
+async def jsonrpc(ws: WebSocket):
+    await ws.accept()
+    try:
+        while True:
+            req = await ws.receive_json()
+            if req.get("method") == "rest.v4.events.log.subscribe":
+                start = int((req.get("params") or {}).get("startTimeMs") or 0)
+                SUBSCRIBERS.add(ws)
+                await ws.send_json({"jsonrpc": "2.0", "id": req.get("id"), "result": [e for e in EVENTS if e["timestampMs"] >= start]})
+            else:
+                await ws.send_json({"jsonrpc": "2.0", "id": req.get("id"), "error": {"code": -32601, "message": "API handler is not found"}})
+    except WebSocketDisconnect:
+        SUBSCRIBERS.discard(ws)
 
 @app.post("/rest/v3/login/sessions")
 async def login(): return {"token": "fake"}
@@ -81,4 +102,7 @@ async def inject(kind: str):
                    "startTimeMs": ts - 2000, "endTimeMs": ts + 4000, "attributes": [{"name": "Clothing", "value": "Dark jacket"}]})
     ev["objectTrackId"] = TRACKS[-1]["id"]
     EVENTS.append({**base, "eventData": ev, "actionData": act})
+    for ws in list(SUBSCRIBERS):   # push like NX does
+        try: await ws.send_json({"jsonrpc": "2.0", "method": "rest.v4.events.log.update", "params": EVENTS[-1]})
+        except Exception: SUBSCRIBERS.discard(ws)
     return {"ok": True}

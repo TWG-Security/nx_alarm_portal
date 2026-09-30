@@ -90,7 +90,7 @@ async def list_sites(user: User = Depends(current_user), db: AsyncSession = Depe
         select(Site).where(Site.tenant_id == user.tenant_id, Site.archived_at.is_(None)).order_by(Site.name)
     )).all()
     counts = await _open_counts(db, user.tenant_id)
-    return [site_dict(s, counts.get(s.id)) for s in sites]
+    return [{**site_dict(s, counts.get(s.id)), "push": manager.push_state(s.id)} for s in sites]
 
 
 @router.post("/sites/test")

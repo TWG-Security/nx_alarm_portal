@@ -76,6 +76,7 @@ async def test_one_off_503_does_not_flap_site_offline(session, admin, monkeypatc
     site = await make_site(session, tenant)
     respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(503))
     monkeypatch.setattr(get_settings(), "poll_interval_s", 0.01)
+    monkeypatch.setattr(get_settings(), "poll_retry_s", 0.01)
     monkeypatch.setattr(get_settings(), "offline_after_s", 0.2)
     real_sleep = asyncio.sleep
     rt = manager._runtime(site)
