@@ -86,6 +86,30 @@
     </div>
   </form>
 </dialog>
+<dialog id="export-dialog">
+  <form method="dialog" id="export-form">
+    <h2>Export incident</h2>
+    <p id="export-summary" class="muted"></p>
+    <div class="field">
+      <label class="radio"><input type="radio" name="export-format" value="pdf" checked>
+        <span><b>Incident report (PDF)</b><small>Summary, timestamps, screenshots with analytics boxes, timeline, operator notes, clip checksum.</small></span></label>
+      <label class="radio"><input type="radio" name="export-format" value="zip">
+        <span><b>Evidence package (ZIP)</b><small>The PDF, the video clip (MP4), full-size stills (original and annotated) and a SHA-256 manifest.</small></span></label>
+    </div>
+    <div class="row">
+      <div class="field"><label for="export-window">Clip window</label><select id="export-window"></select></div>
+      <div class="field"><label for="export-quality">Video</label><select id="export-quality">
+        <option value="sd">Standard (fast)</option><option value="hd">HD 720p (NX converts it, slower)</option></select></div>
+    </div>
+    <div class="field"><label for="export-note">Note for the report (optional)</label>
+      <textarea id="export-note" maxlength="2000" placeholder="e.g. police case number, who asked for it"></textarea></div>
+    <div id="export-status"></div>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" type="button" id="export-cancel">Close</button>
+      <button class="btn btn-primary" type="submit" id="export-submit">Export</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="critical-dialog" class="critical-dialog" aria-labelledby="crit-title"></dialog>
 <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
 <aside class="drawer" id="drawer" hidden aria-label="Alarm detail"></aside>

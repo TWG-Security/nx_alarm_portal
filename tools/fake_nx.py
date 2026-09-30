@@ -62,8 +62,17 @@ RULES = {k: {"id": "{%s}" % uuid.uuid5(uuid.NAMESPACE_URL, k), "comment": c, "en
                             ("panic24", "Hold-up button #24h", "softTrigger", 0))}
 @app.get("/rest/v4/events/rules")
 async def rules(): return list(RULES.values())
+_FRAME: list = []
 @app.get("/rest/v4/devices/{d}/image")
-async def image(d: str): return Response(JPG, media_type="image/jpeg")
+async def image(d: str):
+    if not _FRAME:   # a real 1280x720 test-pattern frame (the 1x1 JPG is the fallback without ffmpeg)
+        try:
+            _FRAME.append(subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=1",
+                                          "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "pipe:1"],
+                                         capture_output=True, check=True).stdout)
+        except Exception:
+            _FRAME.append(JPG)
+    return Response(_FRAME[0], media_type="image/jpeg")
 @app.post("/rest/v4/events/acknowledges")
 async def ack(req: Request): ACKS.append(await req.json()); return {"id": str(uuid.uuid4())}
 @app.post("/rest/v4/devices/{d}/bookmarks")

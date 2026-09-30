@@ -3,6 +3,16 @@
 ## [Unreleased]
 
 ### Added
+- **Incident export**, from any alarm's details panel ("Export report / clip…"):
+  - **Incident report (PDF)**, TWG-branded:
+    - summary, with times in the site's time zone and UTC to the millisecond
+    - the NX event-time frame, plus a sequence of stills from the clip (−5 s to +10 s) with analytics boxes drawn in
+    - detected objects and their attributes
+    - a timeline built from the audit log (event, arrival, the last arm/disarm before the event, acknowledgement and NX write-back, earlier exports)
+    - the operator's disposition note, an optional note for the report, and the clip's SHA-256
+  - **Evidence package (ZIP)**: the PDF, the MP4 clip, original and annotated stills, `manifest.json` and `SHA256SUMS.txt`.
+  - Choice of clip window (default, ±30/60 s, ±60/120 s) and SD or HD.
+  - Every export is audit-logged with its checksums. PDF building runs off the event loop; an alarm during an export arrived in 114 ms.
 - **Site arming**:
   - Arm or disarm each site from the map's site panel or the Sites page.
   - A disarm can re-arm by itself: at the next scheduled arm, or after 30 min to 24 h. It can also be left until someone re-arms. The note is audit-logged.

@@ -262,6 +262,10 @@ tr:last-child td { border-bottom: 0; }
 /* ---------- dialog / toast ---------- */
 dialog { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); padding: 18px; width: min(460px, calc(100vw - 32px)); box-shadow: var(--shadow); }
 dialog::backdrop { background: rgba(0, 0, 0, .55); }
+.radio { display: flex; gap: 10px; align-items: flex-start; font-weight: 400; margin: 0 0 10px; cursor: pointer; }
+.radio input { margin-top: 3px; accent-color: var(--orange); }
+.radio small { display: block; color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+#export-dialog { width: min(560px, calc(100vw - 32px)); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 #toast-root { position: fixed; right: 16px; bottom: 16px; z-index: 60; display: flex; flex-direction: column; gap: 8px; max-width: calc(100vw - 32px); }
 .toast { background: var(--surface-2); border: 1px solid var(--border); border-left: 4px solid var(--orange); border-radius: 6px; padding: 10px 14px; box-shadow: var(--shadow); max-width: 380px; }

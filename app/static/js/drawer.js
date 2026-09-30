@@ -1,6 +1,6 @@
 // Alarm detail drawer: event-time frame, live view, details, acknowledge. Used on every page.
 
-import { api, esc, fmtTime, relTime, timerHtml, acknowledge, on, toast, PRIORITY } from "./common.js";
+import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, on, toast, PRIORITY } from "./common.js";
 import { mountPlayer } from "./player.js";
 
 const LEVEL_SOURCE = {
@@ -56,6 +56,7 @@ function render(a) {
           <textarea id="drawer-note" maxlength="4000" placeholder="What did you see / do?"></textarea></div>
         <button class="btn btn-primary" id="drawer-ack">Acknowledge</button>`}
       <a class="btn btn-sm" style="margin-left:8px" href="/audit?alarm_id=${a.id}">Audit trail</a>
+      <button class="btn btn-sm" id="drawer-export" title="Incident report PDF, or PDF + video clip + stills">Export report / clip…</button>
     </div>`;
   const note = drawer.querySelector("#drawer-note");
   if (note) note.value = keepNote;
@@ -76,6 +77,7 @@ export async function openDrawer(id, fallback) {
 
 drawer.addEventListener("click", async (e) => {
   if (e.target.id === "drawer-close") return closeDrawer();
+  if (e.target.id === "drawer-export") return openExport(current);
   if (e.target.id === "drawer-ack") {
     const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target);
     if (updated) { current = updated; render(updated); }
@@ -83,6 +85,56 @@ drawer.addEventListener("click", async (e) => {
   }
 });
 backdrop.addEventListener("click", closeDrawer);
+
+// ---------------------------------------------------------------- export (app/services/report.py)
+const exp = document.getElementById("export-dialog");
+const expStatus = document.getElementById("export-status");
+let exporting = null;
+
+function openExport(a) {
+  exporting = a;
+  const c = CFG.clip || { pre: 10, post: 20 };
+  const windows = [[c.pre, c.post], [30, 60], [60, 120]].filter((w, i, all) => all.findIndex((x) => x[0] === w[0] && x[1] === w[1]) === i);
+  document.getElementById("export-window").innerHTML = windows.map(([p, q], i) =>
+    `<option value="${p},${q}">${p} s before to ${q >= 60 ? `${q / 60} min` : `${q} s`} after${i === 0 ? " (default)" : ""}</option>`).join("");
+  document.getElementById("export-summary").textContent = `${a.caption} · ${a.site_name}${a.source_name ? " · " + a.source_name : ""} · ${fmtTime(a.event_ts_ms)}`;
+  const noVideo = !a.device_id;
+  exp.querySelector('input[value="zip"]').disabled = noVideo;
+  if (noVideo) exp.querySelector('input[value="pdf"]').checked = true;
+  expStatus.innerHTML = noVideo ? '<div class="alert alert-warn">This alarm has no camera, so the report has no video or screenshots.</div>' : "";
+  exp.showModal();
+}
+
+document.getElementById("export-cancel").addEventListener("click", () => exp.close());
+document.getElementById("export-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!exporting) return;
+  const btn = document.getElementById("export-submit");
+  const format = exp.querySelector('input[name="export-format"]:checked').value;
+  const [pre, post] = document.getElementById("export-window").value.split(",");
+  const quality = document.getElementById("export-quality").value;
+  const q = new URLSearchParams({ format, pre, post, quality, note: document.getElementById("export-note").value });
+  btn.disabled = true;
+  const t0 = Date.now();
+  expStatus.innerHTML = `<div class="alert alert-warn">Preparing the ${format === "zip" ? "evidence package" : "report"}…
+    ${quality === "hd" ? "HD clips take up to a minute." : "Usually a few seconds; longer if the clip is still recording."}</div>`;
+  try {
+    const res = await fetch(`/api/alarms/${exporting.id}/export?${q}`, { credentials: "same-origin" });
+    if (!res.ok) {
+      const d = res.headers.get("content-type")?.includes("json") ? (await res.json()).detail : `HTTP ${res.status}`;
+      throw new Error(typeof d === "string" ? d : JSON.stringify(d));
+    }
+    const blob = await res.blob();
+    const name = /filename="([^"]+)"/.exec(res.headers.get("content-disposition") || "")?.[1] || `alarm-${exporting.id}.${format}`;
+    const url = URL.createObjectURL(blob);
+    const link = Object.assign(document.createElement("a"), { href: url, download: name });
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    expStatus.innerHTML = `<div class="alert alert-ok">Downloaded <b>${esc(name)}</b> (${(blob.size / 1_048_576).toFixed(1)} MB, ${((Date.now() - t0) / 1000).toFixed(1)} s). The export is in the audit log.</div>`;
+  } catch (err) {
+    expStatus.innerHTML = `<div class="alert alert-error"><b>Export failed:</b> ${esc(err.message)}</div>`;
+  } finally { btn.disabled = false; }
+});
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && current && !document.querySelector("dialog[open]")) closeDrawer(); });
 
 // Someone else acknowledged the alarm we're looking at.

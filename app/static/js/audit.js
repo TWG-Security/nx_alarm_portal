@@ -11,7 +11,7 @@ const alarmId = params.get("alarm_id");
 const LABELS = {
   "alarm.received": "Alarm received", "alarm.acknowledged": "Alarm acknowledged",
   "site.created": "Site added", "site.updated": "Site edited", "site.enabled": "Site enabled", "site.disabled": "Site disabled",
-  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
+  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
   login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited",
 };
 
@@ -22,6 +22,9 @@ function details(r) {
       return `Alarm #${r.alarm_id}${d.note ? ` · “${esc(d.note)}”` : ""}<div class="muted">NX: ${esc(d.nx?.method || "—")} ${d.nx?.ok === false ? `(failed: ${esc(d.nx.error)})` : d.nx?.ok ? "(ok)" : ""}</div>`;
     case "alarm.received":
       return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> ${esc(d.caption || "")} <span class="muted">${esc(d.event_type || "")}</span>${d.site_disarmed ? ' <span class="chip disarmed">Site disarmed</span>' : ""}`;
+    case "alarm.exported":
+      return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> ${esc((d.format || "").toUpperCase())}${d.note ? ` · “${esc(d.note)}”` : ""}`
+        + (d.clip_sha256 ? `<div class="muted mono">clip sha256 ${esc(d.clip_sha256.slice(0, 16))}…</div>` : "");
     case "site.updated": return `Changed: ${esc((d.fields || []).join(", ") || "nothing")}`;
     case "site.armed": case "site.disarmed":
       return esc([d.source === "manual" ? "by hand" : d.source === "timer" ? "disarm timer ran out" : `by ${d.source}`,

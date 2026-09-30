@@ -11,11 +11,12 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import audit
 from app.config import get_settings
 from app.db import get_db, sessionmaker
-from app.deps import current_user
+from app.deps import client_ip, current_user
 from app.models import Alarm, User
-from app.services import clips
+from app.services import clips, report
 from app.services.bus import bus
 from app.services.poller import manager
 from app.services.sites import describe_http_error
@@ -129,6 +130,26 @@ async def clip_file(name: str, user: User = Depends(current_user), db: AsyncSess
     # FileResponse answers Range requests, which <video> needs for seeking and looping.
     return FileResponse(path, media_type="video/mp4", filename=f"alarm-{m.group(1)}.mp4",
                         content_disposition_type="inline", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/api/alarms/{alarm_id}/export")
+async def export_alarm(alarm_id: int, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+                       format: str = Query("pdf", pattern="^(pdf|zip)$"), note: str = Query("", max_length=2000),
+                       pre: int | None = Query(None, ge=0, le=600), post: int | None = Query(None, ge=1, le=600),
+                       quality: str = Query("sd", pattern="^(sd|hd)$")):
+    """Incident report (PDF) or evidence package (ZIP: PDF + clip + stills + checksums). Audit-logged."""
+    alarm = await _clip_alarm(db, user, alarm_id)
+    try:
+        data, filename, media_type, detail = await report.export(db, alarm, user, format, note, pre, post, quality)
+    except report.ExportError as exc:
+        raise HTTPException(exc.status, str(exc)) from exc
+    except clips.ClipError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    audit(db, user.tenant_id, "alarm.exported", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), size=len(data), **detail)
+    await db.commit()
+    return Response(data, media_type=media_type, headers={
+        "Content-Disposition": f'attachment; filename="{filename}"', "Cache-Control": "private, no-store"})
 
 
 @router.get("/api/alarms/{alarm_id}/objects")
