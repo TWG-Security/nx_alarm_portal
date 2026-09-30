@@ -65,6 +65,7 @@ Open `https://<PORTAL_HOST>`. Caddy serves it with its own internal certificate,
 
 **Maps** use [Leaflet](https://leafletjs.com) (vendored in `app/static/vendor/leaflet`), map tiles from OpenStreetMap, and [Nominatim](https://nominatim.org) address search.
 - Dark mode darkens the light OSM tiles with a CSS filter.
+- Tiles are fetched by the portal (`/tiles/...`) and cached on disk for 7 days. Browsers never contact OSM directly, which follows OSM's tile usage policy regardless of browser referrer settings. Only signed-in users can fetch tiles, and at most 2 downloads run at once.
 - Address search runs through `/api/geocode`, so the portal can follow Nominatim's policy: an identifying User-Agent, at most one request per second, and cached repeats.
 - OSM's tile and search servers are donated and meant for light use. That is fine for an operator team, but for heavy use set `MAP_TILE_URL` and `GEOCODER_URL` to a commercial or self-hosted provider.
 

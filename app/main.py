@@ -11,8 +11,11 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
-from app.routers import api, auth, pages, stream
+from app.routers import api, auth, pages, stream, tiles
 from app.services.poller import manager
+
+# Paths that answer errors as JSON instead of an HTML page / login redirect.
+API_PREFIXES = ("/api/", "/media/", "/tiles/")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -42,15 +45,17 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(NotAuthenticated)
     async def _not_authenticated(request: Request, exc: NotAuthenticated):
-        if request.url.path.startswith(("/api/", "/media/")):
+        if request.url.path.startswith(API_PREFIXES):
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         return RedirectResponse("/login", 303)
 
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException):
-        if request.url.path.startswith(("/api/", "/media/")) or exc.status_code < 400:
+        if request.url.path.startswith(API_PREFIXES) or exc.status_code < 400:
             return await http_exception_handler(request, exc)
-        return render(request, "error.html", status=exc.status_code, message=exc.detail)
+        response = render(request, "error.html", status=exc.status_code, message=exc.detail)
+        response.status_code = exc.status_code
+        return response
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
@@ -61,6 +66,7 @@ def create_app() -> FastAPI:
     app.include_router(pages.router)
     app.include_router(api.router)
     app.include_router(stream.router)
+    app.include_router(tiles.router)
     return app
 
 

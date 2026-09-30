@@ -67,7 +67,7 @@ def render(request: Request, name: str, user: User | None = None, **ctx):
         "user": user,
         "csrf_token": ensure_csrf(request),
         "map_config": {
-            "tileUrl": settings.map_tile_url,
+            "tileUrl": "/tiles/{z}/{x}/{y}.png",
             "attribution": settings.map_tile_attribution,
             "maxZoom": settings.map_tile_max_zoom,
         },

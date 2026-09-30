@@ -13,7 +13,8 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
 
-RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+ENV TILE_CACHE_DIR=/app/tile-cache
+RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/tile-cache && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8080

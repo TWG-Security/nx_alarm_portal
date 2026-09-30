@@ -12,8 +12,11 @@ class Settings(BaseSettings):
     secret_key: str                      # signs session cookies
     fernet_key: str                      # encrypts NX site passwords at rest
 
-    # Map tiles (OpenStreetMap by default; any XYZ tile server works, e.g. a self-hosted one).
+    # Map tiles are fetched server-side (app/routers/tiles.py) and cached on disk.
+    # Upstream is OpenStreetMap by default; any XYZ tile server works, e.g. a self-hosted one.
     map_tile_url: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    tile_cache_dir: str = "./tile-cache"
+    tile_cache_ttl_s: int = 7 * 24 * 3600   # OSM asks clients to cache for at least 7 days
     map_tile_attribution: str = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     map_tile_max_zoom: int = 19
     # Address lookup (OSM Nominatim by default; policy: max 1 request/second, identify the app).

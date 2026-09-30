@@ -86,3 +86,27 @@ async def test_geocode_proxies_nominatim_with_user_agent(client, admin):
     # Repeat is served from cache: no second upstream call.
     await client.get("/api/geocode", params={"q": "harrisburg pa "})
     assert route.call_count == 1
+
+
+@respx.mock
+async def test_tile_proxy_requires_login_and_caches(client, admin, tmp_path, monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "tile_cache_dir", str(tmp_path / "tiles"))
+    upstream = respx.get("https://tile.openstreetmap.org/3/2/1.png").mock(
+        return_value=httpx.Response(200, content=b"\x89PNG-fake", headers={"content-type": "image/png"}))
+
+    assert (await client.get("/tiles/3/2/1.png")).status_code == 401
+    await login(client, admin[1].email)
+    r1 = await client.get("/tiles/3/2/1.png")
+    r2 = await client.get("/tiles/3/2/1.png")
+    assert r1.status_code == r2.status_code == 200 and r2.content == b"\x89PNG-fake"
+    assert upstream.call_count == 1                       # second request served from disk
+    assert "TWG-Alarm-Portal" in upstream.calls.last.request.headers["user-agent"]
+    assert (await client.get("/tiles/3/9/1.png")).status_code == 404   # x out of range for z=3
+
+
+async def test_html_errors_keep_their_status_code(client, session, admin):
+    _, op = await make_tenant_user(session, "Ops2", "op2@twg.test", role="operator")
+    await login(client, op.email)
+    assert (await client.get("/users")).status_code == 403          # admin-only page
+    assert (await client.get("/sites/999/edit")).status_code == 403

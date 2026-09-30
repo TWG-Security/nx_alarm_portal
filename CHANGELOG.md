@@ -9,6 +9,7 @@
   - The tile and geocoder URLs can be set in `.env`.
 
 ### Fixed
+- Map tiles were blocked by OpenStreetMap ("Access blocked"): browsers sent no Referer because of the portal's Referrer-Policy. Tiles are now proxied and cached server-side with an identifying User-Agent.
 - Caddy `default_sni`, so HTTPS works when the portal is opened by IP address.
 
 ## [0.1.0] - 2026-09-29
