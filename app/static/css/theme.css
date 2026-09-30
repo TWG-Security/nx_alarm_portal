@@ -163,11 +163,21 @@ tr:last-child td { border-bottom: 0; }
 .site-item.selected { background: var(--surface-2); border-left-color: var(--orange); }
 .site-item .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-canvas { position: relative; background: var(--surface-2); }
-#map { position: absolute; inset: 0; }
+#map { position: absolute; inset: 0; z-index: 0; }
 .map-notice { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--text-muted); }
 
-/* map pins (Advanced Marker content) */
-.pin { position: relative; display: flex; flex-direction: column; align-items: center; cursor: pointer; transform: translateY(4px); }
+/* Leaflet: dark mode darkens OSM's light tiles; pins and controls are styled separately. */
+.leaflet-container { background: var(--surface-2); font: 12px var(--font); }
+:root:not([data-theme="light"]) .leaflet-tile-pane { filter: invert(1) hue-rotate(180deg) brightness(.92) contrast(.88) saturate(.6); }
+.leaflet-bar a, .leaflet-bar a:hover { background: var(--surface); color: var(--text); border-bottom-color: var(--border); }
+.leaflet-bar { border: 1px solid var(--border) !important; box-shadow: var(--shadow) !important; }
+.leaflet-control-attribution { background: rgba(0, 0, 0, .55) !important; color: #ddd; }
+:root[data-theme="light"] .leaflet-control-attribution { background: rgba(255, 255, 255, .8) !important; color: #333; }
+.leaflet-control-attribution a { color: var(--orange); }
+
+/* map pins (Leaflet divIcon, anchored at the pin tip) */
+.pin-icon { background: none; border: 0; }
+.pin { position: absolute; left: 0; top: 0; transform: translate(-50%, -36px); display: flex; flex-direction: column; align-items: center; cursor: pointer; }
 .pin-head {
   width: 30px; height: 30px; border-radius: 50% 50% 50% 0; transform: rotate(-45deg);
   background: var(--offline); border: 2px solid #fff; box-shadow: 0 2px 6px rgba(0, 0, 0, .5);
@@ -179,10 +189,10 @@ tr:last-child td { border-bottom: 0; }
 .pin--alarm .pin-head { background: var(--red); }
 .pin--alarm::before {
   content: ""; position: absolute; top: -6px; left: 50%; width: 42px; height: 42px; margin-left: -21px;
-  border-radius: 50%; background: rgba(192, 57, 43, .45); animation: pin-pulse 1.4s ease-out infinite;
+  border-radius: 50%; background: rgba(192, 57, 43, .45); animation: pin-pulse 1.4s ease-out infinite; pointer-events: none;
 }
 .pin-label {
-  margin-top: 6px; padding: 2px 6px; border-radius: 4px; font: 600 11px var(--font); white-space: nowrap;
+  margin-top: 8px; padding: 2px 6px; border-radius: 4px; font: 600 11px var(--font); white-space: nowrap;
   background: rgba(26, 26, 26, .85); color: #fff;
 }
 .pin.selected .pin-head { outline: 3px solid var(--orange); outline-offset: 2px; }
@@ -246,7 +256,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 
 /* ---------- site form ---------- */
 .form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; align-items: start; }
-.pick-map { height: 340px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); position: relative; }
+.pick-map { height: 340px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface-2); position: relative; z-index: 0; }
 .conn-result { margin-top: 12px; }
 
 /* ---------- responsive ---------- */

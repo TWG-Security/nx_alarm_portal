@@ -73,3 +73,16 @@ async def test_operator_cannot_manage_sites(client, session, admin):
     await login(client, op.email)
     r = await client.post("/api/sites", json={"name": "X", "host": NX, "nx_user": "u", "nx_pass": "p"})
     assert r.status_code == 403
+
+
+@respx.mock
+async def test_geocode_proxies_nominatim_with_user_agent(client, admin):
+    await login(client, admin[1].email)
+    route = respx.get("https://nominatim.openstreetmap.org/search").mock(return_value=httpx.Response(200, json=[
+        {"display_name": "Harrisburg, PA", "lat": "40.2732", "lon": "-76.8867"}]))
+    r = await client.get("/api/geocode", params={"q": "Harrisburg PA"})
+    assert r.status_code == 200 and r.json() == [{"label": "Harrisburg, PA", "lat": 40.2732, "lng": -76.8867}]
+    assert "TWG-Alarm-Portal" in route.calls.last.request.headers["user-agent"]
+    # Repeat is served from cache: no second upstream call.
+    await client.get("/api/geocode", params={"q": "harrisburg pa "})
+    assert route.call_count == 1

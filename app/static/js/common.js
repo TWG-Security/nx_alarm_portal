@@ -180,25 +180,24 @@ function connect() {
 }
 if (CFG.user) { refreshSummary(); connect(); }
 
-// ---------------------------------------------------------------- Google Maps loader
-let mapsPromise;
-export function loadMaps() {
-  if (!CFG.mapsKey) return Promise.reject(new Error("Google Maps API key is not configured (MAPS_API_KEY in .env)."));
-  mapsPromise ??= new Promise((resolve, reject) => {
-    window.__twgMapsReady = () => resolve(window.google.maps);
-    window.gm_authFailure = () => reject(new Error("Google Maps rejected the API key. Check the key and its allowed referrers."));
-    const s = document.createElement("script");
-    s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(CFG.mapsKey)}&v=weekly&libraries=marker,geocoding&loading=async&callback=__twgMapsReady`;
-    s.async = true;
-    s.onerror = () => reject(new Error("Could not load Google Maps."));
-    document.head.appendChild(s);
-  });
-  return mapsPromise;
+// ---------------------------------------------------------------- maps (Leaflet + OpenStreetMap)
+// Dark mode darkens the tile layer with a CSS filter (theme.css), so maps never need rebuilding on theme change.
+export function createMap(el, opts = {}) {
+  const cfg = CFG.map || {};
+  const map = L.map(el, { worldCopyJump: true, ...opts });
+  L.tileLayer(cfg.tileUrl, { maxZoom: cfg.maxZoom || 19, attribution: cfg.attribution }).addTo(map);
+  // Keep tiles correct when the layout around the map changes size.
+  new ResizeObserver(() => map.invalidateSize()).observe(el);
+  return map;
 }
 
-export function mapColorScheme(maps) {
-  if (!maps.ColorScheme) return {};
-  return { colorScheme: currentTheme() === "dark" ? maps.ColorScheme.DARK : maps.ColorScheme.LIGHT };
+export function pinIcon(state, count = 0, label = "", selected = false) {
+  const n = count > 99 ? "99+" : count || "";
+  return L.divIcon({
+    className: "pin-icon",
+    iconSize: [0, 0],
+    html: `<div class="pin pin--${state}${selected ? " selected" : ""}"><div class="pin-head"><span>${n}</span></div>${label ? `<div class="pin-label">${esc(label)}</div>` : ""}</div>`,
+  });
 }
 
 // Marker state rules, mirrored from app/services/serialize.py:site_dict

@@ -1,11 +1,11 @@
-import { CFG, api, esc, fmtTime, relTime, on, openAck, loadMaps, mapColorScheme, markerState, STATUS, PRIORITY } from "./common.js";
+import { CFG, api, esc, fmtTime, relTime, on, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY } from "./common.js";
 
 const sites = new Map();       // id -> site
 const openAlarms = new Map();  // id -> alarm (state=new)
-const markers = new Map();     // site id -> AdvancedMarkerElement
-let gmap, maps, selectedId = null;
+const markers = new Map();     // site id -> Leaflet marker
+let lmap, selectedId = null;
 
-const DEFAULT_CENTER = { lat: 39.8, lng: -98.6 };
+const DEFAULT_CENTER = [39.8, -98.6];
 const SEVERITY = { alarm: 0, warn: 1, offline: 2, ok: 3 };
 
 function counts(siteId) {
@@ -93,9 +93,9 @@ function renderAll() {
 function select(id, pan = true) {
   selectedId = id;
   renderList(); renderDetail();
-  for (const [sid, m] of markers) m.content.classList.toggle("selected", sid === id);
+  for (const s of sites.values()) upsertMarker(s);
   const s = sites.get(id);
-  if (pan && gmap && s?.lat != null) { gmap.panTo({ lat: s.lat, lng: s.lng }); if (gmap.getZoom() < 12) gmap.setZoom(14); }
+  if (pan && lmap && s?.lat != null) lmap.setView([s.lat, s.lng], Math.max(lmap.getZoom(), 14));
 }
 
 document.getElementById("site-list").addEventListener("click", (e) => {
@@ -120,60 +120,32 @@ document.getElementById("site-detail").addEventListener("click", async (e) => {
 });
 
 // ---------------------------------------------------------------- map
-function pinElement(site, st) {
-  const el = document.createElement("div");
-  el.className = `pin pin--${st.marker}${site.id === selectedId ? " selected" : ""}`;
-  const n = st.security + st.system;
-  el.innerHTML = `<div class="pin-head"><span>${n ? (n > 99 ? "99+" : n) : ""}</span></div><div class="pin-label">${esc(site.name)}</div>`;
-  return el;
-}
-
 function upsertMarker(site) {
-  if (!gmap) return;
+  if (!lmap) return;
   const existing = markers.get(site.id);
   if (site.lat == null || site.lng == null) {
-    if (existing) { existing.map = null; markers.delete(site.id); }
+    if (existing) { existing.remove(); markers.delete(site.id); }
     return;
   }
   const st = stateOf(site);
-  const content = pinElement(site, st);
-  const title = `${site.name} — ${st.marker === "alarm" ? `${st.security} open alarm(s)` : STATUS[site.status] || site.status}`;
+  const icon = pinIcon(st.marker, st.security + st.system, site.name, site.id === selectedId);
+  const title = `${site.name}: ${st.marker === "alarm" ? `${st.security} open alarm(s)` : STATUS[site.status] || site.status}`;
+  const z = (3 - SEVERITY[st.marker]) * 1000;
   if (existing) {
-    existing.position = { lat: site.lat, lng: site.lng };
-    existing.content = content;
-    existing.title = title;
-    existing.zIndex = 10 - SEVERITY[st.marker];
+    existing.setLatLng([site.lat, site.lng]).setIcon(icon).setZIndexOffset(z);
+    existing.getElement()?.setAttribute("title", title);
     return;
   }
-  const m = new maps.marker.AdvancedMarkerElement({ map: gmap, position: { lat: site.lat, lng: site.lng }, content, title, zIndex: 10 - SEVERITY[st.marker] });
-  m.addListener("click", () => select(site.id, false));
+  const m = L.marker([site.lat, site.lng], { icon, title, zIndexOffset: z, keyboard: true, alt: site.name }).addTo(lmap);
+  m.on("click", () => select(site.id, false));
   markers.set(site.id, m);
 }
 
 function fitToSites() {
-  const pts = [...sites.values()].filter((s) => s.lat != null);
-  if (!pts.length) { gmap.setCenter(DEFAULT_CENTER); gmap.setZoom(4); return; }
-  if (pts.length === 1) { gmap.setCenter({ lat: pts[0].lat, lng: pts[0].lng }); gmap.setZoom(13); return; }
-  const b = new maps.LatLngBounds();
-  pts.forEach((s) => b.extend({ lat: s.lat, lng: s.lng }));
-  gmap.fitBounds(b, 60);
-}
-
-function buildMap(keepView) {
-  const view = keepView && gmap ? { center: gmap.getCenter(), zoom: gmap.getZoom() } : null;
-  for (const m of markers.values()) m.map = null;
-  markers.clear();
-  gmap = new maps.Map(document.getElementById("map"), {
-    mapId: CFG.mapId || "DEMO_MAP_ID",
-    center: view?.center || DEFAULT_CENTER,
-    zoom: view?.zoom || 4,
-    streetViewControl: false,
-    mapTypeControl: true,
-    fullscreenControl: true,
-    ...mapColorScheme(maps),
-  });
-  for (const s of sites.values()) upsertMarker(s);
-  if (!view) fitToSites();
+  const pts = [...sites.values()].filter((s) => s.lat != null).map((s) => [s.lat, s.lng]);
+  if (!pts.length) return lmap.setView(DEFAULT_CENTER, 4);
+  if (pts.length === 1) return lmap.setView(pts[0], 13);
+  lmap.fitBounds(pts, { padding: [60, 60], maxZoom: 15 });
 }
 
 // ---------------------------------------------------------------- data + live updates
@@ -192,17 +164,10 @@ on("site.status", ({ site_id, status, detail }) => {
   if (s) { s.status = status; s.status_detail = detail || ""; if (status === "online") s.last_seen_at = new Date().toISOString(); renderAll(); }
 });
 on("site.updated", (s) => { sites.set(s.id, s); renderAll(); });
-on("site.removed", (s) => { sites.delete(s.id); markers.get(s.id) && (markers.get(s.id).map = null); markers.delete(s.id); renderAll(); });
+on("site.removed", (s) => { sites.delete(s.id); markers.get(s.id)?.remove(); markers.delete(s.id); renderAll(); });
 on("reconnect", () => loadData().catch(() => {}));
-window.addEventListener("portal:theme", () => { if (maps) buildMap(true); });
 setInterval(() => { if (selectedId) renderDetail(); }, 30000); // keep "last contact" fresh
 
+lmap = createMap(document.getElementById("map"), { center: DEFAULT_CENTER, zoom: 4 });
 await loadData().catch((e) => { document.getElementById("site-list").innerHTML = `<li class="empty">${esc(e.message)}</li>`; });
-try {
-  maps = await loadMaps();
-  buildMap(false);
-} catch (e) {
-  const n = document.getElementById("map-notice");
-  n.hidden = false;
-  n.textContent = e.message;
-}
+fitToSites();

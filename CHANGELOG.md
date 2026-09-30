@@ -1,10 +1,21 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- Maps moved from Google Maps to Leaflet + OpenStreetMap, so no API key is needed.
+  - Tiles are darkened in dark mode.
+  - Address search uses Nominatim through a rate-limited `/api/geocode` proxy.
+  - The tile and geocoder URLs can be set in `.env`.
+
+### Fixed
+- Caddy `default_sni`, so HTTPS works when the portal is opened by IP address.
+
 ## [0.1.0] - 2026-09-29
 
 ### Added
 - Base portal:
-  - Google Maps site view with alarm-aware pins
+  - Map site view with alarm-aware pins
   - unified live alarm queue (SSE)
   - acknowledge with disposition notes and NX write-back (forced-ack clear or bookmark)
   - append-only audit log

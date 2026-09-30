@@ -2,7 +2,7 @@
 
 One place where TWG Security operators see alarms from every NX Witness deployment.
 
-- **Map**: every site is a Google Maps pin, and the pin changes when the site needs attention:
+- **Map** (OpenStreetMap, no API key): every site is a pin, and the pin changes when the site needs attention:
   - **red, pulsing**: open security alarm
   - **amber**: open system-health issue only
   - **green**: all clear
@@ -56,19 +56,17 @@ For NX-side acknowledgement to work, this user must also be one of the **target 
 
 ```bash
 git clone https://github.com/TWG-Security/nx_alarm_portal.git && cd nx_alarm_portal
-cp .env.example .env && chmod 600 .env   # fill in secrets + Google Maps key
+cp .env.example .env && chmod 600 .env   # fill in the three secrets
 docker compose up -d --build
 docker compose exec app python -m app.cli create-admin --email you@twgsecurity.com --name "Your Name"
 ```
 
 Open `https://<PORTAL_HOST>`. Caddy serves it with its own internal certificate, so browsers will warn until you trust Caddy's root CA or give the portal a DNS name with a public certificate.
 
-**Google Maps setup:**
-1. Create an API key with the **Maps JavaScript API** and **Geocoding API** enabled.
-2. Restrict the key to the portal's URL.
-3. Create a **Map ID** under Map management. `DEMO_MAP_ID` works for testing.
-
-Without a key, the map area shows a notice. Everything else still works, and site coordinates can be typed in by hand.
+**Maps** use [Leaflet](https://leafletjs.com) (vendored in `app/static/vendor/leaflet`), map tiles from OpenStreetMap, and [Nominatim](https://nominatim.org) address search.
+- Dark mode darkens the light OSM tiles with a CSS filter.
+- Address search runs through `/api/geocode`, so the portal can follow Nominatim's policy: an identifying User-Agent, at most one request per second, and cached repeats.
+- OSM's tile and search servers are donated and meant for light use. That is fine for an operator team, but for heavy use set `MAP_TILE_URL` and `GEOCODER_URL` to a commercial or self-hosted provider.
 
 **Run a single app worker.** The pollers and the live-update bus run inside the process.
 

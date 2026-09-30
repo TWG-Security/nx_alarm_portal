@@ -1,6 +1,10 @@
 """JSON API used by the portal's own pages."""
 
+import asyncio
+import time
 from datetime import datetime, timezone
+
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
@@ -339,3 +343,39 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
     audit(db, user.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
     await db.commit()
     return _user_dict(target)
+
+
+# ------------------------------------------------------------------------- geocode
+
+_GEOCODE_CACHE: dict[str, list] = {}
+_geocode_lock = asyncio.Lock()
+_last_geocode = 0.0
+
+
+@router.get("/geocode")
+async def geocode(q: str = Query(min_length=3, max_length=300), user: User = Depends(current_user)):
+    """Address -> coordinates via Nominatim, proxied so we can honour its usage policy
+    (identifying User-Agent, at most one request per second, cache repeats)."""
+    global _last_geocode
+    key = q.strip().lower()
+    if key in _GEOCODE_CACHE:
+        return _GEOCODE_CACHE[key]
+    settings = get_settings()
+    async with _geocode_lock:
+        wait = 1.0 - (time.monotonic() - _last_geocode)
+        if wait > 0:
+            await asyncio.sleep(wait)
+        try:
+            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": settings.geocoder_user_agent}) as c:
+                r = await c.get(settings.geocoder_url, params={"q": q, "format": "jsonv2", "limit": 5, "addressdetails": 0})
+            r.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise HTTPException(502, "Address lookup service unavailable") from exc
+        finally:
+            _last_geocode = time.monotonic()
+    results = [{"label": x.get("display_name", ""), "lat": float(x["lat"]), "lng": float(x["lon"])}
+               for x in r.json() if "lat" in x and "lon" in x]
+    if len(_GEOCODE_CACHE) > 500:
+        _GEOCODE_CACHE.clear()
+    _GEOCODE_CACHE[key] = results
+    return results

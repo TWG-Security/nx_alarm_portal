@@ -1,10 +1,10 @@
-import { CFG, api, esc, loadMaps, mapColorScheme } from "./common.js";
+import { api, esc, createMap, pinIcon } from "./common.js";
 
 const site = window.SITE;
 const $ = (id) => document.getElementById(id);
 const fields = ["name", "host", "nx_user", "address", "lat", "lng", "notes"];
 const result = $("conn-result");
-let maps, pickMap, pin;
+let pickMap, pin;
 
 if (site) {
   fields.forEach((f) => { if (site[f] !== null && site[f] !== undefined) $(f).value = site[f]; });
@@ -59,53 +59,51 @@ $("site-form").addEventListener("submit", (e) => { e.preventDefault(); if (e.tar
 function setPin(lat, lng, pan = true) {
   $("lat").value = lat.toFixed(6);
   $("lng").value = lng.toFixed(6);
-  if (!pickMap) return;
-  const pos = { lat, lng };
   if (!pin) {
-    pin = new maps.marker.AdvancedMarkerElement({ map: pickMap, position: pos, gmpDraggable: true, title: "Site location" });
-    pin.addListener("dragend", () => { const p = pin.position; setPin(typeof p.lat === "function" ? p.lat() : p.lat, typeof p.lng === "function" ? p.lng() : p.lng, false); });
+    pin = L.marker([lat, lng], { icon: pinIcon("ok"), draggable: true, title: "Site location" }).addTo(pickMap);
+    pin.on("dragend", () => { const p = pin.getLatLng(); setPin(p.lat, p.lng, false); });
   } else {
-    pin.position = pos;
+    pin.setLatLng([lat, lng]);
   }
-  if (pan) { pickMap.panTo(pos); if (pickMap.getZoom() < 15) pickMap.setZoom(17); }
+  if (pan) pickMap.setView([lat, lng], Math.max(pickMap.getZoom(), 17));
 }
 
-function buildPicker() {
+function initialView() {
   const lat = parseFloat($("lat").value), lng = parseFloat($("lng").value);
-  const has = !Number.isNaN(lat) && !Number.isNaN(lng);
-  pin = null;
-  pickMap = new maps.Map($("pick-map"), {
-    mapId: CFG.mapId || "DEMO_MAP_ID", center: has ? { lat, lng } : { lat: 39.8, lng: -98.6 }, zoom: has ? 17 : 4,
-    streetViewControl: false, mapTypeControl: true, ...mapColorScheme(maps),
-  });
-  pickMap.addListener("click", (e) => setPin(e.latLng.lat(), e.latLng.lng(), false));
-  if (has) setPin(lat, lng, false);
+  return Number.isNaN(lat) || Number.isNaN(lng) ? null : [lat, lng];
 }
 
-$("geocode-btn").addEventListener("click", async () => {
-  const address = $("address").value.trim();
-  if (!address || !maps) return;
+const start = initialView();
+pickMap = createMap($("pick-map"), { center: start || [39.8, -98.6], zoom: start ? 17 : 4 });
+pickMap.on("click", (e) => setPin(e.latlng.lat, e.latlng.lng, false));
+if (start) setPin(start[0], start[1], false);
+
+const geoBox = document.createElement("div");
+$("address").closest(".field").appendChild(geoBox);
+
+async function findAddress() {
+  const q = $("address").value.trim();
+  if (q.length < 3) return;
+  const btn = $("geocode-btn");
+  btn.disabled = true;
+  geoBox.innerHTML = '<small class="muted">Searching…</small>';
   try {
-    const { results } = await new maps.Geocoder().geocode({ address });
-    if (!results.length) throw new Error("No match");
-    const loc = results[0].geometry.location;
-    $("address").value = results[0].formatted_address;
-    setPin(loc.lat(), loc.lng());
+    const results = await api(`/api/geocode?q=${encodeURIComponent(q)}`);
+    if (!results.length) { geoBox.innerHTML = '<small class="muted">No match. Try adding city and state, or click the map.</small>'; return; }
+    const pick = (r) => { $("address").value = r.label; setPin(r.lat, r.lng); geoBox.innerHTML = ""; };
+    if (results.length === 1) return pick(results[0]);
+    geoBox.innerHTML = `<small class="muted">Pick the match:</small><div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">${
+      results.map((r, i) => `<button type="button" class="btn btn-sm" style="justify-content:flex-start;text-align:left;height:auto;padding:6px 10px" data-geo="${i}">${esc(r.label)}</button>`).join("")}</div>`;
+    geoBox.querySelectorAll("[data-geo]").forEach((b) => b.addEventListener("click", () => pick(results[Number(b.dataset.geo)])));
   } catch (e) {
-    showResult("error", `Address lookup failed: ${esc(e.message)}. Check that the Geocoding API is enabled for the key, or click the map instead.`);
+    geoBox.innerHTML = `<small class="muted">Address lookup failed (${esc(e.message)}). Click the map instead.</small>`;
+  } finally {
+    btn.disabled = false;
   }
-});
-["lat", "lng"].forEach((f) => $(f).addEventListener("change", () => {
-  const lat = parseFloat($("lat").value), lng = parseFloat($("lng").value);
-  if (!Number.isNaN(lat) && !Number.isNaN(lng)) setPin(lat, lng);
-}));
-window.addEventListener("portal:theme", () => { if (maps) buildPicker(); });
-
-try {
-  maps = await loadMaps();
-  buildPicker();
-} catch (e) {
-  $("pick-notice").hidden = false;
-  $("pick-notice").textContent = `${e.message} Enter latitude/longitude manually.`;
-  $("geocode-btn").disabled = true;
 }
+$("geocode-btn").addEventListener("click", findAddress);
+$("address").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); findAddress(); } });
+["lat", "lng"].forEach((f) => $(f).addEventListener("change", () => {
+  const v = initialView();
+  if (v) setPin(v[0], v[1]);
+}));

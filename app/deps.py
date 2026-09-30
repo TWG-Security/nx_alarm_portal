@@ -66,7 +66,10 @@ def render(request: Request, name: str, user: User | None = None, **ctx):
     return templates.TemplateResponse(request, name, {
         "user": user,
         "csrf_token": ensure_csrf(request),
-        "maps_api_key": settings.maps_api_key,
-        "maps_map_id": settings.maps_map_id,
+        "map_config": {
+            "tileUrl": settings.map_tile_url,
+            "attribution": settings.map_tile_attribution,
+            "maxZoom": settings.map_tile_max_zoom,
+        },
         **ctx,
     })

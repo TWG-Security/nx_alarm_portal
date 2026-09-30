@@ -12,8 +12,13 @@ class Settings(BaseSettings):
     secret_key: str                      # signs session cookies
     fernet_key: str                      # encrypts NX site passwords at rest
 
-    maps_api_key: str = ""               # Google Maps JavaScript API key
-    maps_map_id: str = "DEMO_MAP_ID"     # Map ID (required for Advanced Markers)
+    # Map tiles (OpenStreetMap by default; any XYZ tile server works, e.g. a self-hosted one).
+    map_tile_url: str = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+    map_tile_attribution: str = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+    map_tile_max_zoom: int = 19
+    # Address lookup (OSM Nominatim by default; policy: max 1 request/second, identify the app).
+    geocoder_url: str = "https://nominatim.openstreetmap.org/search"
+    geocoder_user_agent: str = "TWG-Alarm-Portal/0.1 (+https://github.com/TWG-Security/nx_alarm_portal)"
 
     poll_interval_s: float = 5.0         # how often each site's event log is read
     poll_overlap_ms: int = 5000          # re-read window so late-arriving events are not missed
