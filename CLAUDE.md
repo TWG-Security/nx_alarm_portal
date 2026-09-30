@@ -25,9 +25,9 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
 ## Current production state (2026-09-30)
-- **Site arming is deployed (2026-09-30 16:37 UTC, migration 0004) and verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
+- **Production runs commit `5108781`** (deployed 2026-09-30 18:00 UTC): site arming plus NX rule health. **Arming was verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
 - **NX rule health:** `poller.rule_delays` flags enabled alarm-level rules with `action.intervalS > 0` (NX merges repeats inside the interval and writes them when it ends). The map site panel and Sites page show it, along with "can't read rules".
-- **The Truss 8 rule's "Interval of action" was 60 s** (repeat presses measured 35 s and 60.6 s late). The user OK'd turning it off; it has been `intervalS: 0` since 2026-09-30 16:5x UTC.
+- **The Truss 8 rule's "Interval of action" was 60 s** (repeat presses measured 35 s and 60.6 s late). The user OK'd turning it off, and it has been `intervalS: 0` since 2026-09-30. Verified at 18:00 UTC: two presses 1 s apart arrived 15 ms and 23 ms after their timestamps.
 - Sites:
   - **#1 "TWG Security Office"**: Nx Cloud relay `2bc0aef4-cf2f-4f3e-9303-e05c7d1345f8`. Its NX server is also reachable on the LAN at `https://10.1.29.162:7001`.
   - **#2 "Mikey Home Beta"**: relay `c306458c-5f9c-494b-8cb6-d9530ecc0ca8`. It has a CVEDIA plugin.
