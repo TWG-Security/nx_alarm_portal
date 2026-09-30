@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     push_enabled: bool = True            # NX JSON-RPC websocket push (sub-second alarms); polling stays as backstop
     poll_interval_s: float = 5.0         # backstop: how often each site's event log is also read
     poll_retry_s: float = 1.0            # a failed poll is retried this fast (relay 503s are usually one-off)
+    poll_no_push_s: float = 1.0          # poll this fast whenever a site's push is down (e.g. ~10 s after a restart)
     poll_overlap_ms: int = 5000          # re-read window so late-arriving events are not missed
     poll_max_backoff_s: float = 120.0    # ceiling for retry delay on a failing site
     offline_after_s: float = 60.0        # only show a site offline after failing this long (relay 503s are often one-off)

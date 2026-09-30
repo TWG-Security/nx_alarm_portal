@@ -173,3 +173,13 @@ async def test_forbidden_rules_back_off_quietly(session, admin):
     [a] = await manager.poll_once(rt)
     await manager.poll_once(rt)
     assert a.level_source == "default" and rt.rules_forbidden and rules.call_count == 1
+
+
+async def test_polls_fast_while_push_is_down(session, admin):
+    tenant, _ = admin
+    site = await make_site(session, tenant)
+    rt = manager._runtime(site)
+    rt.push_connected = False
+    assert manager.poll_delay(rt) == 1.0          # e.g. the ~10 s NX takes to set up push after a restart
+    rt.push_connected = True
+    assert manager.poll_delay(rt) == 5.0

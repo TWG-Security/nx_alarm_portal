@@ -47,7 +47,7 @@ One place where TWG Security operators see alarms from every NX Witness deployme
 
 | Path | Normal | If it breaks |
 |---|---|---|
-| NX → portal | **push**, ~0.1 s (measured 87 ms on the TWG site) | 5 s poll backstop; a failed poll is retried after 1 s; push reconnects with backoff |
+| NX → portal | **push**, ~0.1 s (measured 87–219 ms on the TWG site) | the poll backstop runs every 5 s, and **every 1 s whenever push is down** (e.g. the ~10 s NX needs to set push up after a restart); a failed poll is retried after 1 s; push reconnects with backoff |
 | Portal → browser | SSE, instant; 5 s heartbeat | the page reconnects on any error (including 502s during restarts); after 12 s of silence it polls open alarms every 2 s; after 10 s a red **LIVE UPDATES LOST** banner and a tone every 10 s |
 | Site unreachable ≥ 60 s | — | a **Site connection lost** alarm (level Alarm, configurable), with the reconnect time noted on it |
 

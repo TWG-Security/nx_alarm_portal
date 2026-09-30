@@ -183,7 +183,7 @@ class PollerManager:
         while True:
             try:
                 await self.poll_once(rt)
-                delay = settings.poll_interval_s
+                delay = self.poll_delay(rt)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
@@ -199,6 +199,14 @@ class PollerManager:
                 else:
                     delay = settings.poll_retry_s      # don't lose a whole cycle to a one-off relay error
             await asyncio.sleep(delay)
+
+    @staticmethod
+    def poll_delay(rt: SiteRuntime) -> float:
+        """Push delivers in ~0.1 s; while it isn't connected, polling carries the load at 1 s."""
+        s = get_settings()
+        if s.push_enabled and not rt.push_connected:
+            return min(s.poll_interval_s, s.poll_no_push_s)
+        return s.poll_interval_s
 
     async def poll_once(self, rt: SiteRuntime) -> list[Alarm]:
         settings = get_settings()
