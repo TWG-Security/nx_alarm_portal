@@ -3,3 +3,4 @@ aiosqlite>=0.20
 pytest>=8
 pytest-asyncio>=0.23
 respx>=0.21
+playwright>=1.45
