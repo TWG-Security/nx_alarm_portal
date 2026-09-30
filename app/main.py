@@ -1,5 +1,6 @@
 """FastAPI entry point. Run with a single worker: the pollers and SSE bus live in-process."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -12,6 +13,7 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.routers import api, auth, pages, stream, tiles
+from app.services import arming
 from app.services.poller import manager
 
 # Paths that answer errors as JSON instead of an HTML page / login redirect.
@@ -23,9 +25,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    scheduler = None
     if get_settings().start_pollers:
         await manager.start_all()
+        scheduler = asyncio.create_task(arming.run_scheduler(), name="arming-scheduler")
     yield
+    if scheduler:
+        scheduler.cancel()
     await manager.shutdown()
 
 

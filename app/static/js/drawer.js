@@ -20,11 +20,12 @@ export function closeDrawer() {
 
 function render(a) {
   const acked = a.state === "acknowledged";
+  const disarmed = a.state === "disarmed";
   const nx = a.nx_ack_result;
   const keepNote = drawer.querySelector("#drawer-note")?.value || "";
   drawer.querySelector(".drawer-top").innerHTML = `
     <div class="drawer-head">
-      <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${acked ? "" : timerHtml(a.event_ts_ms)}
+      <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
         <h1 style="margin-top:8px">${esc(a.caption)}</h1>
         <div><b>${esc(a.site_name)}</b>${a.site_address ? ` <span class="muted">· ${esc(a.site_address)}</span>` : ""}</div>
         ${a.source_name ? `<div class="muted">${esc(a.source_name)}</div>` : ""}</div>
@@ -40,7 +41,10 @@ function render(a) {
       <dt>In NX</dt><dd>${a.nx_ack_required ? "Acknowledging here also clears it in NX" : "A bookmark is added in NX on acknowledge"}</dd>
     </dl>
     <div class="ack-box">
-      ${acked ? `
+      ${disarmed ? `
+        <h2>Received while the site was disarmed</h2>
+        <p class="muted">This event was recorded but not raised: no sound, no pop-up, no live feed card. Nothing to acknowledge.
+          To have an NX rule raise alarms even while its site is disarmed, add <b>#24h</b> to the rule's Title/Comment.</p>` : acked ? `
         <h2>Acknowledged</h2>
         <dl class="kv">
           <dt>By</dt><dd>${esc(a.acked_by || "—")}</dd>

@@ -36,6 +36,10 @@ class Settings(BaseSettings):
 
     nx_timeout_s: float = 15.0
 
+    # Arming (app/services/arming.py). Schedules run in each site's time zone; sites without one use this.
+    default_timezone: str = "America/New_York"
+    arm_tick_s: float = 1.0              # how often scheduled arm/disarm changes are announced
+
     # Alarm video clips (app/services/clips.py)
     clip_pre_s: int = 10                 # default window: this long before the alarm...
     clip_post_s: int = 20                # ...to this long after

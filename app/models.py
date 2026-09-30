@@ -66,6 +66,13 @@ class Site(Base):
     notes: Mapped[str] = mapped_column(Text, default="")
     alarm_types: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # per-site {eventType: level} override
 
+    # Arming (app/services/arming.py). The live state is computed from these; `armed` is only the
+    # last state announced to browsers / the audit log, so the scheduler can spot changes.
+    timezone: Mapped[str] = mapped_column(String(64), default="")                 # IANA name; "" = settings default
+    arm_schedule: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # {"entries": [...], "since_ms": ...}
+    arm_override: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # last manual arm/disarm
+    armed: Mapped[bool] = mapped_column(Boolean, default=True)
+
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
@@ -113,7 +120,7 @@ class Alarm(Base):
     device_id: Mapped[str] = mapped_column(String(64), default="")
     event_ts_ms: Mapped[int] = mapped_column(BigInteger)
 
-    state: Mapped[str] = mapped_column(String(20), default="new")  # new | acknowledged
+    state: Mapped[str] = mapped_column(String(20), default="new")  # new | acknowledged | disarmed (stored, not raised)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     acked_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

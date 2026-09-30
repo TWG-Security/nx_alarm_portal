@@ -108,6 +108,95 @@ export function applyAlarm(a) {
   emit("store", { reason: "change", alarm: a });
 }
 
+// ---------------------------------------------------------------- NX rule health (poller.rule_delays)
+// Rules with NX's "Interval of action" set hold repeat alarms back by up to that long.
+export function ruleHealthHtml(site, { brief = false } = {}) {
+  const d = site.rule_delays || [];
+  if (brief) {
+    if (d.length) return `<span class="chip p3" title="${esc(d.map((r) => `“${r.name}”: ${r.interval_s} s`).join("\n"))}">${d.length} NX ${d.length > 1 ? "rules delay" : "rule delays"} repeats</span>`;
+    return site.rules_readable === false ? '<span class="chip" title="The NX account cannot read rules: #tags, #24h and this check don\'t work">Rules unreadable</span>' : "";
+  }
+  if (site.rules_readable === false) return '<span class="chip">Can\'t read NX rules</span><div class="arm-line">Give the portal\'s NX account rule-read rights (e.g. Power Users) so #tags, #24h and this check work.</div>';
+  if (!d.length) return site.rules_readable ? '<span class="chip online">OK</span>' : "—";
+  return `<span class="chip p3">${d.length} ${d.length > 1 ? "rules delay" : "rule delays"} repeat alarms</span>` + d.map((r) =>
+    `<div class="arm-line">“${esc(r.name)}” holds repeats up to <b>${r.interval_s} s</b>. In NX, turn off its “Interval of action”.</div>`).join("");
+}
+
+// ---------------------------------------------------------------- arming (app/services/arming.py)
+// "Wed 18:00", or "today 18:00" / "tomorrow 07:00", in the operator's local time.
+export function fmtWhen(ms) {
+  const d = new Date(ms), now = new Date();
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date(now).setHours(0, 0, 0, 0)) / 86_400_000);
+  if (days === 0) return `today ${hm}`;
+  if (days === 1) return `tomorrow ${hm}`;
+  if (days > 1 && days < 7) return `${d.toLocaleDateString([], { weekday: "short" })} ${hm}`;
+  return fmtTime(ms);
+}
+const ARM_SOURCE = { manual: "", schedule: "by schedule", timer: "disarm timer ran out", default: "" };
+export const armChip = (site) => site.arming?.armed === false
+  ? '<span class="chip disarmed">Disarmed</span>' : '<span class="chip armed">Armed</span>';
+// One line: who/what set the state, since when, and what happens next.
+export function armLine(site) {
+  const a = site.arming;
+  if (!a) return "";
+  const parts = [];
+  if (a.source === "manual") parts.push(`by ${esc(a.by || "operator")}`);
+  else if (ARM_SOURCE[a.source]) parts.push(ARM_SOURCE[a.source]);
+  if (a.since_ms) parts.push(a.armed ? relTime(a.since_ms) : `for ${timerHtml(a.since_ms)}`);
+  if (a.note) parts.push(`“${esc(a.note)}”`);
+  if (a.next_ms) parts.push(`${a.next_armed ? "re-arms" : "disarms"} ${esc(fmtWhen(a.next_ms))}${a.next_source === "timer" ? " (timer)" : ""}`);
+  else if (!a.armed) parts.push("<b>stays disarmed until someone re-arms it</b>");
+  return parts.join(" · ");
+}
+
+const DURATIONS = [[30, "In 30 minutes"], [60, "In 1 hour"], [120, "In 2 hours"], [240, "In 4 hours"],
+                   [480, "In 8 hours"], [720, "In 12 hours"], [1440, "In 24 hours"]];
+// Arm right away (the safe direction); disarm through a dialog with a re-arm time and a note.
+export async function setArmed(site, armed) {
+  if (armed) {
+    try {
+      const s = await api(`/api/sites/${site.id}/arm`, { method: "POST", body: {} });
+      toast(`<b>${esc(s.name)}</b> armed`);
+      emit("site.updated", s);
+      return s;
+    } catch (e) { toast(esc(e.message), { kind: "error" }); return null; }
+  }
+  const dlg = document.getElementById("arm-dialog");
+  const sel = document.getElementById("arm-duration");
+  const note = document.getElementById("arm-note");
+  const a = site.arming || {};
+  const schedArm = a.next_source === "schedule" && a.next_armed ? a.next_ms : null;
+  sel.innerHTML = (schedArm ? `<option value="">At the next scheduled arm (${esc(fmtWhen(schedArm))})</option>` : "")
+    + DURATIONS.map(([m, label]) => `<option value="${m}">${label}${schedArm ? " (or the schedule, if sooner)" : ""}</option>`).join("")
+    + (schedArm ? "" : '<option value="">Only when someone re-arms it</option>');
+  sel.value = schedArm ? "" : "240";
+  document.getElementById("arm-title").textContent = `Disarm ${site.name}`;
+  document.getElementById("arm-summary").textContent = site.address || "";
+  note.value = "";
+  return new Promise((resolve) => {
+    const onClose = async () => {
+      dlg.removeEventListener("close", onClose);
+      if (dlg.returnValue !== "ok") return resolve(null);
+      const btn = document.getElementById("arm-submit");
+      btn.disabled = true;
+      try {
+        const s = await api(`/api/sites/${site.id}/disarm`, { method: "POST",
+          body: { note: note.value, minutes: sel.value ? Number(sel.value) : null } });
+        toast(`<b>${esc(s.name)}</b> disarmed${s.arming.next_ms ? `; ${s.arming.next_armed ? "re-arms" : "disarms"} ${esc(fmtWhen(s.arming.next_ms))}` : " until someone re-arms it"}.`, { kind: "warn", timeout: 8000 });
+        emit("site.updated", s);
+        resolve(s);
+      } catch (e) { toast(esc(e.message), { kind: "error" }); resolve(null); }
+      finally { btn.disabled = false; }
+    };
+    dlg.addEventListener("close", onClose);
+    document.getElementById("arm-cancel").onclick = () => dlg.close("cancel");
+    dlg.returnValue = "";
+    dlg.showModal();
+    note.focus();
+  });
+}
+
 // ---------------------------------------------------------------- acknowledge dialog (quick ack)
 export function openAck(alarm) {
   const dlg = document.getElementById("ack-dialog");
@@ -266,12 +355,12 @@ export function createMap(el, opts = {}) {
   return map;
 }
 
-export function pinIcon(state, count = 0, label = "", selected = false) {
+export function pinIcon(state, count = 0, label = "", selected = false, disarmed = false) {
   const n = count > 99 ? "99+" : count || "";
   return L.divIcon({
     className: "pin-icon",
     iconSize: [0, 0],
-    html: `<div class="pin pin--${state}${selected ? " selected" : ""}"><div class="pin-head"><span>${n}</span></div>${label ? `<div class="pin-label">${esc(label)}</div>` : ""}</div>`,
+    html: `<div class="pin pin--${state}${selected ? " selected" : ""}${disarmed ? " disarmed" : ""}"><div class="pin-head"><span>${n}</span></div>${label ? `<div class="pin-label">${esc(label)}${disarmed ? ' <span class="pin-tag">DISARMED</span>' : ""}</div>` : ""}</div>`,
   });
 }
 

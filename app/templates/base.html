@@ -67,6 +67,25 @@
 </dialog>
 
 {% if user %}
+<dialog id="arm-dialog">
+  <form method="dialog" id="arm-form">
+    <h2 id="arm-title">Disarm site</h2>
+    <p id="arm-summary" class="muted"></p>
+    <div class="field">
+      <label for="arm-duration">Re-arm</label>
+      <select id="arm-duration"></select>
+      <small>While disarmed, security events from this site are recorded but not raised. System alarms (site offline, storage, server failure) and NX rules tagged <b>#24h</b> still raise.</small>
+    </div>
+    <div class="field">
+      <label for="arm-note">Note</label>
+      <input id="arm-note" type="text" maxlength="500" placeholder="Who asked and why (e.g. customer on site, cleaning crew)">
+    </div>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" type="button" id="arm-cancel">Cancel</button>
+      <button class="btn btn-primary" value="ok" type="submit" id="arm-submit">Disarm</button>
+    </div>
+  </form>
+</dialog>
 <dialog id="critical-dialog" class="critical-dialog" aria-labelledby="crit-title"></dialog>
 <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
 <aside class="drawer" id="drawer" hidden aria-label="Alarm detail"></aside>

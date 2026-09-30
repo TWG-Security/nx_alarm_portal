@@ -1,6 +1,6 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
 import { CFG, api, esc, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon,
-         markerState, STATUS, PRIORITY } from "./common.js";
+         markerState, STATUS, PRIORITY, armChip, armLine, setArmed, ruleHealthHtml } from "./common.js";
 import { openDrawer } from "./drawer.js";
 
 const sites = new Map();     // id -> site
@@ -35,6 +35,7 @@ function renderSites() {
     <li class="site-item ${s.id === selectedId ? "selected" : ""}" data-id="${s.id}" tabindex="0">
       <span class="dot dot--${st.marker}"></span>
       <span class="name" title="${esc(s.name)}">${esc(s.name)}</span>
+      ${s.arming?.armed === false ? '<span class="chip disarmed" title="Security events are recorded but not raised">Disarmed</span>' : ""}
       ${st.c[1] + st.c[2] ? `<span class="badge">${st.c[1] + st.c[2]}</span>` : ""}
       ${st.c[3] ? `<span class="chip p3">${st.c[3]}</span>` : ""}
       ${s.lat == null ? '<span class="chip" title="No location set">no pin</span>' : ""}
@@ -52,10 +53,14 @@ function renderDetail() {
       <button class="btn btn-sm" id="close-detail" aria-label="Close">✕</button>
     </div>
     <dl class="kv">
+      <dt>Arming</dt><dd>${armChip(s)}
+        <button class="btn btn-sm" data-arm="${s.arming?.armed === false ? "arm" : "disarm"}" style="margin-left:6px">${s.arming?.armed === false ? "Arm now" : "Disarm…"}</button>
+        <div class="arm-line">${armLine(s)}</div></dd>
       <dt>Status</dt><dd><span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : ' <span class="chip">disabled</span>'}</dd>
       ${s.status_detail ? `<dt>Detail</dt><dd>${esc(s.status_detail)}</dd>` : ""}
       <dt>Last contact</dt><dd>${relTime(s.last_seen_at)}</dd>
       <dt>Alarm feed</dt><dd>${s.push ? '<span class="chip online">Live push</span>' : s.push === false ? '<span class="chip">Polling only (5 s)</span>' : "—"}</dd>
+      <dt>NX rules</dt><dd>${ruleHealthHtml(s)}</dd>
       <dt>NX</dt><dd>${esc(s.nx_site_name || "—")} ${s.nx_version ? `<span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
       <dt>Cameras</dt><dd>${s.camera_count}</dd>
       ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
@@ -111,7 +116,7 @@ function upsertMarker(site) {
     return;
   }
   const { c, marker } = stateOf(site);
-  const icon = pinIcon(marker, c[1] + c[2] + c[3], site.name, site.id === selectedId);
+  const icon = pinIcon(marker, c[1] + c[2] + c[3], site.name, site.id === selectedId, site.arming?.armed === false);
   const title = `${site.name}: ${marker === "offline" ? STATUS[site.status] || "Offline" : `${c[1] + c[2]} alarm(s), ${c[3]} warning(s)`}`;
   const z = (3 - SEVERITY[marker]) * 1000;
   if (existing) {
@@ -154,7 +159,11 @@ siteList.addEventListener("keydown", (e) => {
   const li = e.target.closest(".site-item");
   if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(Number(li.dataset.id)); }
 });
-document.getElementById("site-detail").addEventListener("click", (e) => { if (e.target.id === "close-detail") { selectedId = null; renderAll(); } });
+document.getElementById("site-detail").addEventListener("click", async (e) => {
+  if (e.target.id === "close-detail") { selectedId = null; renderAll(); return; }
+  const op = e.target.dataset.arm;
+  if (op && sites.has(selectedId)) { e.target.disabled = true; await setArmed(sites.get(selectedId), op === "arm"); e.target.disabled = false; }
+});
 document.getElementById("feed-tabs").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   feedPriority = b.dataset.p; renderFeed();

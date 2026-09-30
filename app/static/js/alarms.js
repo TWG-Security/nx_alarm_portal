@@ -20,7 +20,7 @@ function syncUrl() {
 
 function matches(a) {
   if (filt.state === "open" && a.state !== "new") return false;
-  if (filt.state === "acknowledged" && a.state !== "acknowledged") return false;
+  if ((filt.state === "acknowledged" || filt.state === "disarmed") && a.state !== filt.state) return false;
   if (filt.site_id && String(a.site_id) !== filt.site_id) return false;
   if (filt.priority && String(a.priority) !== filt.priority) return false;
   if (filt.q) {
@@ -32,6 +32,15 @@ function matches(a) {
 
 function rowHtml(a) {
   const acked = a.state === "acknowledged";
+  if (a.state === "disarmed") return `
+  <li class="alarm p${a.priority} acked" data-id="${a.id}" tabindex="0">
+    <span class="stripe"></span>
+    <div>
+      <div class="title">${esc(a.caption)}</div>
+      <div class="meta"><span><b>${esc(a.site_name)}</b></span>${a.source_name ? `<span>${esc(a.source_name)}</span>` : ""}<span>${fmtTime(a.event_ts_ms)}</span></div>
+    </div>
+    <div class="right"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span><span class="chip disarmed" title="Received while the site was disarmed, so it was recorded but not raised">Site disarmed</span></div>
+  </li>`;
   return `
   <li class="alarm p${a.priority} ${acked ? "acked" : ""}" data-id="${a.id}" tabindex="0">
     <span class="stripe"></span>
@@ -53,7 +62,7 @@ function rowHtml(a) {
 
 function render() {
   listEl.innerHTML = rows.length ? rows.map(rowHtml).join("")
-    : `<li class="empty">${filt.state === "open" ? "No open alarms. All clear." : "No alarms match these filters."}</li>`;
+    : `<li class="empty">${filt.state === "open" ? "No open alarms. All clear." : filt.state === "disarmed" ? "No events were received while a site was disarmed." : "No alarms match these filters."}</li>`;
   document.getElementById("alarm-count").textContent = rows.length ? `${rows.length}${oldestId ? "+" : ""} shown` : "";
 }
 

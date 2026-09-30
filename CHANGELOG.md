@@ -3,6 +3,20 @@
 ## [Unreleased]
 
 ### Added
+- **Site arming**:
+  - Arm or disarm each site from the map's site panel or the Sites page.
+  - A disarm can re-arm by itself: at the next scheduled arm, or after 30 min to 24 h. It can also be left until someone re-arms. The note is audit-logged.
+  - Weekly **arming schedules** on the site form ("disarm 07:00 Mon–Fri, arm 18:00 Mon–Fri"), in the site's time zone and DST-aware. Saving a schedule never flips the state on the spot.
+  - While a site is disarmed, security events are recorded ("While disarmed" filter on the Alarms page) but not raised. System alarms and NX rules tagged **`#24h`** still raise.
+  - Disarmed sites show a DISARMED chip, a dashed map pin and a running "disarmed for" timer.
+  - Scheduled and timer changes reach browsers live and are audit-logged (migration 0004).
+- **NX rule health** on the map's site panel and the Sites page:
+  - Alarm rules with NX's "Interval of action" set are flagged, because NX holds repeat events back and delivers them up to that interval late.
+  - Also shown when the portal's NX account can't read rules at all.
+- `tools/e2e/prod_probe.py`: measures alarm delivery over the LAN and the public (Cloudflare Tunnel) address side by side.
+
+### Fixed
+- The public name `alarmportal.twgsecurity.net` showed a blank page: Caddy answered unknown hostnames with an empty 200. The name is now in the Caddyfile (`PUBLIC_HOST`).
 - **Growing clips**: video starts about 7 s after an alarm (was about 30 s). The clip covers the footage recorded so far, is extended every 5 s in place, and is replaced by the full clip once recorded. Prefetch builds the first growing clip at +5 s.
 - The portal logs the lag of every event NX pushes, which shows delays upstream of the portal.
 - **Push delivery from NX**: a per-site JSON-RPC websocket (`rest.v4.events.log.subscribe`) gets alarms to the screen in about 0.1 s. Polling continues as a backstop, and a per-site lock serializes push and poll ingest.

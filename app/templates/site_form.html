@@ -40,6 +40,21 @@
         <div class="field"><label for="lng">Longitude</label><input id="lng" type="number" step="any" min="-180" max="180"></div>
       </div>
     </div>
+    <div class="card form-wide">
+      <h2>Arming schedule</h2>
+      <p class="muted" style="margin-top:0">Arm and disarm this site automatically every week. While disarmed, security events are recorded but not raised.
+        System alarms and NX rules tagged <b>#24h</b> always raise. A manual arm or disarm (map or Sites page) holds until the next scheduled time.
+        Saving a schedule never arms or disarms on the spot: it takes over at the next scheduled time.</p>
+      <div id="arm-now" class="arm-line" style="margin-bottom:12px"></div>
+      <div class="field" style="max-width:340px"><label for="timezone">Site time zone</label><select id="timezone"></select>
+        <small>Schedule times are in this zone and follow daylight saving.</small></div>
+      <div class="sched-list" id="sched-rows"></div>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px">
+        <button type="button" class="btn btn-sm" id="sched-add" style="flex:0 0 auto">+ Add time</button>
+        <button type="button" class="btn btn-sm" id="sched-preset" style="flex:0 0 auto">Business hours: disarm 07:00, arm 18:00, Mon–Fri</button>
+      </div>
+      <small class="muted">Changes apply when you click <b>Save changes</b> above.</small>
+    </div>
   </form>
 </div>
 <script>window.SITE = {{ site | tojson }};</script>

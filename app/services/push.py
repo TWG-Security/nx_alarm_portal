@@ -71,7 +71,7 @@ async def _session(manager, rt) -> None:
                 # A large lag here is upstream of the portal (camera -> NX), not portal delay.
                 log.info("site %s: pushed %s %s %d ms after its timestamp -> %s", rt.site_id, ev.get("type"),
                          (ev.get("eventTypeId") or "")[:60], lag,
-                         f"new alarm {created[0].id}" if created else "no new alarm (duplicate or not an alarm)")
+                         f"new alarm {created[0].id}" if created else "nothing raised (duplicate, not an alarm, or site disarmed)")
             elif msg.get("id") == 1:
                 if "error" in msg:
                     raise RuntimeError(f"NX refused the event subscription: {msg['error']}")

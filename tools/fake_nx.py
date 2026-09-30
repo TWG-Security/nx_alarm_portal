@@ -5,6 +5,7 @@ Add a site in the portal with host http://127.0.0.1:8199 (any username/password)
 Fire events:  curl -X POST localhost:8199/_inject/panic   (critical: soft trigger)
               curl -X POST localhost:8199/_inject/line    (alarm: analytics line crossing)
               curl -X POST localhost:8199/_inject/dock    (warning: camera disconnected)
+              curl -X POST localhost:8199/_inject/panic24 (critical soft trigger from a rule tagged #24h)
 Inspect NX-side write-backs:  curl localhost:8199/_state
 Clips: /rest/v4/devices/{id}/media.mp4 returns an ffmpeg test pattern (MPEG-4 Part 2, like many
 NX secondary streams) tagged with NX's startTimeMs comment; set FAKE_NX_FFMPEG if ffmpeg isn't on PATH.
@@ -52,6 +53,15 @@ async def devices(): return DEV
 async def users(): return [{"id": "{u-1}", "name": "operator1", "fullName": "Test Operator"}]
 @app.get("/rest/v4/events/log")
 async def log(startTimeMs: int = 0): return [e for e in EVENTS if e["timestampMs"] >= startTimeMs]
+# One fixed rule per inject kind; panic24's is tagged #24h (raises even while the site is disarmed).
+# The line-crossing rule has NX's "Interval of action" set, so the portal flags it.
+RULES = {k: {"id": "{%s}" % uuid.uuid5(uuid.NAMESPACE_URL, k), "comment": c, "enabled": True,
+             "event": {"type": t}, "action": {"type": "writeToLog", "intervalS": i}}
+         for k, c, t, i in (("panic", "Panic button", "softTrigger", 0), ("line", "Line crossing", "analytics", 30),
+                            ("dock", "Camera offline", "deviceDisconnected", 0),
+                            ("panic24", "Hold-up button #24h", "softTrigger", 0))}
+@app.get("/rest/v4/events/rules")
+async def rules(): return list(RULES.values())
 @app.get("/rest/v4/devices/{d}/image")
 async def image(d: str): return Response(JPG, media_type="image/jpeg")
 @app.post("/rest/v4/events/acknowledges")
@@ -87,9 +97,9 @@ async def state(): return {"acks": ACKS, "bookmarks": BOOKMARKS, "events": len(E
 @app.post("/_inject/{kind}")
 async def inject(kind: str):
     ts = int(time.time()*1000); aid = str(uuid.uuid4())
-    base = {"timestampMs": ts, "ruleId": str(uuid.uuid4()), "flags": "noFlags", "aggregatedInfo": {"total": 1}}
+    base = {"timestampMs": ts, "ruleId": RULES.get(kind, RULES["panic"])["id"], "flags": "noFlags", "aggregatedInfo": {"total": 1}}
     dev = DEV[0]["id"] if kind != "dock" else DEV[1]["id"]
-    if kind == "panic":
+    if kind in ("panic", "panic24"):
         ev = {"type": "softTrigger", "state": "instant", "deviceId": dev, "userId": "{u-1}", "triggerName": "", "timestamp": str(ts*1000)}
         act = {"id": aid, "type": "desktopNotification", "acknowledge": False, "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     elif kind == "line":

@@ -5,7 +5,9 @@
 	default_sni {$PORTAL_HOST}
 }
 
-{$PORTAL_HOST}, localhost {
+# PUBLIC_HOST: the name the Cloudflare Tunnel forwards (it connects to :443 with the tunnel hostname as Host).
+# Caddy answers an unknown Host with an empty 200, which shows as a blank white page.
+{$PORTAL_HOST}, localhost, {$PUBLIC_HOST:alarmportal.twgsecurity.net} {
 	tls internal
 	encode gzip
 	reverse_proxy app:8080 {

@@ -21,6 +21,7 @@ from app.db import sessionmaker
 from app.models import Alarm, Site, Tenant
 from app.nx.client import NXClient
 from app.security import decrypt
+from app.services import arming
 from app.services.alarm_filter import DEFAULT_POLICY, Policy, classify, rule_tag
 from app.services.bus import bus
 from app.services.nx_events import event_key, summarize
@@ -42,6 +43,8 @@ class SiteRuntime:
     device_names: dict[str, str] = field(default_factory=dict)
     user_names: dict[str, str] = field(default_factory=dict)
     rule_levels: dict[str, str] = field(default_factory=dict)   # NX rule id -> level from its #tag
+    rule_always: set[str] = field(default_factory=set)          # NX rule ids tagged #24h (raise even when disarmed)
+    rule_delays: list[dict] = field(default_factory=list)       # alarm rules whose "Interval of action" holds repeats back
     rule_ids: set[str] = field(default_factory=set)
     rules_refreshed: float = 0.0
     rules_forbidden: bool = False
@@ -55,15 +58,21 @@ class SiteRuntime:
 
 async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str],
                  user_names: dict[str, str] | None = None, policy: Policy = DEFAULT_POLICY,
-                 rule_levels: dict[str, str] | None = None) -> list[Alarm]:
-    """Store qualifying rows as alarms. Returns only the newly created alarms."""
+                 rule_levels: dict[str, str] | None = None, always_armed: set[str] | None = None,
+                 now: int | None = None) -> list[Alarm]:
+    """Store qualifying rows as alarms. Returns the alarms to raise now: new ones, plus any
+    promoted from "disarmed" by a #24h rule. Security events at a disarmed site are stored
+    with state "disarmed" and not returned (see app/services/arming.py)."""
     candidates: dict[str, tuple[dict, object]] = {}
+    always: set[str] = set()       # event keys that some #24h rule fired on
     acks = lambda r: bool((r.get("actionData") or {}).get("acknowledge"))  # noqa: E731
     for row in rows:
         c = classify(row, policy, site.alarm_types, rule_levels)
         if not c.is_alarm:
             continue
         key = event_key(row)
+        if always_armed and (row.get("ruleId") or "").strip("{}") in always_armed:
+            always.add(key)
         prev = candidates.get(key)
         # Several rules can fire for one event: keep the loudest; on a tie, the one NX can acknowledge.
         if prev is None or (c.priority, not acks(row)) < (prev[1].priority, not acks(prev[0])):
@@ -78,12 +87,24 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
         )).all()
     }
 
+    now = now_ms() if now is None else now
     created: list[Alarm] = []
     upgraded: list[Alarm] = []
+    promoted: list[Alarm] = []
     for key, (row, c) in candidates.items():
         info = summarize(row, device_names, user_names)
         prior = existing.get(key)
         if prior is not None:
+            if prior.state == "disarmed" and key in always:
+                # NX pushes one row per rule: the #24h rule's row can land after another rule's
+                # row already stored the event as "disarmed". Raise it now.
+                prior.state, prior.priority, prior.level_source = "new", c.priority, c.source
+                if info["nx_ack_required"]:
+                    prior.nx_ack_required = True
+                    prior.nx_action_id = info["nx_action_id"]
+                    prior.nx_action_server_id = info["nx_action_server_id"]
+                promoted.append(prior)
+                continue
             if prior.state != "new":
                 continue
             changed = False
@@ -97,7 +118,9 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
             if changed:
                 upgraded.append(prior)
             continue
-        alarm = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=key,
+        suppressed = (c.category == "security" and key not in always
+                      and not arming.armed_for_event(site, info["event_ts_ms"], now))
+        alarm = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=key, state="disarmed" if suppressed else "new",
                       category=c.category, priority=c.priority, level_source=c.source, raw=row, **info)
         alarm.site = site
         db.add(alarm)
@@ -105,11 +128,36 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     if created:
         await db.flush()
         for a in created:
+            extra = {"site_disarmed": True} if a.state == "disarmed" else {}
             audit(db, site.tenant_id, "alarm.received", site_id=site.id, alarm_id=a.id,
-                  event_type=a.event_type, caption=a.caption, priority=a.priority)
+                  event_type=a.event_type, caption=a.caption, priority=a.priority, **extra)
+    for a in promoted:
+        audit(db, site.tenant_id, "alarm.raised", site_id=site.id, alarm_id=a.id, reason="#24h rule while disarmed")
     for a in upgraded:
         bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
-    return created
+    return [a for a in created if a.state == "new"] + promoted
+
+
+def rule_delays(rules: list[dict], policy: Policy, site_override: dict | None = None) -> list[dict]:
+    """Enabled rules that would raise portal alarms but have NX's "Interval of action" set.
+
+    NX merges repeat events inside that interval into one log row and writes it only when the
+    interval ends, so a second alarm from the same rule reaches us up to intervalS late.
+    """
+    out = []
+    for r in rules:
+        interval = int((r.get("action") or {}).get("intervalS") or 0)
+        if interval <= 0 or r.get("enabled") is False:
+            continue
+        event_type = (r.get("event") or {}).get("type", "")
+        level = rule_tag(r.get("comment")) or (
+            "critical" if policy.force_ack_critical and (r.get("action") or {}).get("acknowledge")
+            else policy.level_for(event_type, site_override))
+        if level == "ignore":
+            continue
+        out.append({"id": (r.get("id") or "").strip("{}"), "name": (r.get("comment") or "").strip() or event_type,
+                    "event_type": event_type, "interval_s": interval, "level": level})
+    return sorted(out, key=lambda d: -d["interval_s"])
 
 
 class PollerManager:
@@ -149,6 +197,13 @@ class PollerManager:
         if settings.push_enabled and (rt.push_task is None or rt.push_task.done()):
             from app.services.push import run_push  # late import: push uses this module
             rt.push_task = asyncio.create_task(run_push(self, rt), name=f"push-site-{site.id}")
+
+    def rule_info(self, site_id: int) -> dict:
+        """For the Sites/map pages: can we read the site's NX rules, and which alarm rules delay repeats."""
+        rt = self._rt.get(site_id)
+        if rt is None or not rt.rules_refreshed:
+            return {"rules_readable": None, "rule_delays": []}
+        return {"rules_readable": not rt.rules_forbidden, "rule_delays": rt.rule_delays}
 
     def push_state(self, site_id: int) -> bool | None:
         rt = self._rt.get(site_id)
@@ -260,7 +315,8 @@ class PollerManager:
         if not rt.rules_forbidden and any((r.get("ruleId") or "").strip("{}") not in rt.rule_ids for r in rows):
             relevelled = await self._refresh_rules(rt, db, site, policy, force=True)
         async with rt.ingest_lock:
-            created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy, rt.rule_levels)
+            created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy, rt.rule_levels,
+                                   rt.rule_always)
             await db.commit()
         return created, relevelled
 
@@ -311,6 +367,9 @@ class PollerManager:
         rt.rules_forbidden = False
         old = rt.rule_levels
         rt.rule_ids = {(r.get("id") or "").strip("{}") for r in rules}
+        rt.rule_always = {rid for r in rules
+                          if arming.rule_always_armed(r.get("comment")) and (rid := (r.get("id") or "").strip("{}"))}
+        rt.rule_delays = rule_delays(rules, policy, site.alarm_types)
         rt.rule_levels = {rid: lvl for r in rules
                           if (lvl := rule_tag(r.get("comment"))) and (rid := (r.get("id") or "").strip("{}"))}
         changed_rules = {rid for rid in set(old) | set(rt.rule_levels) if old.get(rid) != rt.rule_levels.get(rid)}

@@ -13,6 +13,8 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
   Push with plain `git push`; the credentials are a classic PAT in `~/.git-credentials` (see Open items).
 - **Server:** Ubuntu 24.04, `10.1.10.97`, 2 vCPU / 4 GB. User `twg` has passwordless sudo and is in the `docker` group.
 - **Live URL:** `https://10.1.10.97`, via Caddy with an internal CA, so browsers show a certificate warning.
+  **Public:** `https://alarmportal.twgsecurity.net` through a Cloudflare Tunnel the user set up on 2026-09-30. The cloudflared connector is **not** on this server. It connects to Caddy on :443 with the tunnel hostname as Host, so that name must be in the Caddyfile site list (`{$PUBLIC_HOST:alarmportal.twgsecurity.net}`). Otherwise Caddy answers an **empty 200**, which is a white page; that was the case until 2026-09-30.
+  Measured through the tunnel: alarms arrive **+3 ms vs LAN**, the SSE stream isn't buffered, and the longest silence is 5.0 s. Password login is the only gate so far (see Open items).
 - **The NX API client** (`app/nx/client.py`) is copied from `github.com/TWG-Security/nx-witness-mcp`, with its local changes listed in the file header.
   The claude.ai **NX_Witness MCP** (TWG MCP Gateway) talks to the same systems: `TWG`, `Bethel_Church`, `MedEvac`, `SecTV`, `TheWaterfront`. It's handy for probing NX, and `nx_write_fire_trigger` fires test soft triggers.
 
@@ -23,9 +25,13 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
 ## Current production state (2026-09-30)
+- **Site arming is deployed (2026-09-30 16:37 UTC, migration 0004) and verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
+- **NX rule health:** `poller.rule_delays` flags enabled alarm-level rules with `action.intervalS > 0` (NX merges repeats inside the interval and writes them when it ends). The map site panel and Sites page show it, along with "can't read rules".
+- **The Truss 8 rule's "Interval of action" was 60 s** (repeat presses measured 35 s and 60.6 s late). The user OK'd turning it off; it has been `intervalS: 0` since 2026-09-30 16:5x UTC.
 - Sites:
   - **#1 "TWG Security Office"**: Nx Cloud relay `2bc0aef4-cf2f-4f3e-9303-e05c7d1345f8`. Its NX server is also reachable on the LAN at `https://10.1.29.162:7001`.
   - **#2 "Mikey Home Beta"**: relay `c306458c-5f9c-494b-8cb6-d9530ecc0ca8`. It has a CVEDIA plugin.
+- A temporary operator `e2e-probe@twgsecurity.com` exists but is **deactivated**. Reactivate it with a new password for `tools/e2e/prod_probe.py`, then deactivate it again.
 - Admin login: `msupczenski@twgsecurity.com`. The temporary password is in `~/portal-admin-temp-password.txt` (mode 600). The user should change it and delete the file.
 - The user **turned off the camera ONVIF analytics rules** on site 1; only soft triggers remain there.
   The Truss 8 soft trigger rule (id `79239a08-fb91-4b89-a6ca-6562ee72639f`, trigger `256dacab-d698-4a32-b9ec-135ba73ba127`,
@@ -47,9 +53,10 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Models: tenants, users, sites, alarms, audit_log | `app/models.py` (every table has `tenant_id`); migrations in `migrations/versions/0001-0003` |
 | Alarm levels (critical 1 / alarm 2 / warning 3 / ignore) | `app/services/alarm_filter.py` |
 | NX row → portal fields, captions | `app/services/nx_events.py` |
-| Pollers, ingest, rule `#tags`, site status, "site connection lost" alarm | `app/services/poller.py` |
+| Pollers, ingest, rule `#tags`, rule health (`rule_delays`), site status, "site connection lost" alarm | `app/services/poller.py` |
 | NX push (JSON-RPC websocket) | `app/services/push.py` |
 | Acknowledge + NX write-back (forced-ack clear or bookmark) | `app/services/ack.py` |
+| Site arming: state maths, schedules, `#24h`, announce loop | `app/services/arming.py` (migration 0004); API `POST /api/sites/{id}/arm|disarm` |
 | Clips (growing → full), ffmpeg, cache, prefetch, bounding boxes | `app/services/clips.py` |
 | SSE stream, snapshot/clip/objects endpoints | `app/routers/stream.py` |
 | JSON API (sites, alarms, audit, users, settings, geocode) | `app/routers/api.py` |
@@ -74,6 +81,20 @@ JS modules:
 5. Built-in default (`EVENT_TYPES`); unknown event types → warning.
 
 `alarms.level_source` records which rule applied, and the details drawer shows it.
+
+### Arming (per site)
+- **Portal-side only; NX rules are untouched.** While a site is disarmed, **security** events are still ingested and stored with `alarms.state = "disarmed"`. They are not raised: no feed card, sound or pop-up, and they are not open or ackable. They're listed under Alarms → "While disarmed".
+  System-category events (site offline, storage, server failure, unknown types) always raise, and so does any NX rule with **`#24h`** in its Title/Comment.
+- The state is a **pure function** `arming.state_at(schedule, override, tz, t)`. The latest of these at or before `t` wins:
+  - weekly entries in the site time zone
+  - the last manual arm/disarm
+  - a disarm timer's expiry (dropped if a scheduled change comes first)
+  With none of them, the site is armed. Ingest computes it per event, so **alarm correctness never depends on a background job**. An event raises if the site was armed at event time **or** on arrival.
+- `sites.armed` is only the last *announced* state. `run_scheduler` (1 s tick, started in `main.lifespan`) spots flips, writes `site.armed`/`site.disarmed` to the audit log and publishes `site.updated`.
+- **A schedule edit never flips the state:** the save stores the current state as an override and sets `schedule.since_ms`.
+- NX pushes one row per rule, so a `#24h` row arriving after another rule's row promotes the stored "disarmed" alarm to new (audited as `alarm.raised`).
+- `#24h` needs rule-read rights on the NX account, which site 2 lacks today.
+- Operators can arm and disarm; the schedule is edited on the admin site form. The default time zone is `DEFAULT_TIMEZONE` (America/New_York); a new site's form pre-fills the browser's zone.
 
 ### Delivery guarantees (keep these intact)
 - **NX → portal:** push (about 0.1 s). The poll backstop runs every 5 s, and **every 1 s while push is down**. A failed poll retries after 1 s.
@@ -132,15 +153,17 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 40 tests; clip tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 57 tests; clip tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.arming   # ~3 min: disarm/arm UI, suppression, #24h, timer, schedule
+PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
 ```
 - Setup: dependencies install with `~/.local/bin/uv pip install -p .venv -r requirements-dev.txt`, followed by `.venv/bin/playwright install chromium`. The system dependencies for Chromium are already installed.
 - `.env.dev` holds dev secrets and `COOKIE_SECURE=false`. The dev login is `admin@twgsecurity.com` / `smoke-test-password-123`.
-- `tools/fake_nx.py` imitates NX: login, events, JSON-RPC push, synthetic MPEG-4 clips with the start-time tag, and moving object tracks. Fire events with `curl -X POST localhost:8199/_inject/{panic|line|dock}`.
+- `tools/fake_nx.py` imitates NX: login, events, JSON-RPC push, synthetic MPEG-4 clips with the start-time tag, and moving object tracks. Fire events with `curl -X POST localhost:8199/_inject/{panic|line|dock|panic24}`. Each kind has a fixed rule id served at `/rest/v4/events/rules`; panic24's rule is tagged `#24h`.
 - To probe real NX from inside the app container (it already holds the site credentials), write a script and run it with
   `docker compose cp x.py app:/tmp/x.py && docker compose exec -T -w /app -e PYTHONPATH=/app app python /tmp/x.py`.
   Keep probes read-only unless the user agrees.
@@ -148,15 +171,19 @@ tools/dev_down.sh
 - Commits end with the attribution lines from the session's system reminder. Branch `feature/base-portal`.
 
 ## Open items / backlog (roughly in priority order)
-1. **Level rules list** (offered, not started): ordered rules matching analytics subtype, site, camera, caption keywords and **armed schedules** (e.g. intrusion after hours → critical). The user asked a related question; it's pending their answer on per-site vs shared schedules.
-2. **Warning visibility** (the user said "nothing happened" for a Warning): options offered were a toast on the overview, a louder or longer tone, or flashing the pin amber. No decision yet.
-3. **Site 1 over the LAN** (`https://10.1.29.162:7001`) instead of the relay, to avoid the relay 503s. This is only a suggestion.
-4. **Site 2 NX account**: grant rule-read rights so `#tags` work there.
-5. Zero-downtime deploys. Handle `IntegrityError` on a duplicate `event_key` gracefully first, so two instances could overlap.
-6. Security cleanup:
+1. **Cloudflare Tunnel follow-ups:**
+   - put **Cloudflare Access** (Google Workspace SSO) in front, since the portal is on the internet behind a password only
+   - audit IPs show the connector's LAN IP: trust it in Caddy and read `CF-Connecting-IP`
+   - item 9 below (a real certificate) is moot for the tunnel path
+2. **Level rules list**: ordered rules matching analytics subtype, site, camera and caption keywords. Arming now covers the "after hours" case; shared schedules across sites aren't built (schedules are per site).
+3. **Warning visibility** (the user said "nothing happened" for a Warning): options offered were a toast on the overview, a louder or longer tone, or flashing the pin amber. No decision yet.
+4. **Site 1 over the LAN** (`https://10.1.29.162:7001`) instead of the relay, to avoid the relay 503s. This is only a suggestion.
+5. **Site 2 NX account**: grant rule-read rights so `#tags` and `#24h` work there.
+6. Zero-downtime deploys. Handle `IntegrityError` on a duplicate `event_key` gracefully first, so two instances could overlap.
+7. Security cleanup:
    - replace the classic PAT with the deploy key `~/.ssh/nx_alarm_portal_deploy` (the `Host github-nx-portal` alias is in `~/.ssh/config`; the key isn't added on GitHub yet) or a fine-grained token
    - remove `/etc/sudoers.d/90-twg-claude` when setup is done
    - the user changes the admin password and deletes the temp file
-7. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
-8. Roadmap from the original plan: multi-tenant admin UI, Google Workspace SSO, a claim/escalation workflow and SOPs per site, reports and CSV export, live video (not just snapshot refresh), Postgres backups, a UI for per-site level overrides.
-9. Merge PR #1 once the user is happy.
+8. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
+9. Roadmap from the original plan: multi-tenant admin UI, Google Workspace SSO, a claim/escalation workflow and SOPs per site, reports and CSV export, live video (not just snapshot refresh), Postgres backups, a UI for per-site level overrides.
+10. Merge PR #1 once the user is happy.

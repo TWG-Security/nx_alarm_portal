@@ -1,8 +1,10 @@
 """JSON shapes shared by the API and the SSE stream."""
 
+import time
 from datetime import timezone
 
 from app.models import Alarm, AuditLog, Site
+from app.services import arming
 from app.services.alarm_filter import LEVEL_NAMES
 
 
@@ -75,6 +77,10 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "open_alarm": alarm,
         "open_warning": warning,
         "marker": marker,
+        "timezone": s.timezone or "",
+        "timezone_effective": arming.zone(s.timezone).key,
+        "arm_schedule": (s.arm_schedule or {}).get("entries", []),
+        "arming": arming.site_state(s, int(time.time() * 1000)).as_dict(),
     }
 
 

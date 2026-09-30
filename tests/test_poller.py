@@ -183,3 +183,20 @@ async def test_polls_fast_while_push_is_down(session, admin):
     assert manager.poll_delay(rt) == 1.0          # e.g. the ~10 s NX takes to set up push after a restart
     rt.push_connected = True
     assert manager.poll_delay(rt) == 5.0
+
+
+def test_rule_delays_flags_alarm_rules_with_interval_of_action():
+    from app.services.alarm_filter import Policy
+    from app.services.poller import rule_delays
+    rules = [
+        {"id": "{a}", "comment": "Truss 8 test trigger #warning", "enabled": True,
+         "event": {"type": "softTrigger"}, "action": {"type": "writeToLog", "intervalS": 60}},
+        {"id": "b", "comment": "", "event": {"type": "analytics"}, "action": {"intervalS": 300}},
+        {"id": "c", "comment": "Motion log", "event": {"type": "motion"}, "action": {"intervalS": 30}},     # ignored level
+        {"id": "d", "comment": "Off", "enabled": False, "event": {"type": "softTrigger"}, "action": {"intervalS": 60}},
+        {"id": "e", "comment": "No interval", "event": {"type": "softTrigger"}, "action": {"intervalS": 0}},
+        {"id": "f", "comment": "Noise #ignore", "event": {"type": "analytics"}, "action": {"intervalS": 10}},
+    ]
+    out = rule_delays(rules, Policy())
+    assert [(d["id"], d["name"], d["interval_s"], d["level"]) for d in out] == \
+        [("b", "analytics", 300, "alarm"), ("a", "Truss 8 test trigger #warning", 60, "warning")]

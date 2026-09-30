@@ -1,4 +1,4 @@
-import { api, esc, createMap, pinIcon } from "./common.js";
+import { api, esc, createMap, pinIcon, armChip, armLine } from "./common.js";
 
 const site = window.SITE;
 const $ = (id) => document.getElementById(id);
@@ -16,8 +16,55 @@ function payload(connect = true) {
   return {
     name: $("name").value, host: $("host").value, nx_user: $("nx_user").value, nx_pass: $("nx_pass").value,
     address: $("address").value, lat: num($("lat").value), lng: num($("lng").value), notes: $("notes").value, connect,
+    timezone: $("timezone").value, arm_schedule: schedule(),
   };
 }
+
+// ---------------------------------------------------------------- arming schedule
+const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const DAY_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+const rowsEl = $("sched-rows");
+
+function addEntry(e = { action: "arm", time: "18:00", days: DAYS.slice(0, 5) }) {
+  const row = document.createElement("div");
+  row.className = "sched-row";
+  row.innerHTML = `
+    <select class="sched-action" aria-label="Action"><option value="arm">Arm</option><option value="disarm">Disarm</option></select>
+    <span class="muted">at</span>
+    <input type="time" class="sched-time" required aria-label="Time" value="${esc(e.time)}">
+    <span class="sched-days">${DAYS.map((d) => `<label class="daybox"><input type="checkbox" value="${d}" ${e.days.includes(d) ? "checked" : ""}>${DAY_LABEL[d]}</label>`).join("")}</span>
+    <button type="button" class="btn btn-sm btn-danger sched-del" aria-label="Remove">Remove</button>`;
+  row.querySelector(".sched-action").value = e.action;
+  rowsEl.appendChild(row);
+  renderEmpty();
+}
+function renderEmpty() {
+  rowsEl.querySelector(".empty")?.remove();
+  if (!rowsEl.querySelector(".sched-row")) rowsEl.insertAdjacentHTML("beforeend", '<div class="empty muted">No schedule: the site stays in whatever state it was last set to by hand (armed by default).</div>');
+}
+function schedule() {
+  return [...rowsEl.querySelectorAll(".sched-row")].map((r) => ({
+    action: r.querySelector(".sched-action").value, time: r.querySelector(".sched-time").value,
+    days: [...r.querySelectorAll(".daybox input:checked")].map((c) => c.value),
+  }));
+}
+rowsEl.addEventListener("click", (e) => { if (e.target.classList.contains("sched-del")) { e.target.closest(".sched-row").remove(); renderEmpty(); } });
+$("sched-add").addEventListener("click", () => addEntry());
+$("sched-preset").addEventListener("click", () => {
+  rowsEl.innerHTML = "";
+  addEntry({ action: "disarm", time: "07:00", days: DAYS.slice(0, 5) });
+  addEntry({ action: "arm", time: "18:00", days: DAYS.slice(0, 5) });
+});
+
+const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const zones = (Intl.supportedValuesOf?.("timeZone") || [browserTz]).slice();
+if (site?.timezone && !zones.includes(site.timezone)) zones.unshift(site.timezone);
+$("timezone").innerHTML = `<option value="">Portal default${site ? ` (${esc(site.timezone_effective)})` : ""}</option>`
+  + zones.map((z) => `<option value="${esc(z)}">${esc(z.replaceAll("_", " "))}</option>`).join("");
+$("timezone").value = site ? site.timezone || "" : browserTz;
+(site?.arm_schedule || []).forEach(addEntry);
+renderEmpty();
+if (site) $("arm-now").innerHTML = `Now: ${armChip(site)} ${armLine(site)}`;
 
 function showResult(kind, html) { result.innerHTML = `<div class="alert alert-${kind}">${html}</div>`; }
 

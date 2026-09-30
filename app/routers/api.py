@@ -19,6 +19,7 @@ from app.models import Alarm, AuditLog, Site, Tenant, User
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
+from app.services import arming
 from app.services.bus import bus
 from app.services.poller import manager, now_ms
 from app.services.serialize import alarm_dict, audit_dict, site_dict
@@ -39,6 +40,8 @@ class SiteIn(BaseModel):
     lat: float | None = Field(default=None, ge=-90, le=90)
     lng: float | None = Field(default=None, ge=-180, le=180)
     notes: str = Field(default="", max_length=5000)
+    timezone: str = Field(default="", max_length=64)         # IANA name for the arming schedule; "" = default
+    arm_schedule: list[dict] | None = None                   # [{action, time "HH:MM", days [...]}]; None = keep
     connect: bool = True                                     # False = save without testing
 
     @field_validator("name", "host", "nx_user")
@@ -74,6 +77,31 @@ async def _get_site(db: AsyncSession, user: User, site_id: int) -> Site:
     return site
 
 
+def _apply_arming_settings(site: Site, body: SiteIn, user: User) -> list[str]:
+    """Timezone + schedule from the site form. Returns the changed field names. Raises HTTPException(400)."""
+    tz = body.timezone.strip()
+    if tz and not arming.valid_timezone(tz):
+        raise HTTPException(400, {"message": f"Unknown time zone '{tz}'"})
+    old_entries = (site.arm_schedule or {}).get("entries", [])
+    try:
+        entries = old_entries if body.arm_schedule is None else arming.clean_entries(body.arm_schedule)
+    except ValueError as exc:
+        raise HTTPException(400, {"message": f"Arming schedule: {exc}"}) from exc
+    changed = [name for name, differs in (("timezone", tz != (site.timezone or "")),
+                                          ("arm_schedule", entries != old_entries)) if differs]
+    if not changed:
+        return []
+    t = now_ms()
+    if site.id is not None:
+        # Keep the current state until the next scheduled time: a schedule edit never arms or disarms on the spot.
+        cur = arming.site_state(site, t)
+        site.arm_override = {"armed": cur.armed, "at_ms": t, "until_ms": None if cur.armed else cur.until_ms,
+                             "by": user.label, "user_id": user.id, "note": "State kept when the schedule was changed"}
+    site.timezone = tz
+    site.arm_schedule = {"entries": entries, "since_ms": t} if entries else None
+    return changed
+
+
 async def _probe(host: str, nx_user: str, nx_pass: str) -> dict:
     client = make_client(host, nx_user, nx_pass)
     try:
@@ -90,7 +118,7 @@ async def list_sites(user: User = Depends(current_user), db: AsyncSession = Depe
         select(Site).where(Site.tenant_id == user.tenant_id, Site.archived_at.is_(None)).order_by(Site.name)
     )).all()
     counts = await _open_counts(db, user.tenant_id)
-    return [{**site_dict(s, counts.get(s.id)), "push": manager.push_state(s.id)} for s in sites]
+    return [{**site_dict(s, counts.get(s.id)), "push": manager.push_state(s.id), **manager.rule_info(s.id)} for s in sites]
 
 
 @router.post("/sites/test")
@@ -119,6 +147,7 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
     site = Site(tenant_id=user.tenant_id, name=body.name, host=host, cloud_id=cloud_id, nx_user=body.nx_user,
                 nx_pass_enc=encrypt(body.nx_pass), address=body.address, lat=body.lat, lng=body.lng,
                 notes=body.notes)
+    _apply_arming_settings(site, body, user)
     if body.connect:
         info = await _probe(host, body.nx_user, body.nx_pass)
         site.nx_site_name, site.nx_version = info["nx_site_name"], info["nx_version"]
@@ -161,6 +190,7 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
                      if getattr(site, k) != v)
     if body.nx_pass:
         changed.append("nx_pass")
+    changed += _apply_arming_settings(site, body, user)
     site.name, site.host, site.cloud_id, site.nx_user = body.name, host, cloud_id, body.nx_user
     site.nx_pass_enc = encrypt(password)
     site.address, site.lat, site.lng, site.notes = body.address, body.lat, body.lng, body.notes
@@ -174,6 +204,34 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
         await manager.restart(site)
     counts = await _open_counts(db, user.tenant_id)
     data = site_dict(site, counts.get(site.id))
+    bus.publish(user.tenant_id, "site.updated", data)
+    return data
+
+
+class ArmIn(BaseModel):
+    note: str = Field(default="", max_length=500)
+    minutes: int | None = Field(default=None, ge=1, le=arming.MAX_DISARM_MINUTES)   # disarm only: auto re-arm after
+
+
+@router.post("/sites/{site_id}/arm")
+@router.post("/sites/{site_id}/disarm")
+async def arm_site(site_id: int, body: ArmIn, request: Request, user: User = Depends(current_user),
+                   db: AsyncSession = Depends(get_db)):
+    """Operators arm/disarm by hand. It holds until the next scheduled change (or the disarm timer)."""
+    site = await _get_site(db, user, site_id)
+    if site.archived_at is not None:
+        raise HTTPException(400, "Site is archived")
+    armed = request.url.path.endswith("/arm")
+    t = now_ms()
+    until = t + body.minutes * 60_000 if body.minutes and not armed else None
+    site.arm_override = {"armed": armed, "at_ms": t, "until_ms": until, "by": user.label, "user_id": user.id,
+                         "note": body.note.strip()}
+    site.armed = armed
+    audit(db, user.tenant_id, "site.armed" if armed else "site.disarmed", user_id=user.id, site_id=site.id,
+          ip=client_ip(request), source="manual", note=body.note.strip(), until_ms=until)
+    await db.commit()
+    counts = await _open_counts(db, user.tenant_id)
+    data = {**site_dict(site, counts.get(site.id)), "push": manager.push_state(site.id), **manager.rule_info(site.id)}
     bus.publish(user.tenant_id, "site.updated", data)
     return data
 
@@ -208,7 +266,7 @@ class AckIn(BaseModel):
 
 @router.get("/alarms")
 async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
-                      state: str = Query("open", pattern="^(open|acknowledged|all)$"),
+                      state: str = Query("open", pattern="^(open|acknowledged|disarmed|all)$"),
                       site_id: int | None = None, category: str | None = Query(None, pattern="^(security|system)$"),
                       priority: int | None = Query(None, ge=1, le=3),
                       q: str | None = Query(None, max_length=200),
@@ -216,8 +274,8 @@ async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Dep
     stmt = select(Alarm).where(Alarm.tenant_id == user.tenant_id)
     if state == "open":
         stmt = stmt.where(Alarm.state == "new")
-    elif state == "acknowledged":
-        stmt = stmt.where(Alarm.state == "acknowledged")
+    elif state in ("acknowledged", "disarmed"):
+        stmt = stmt.where(Alarm.state == state)
     if site_id:
         stmt = stmt.where(Alarm.site_id == site_id)
     if category:
