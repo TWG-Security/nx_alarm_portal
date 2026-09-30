@@ -6,6 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# ffmpeg: makes NX clips browser-playable (H.264 rewrap/transcode) and reads their start time.
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
@@ -13,8 +16,9 @@ COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
 
-ENV TILE_CACHE_DIR=/app/tile-cache
-RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/tile-cache && chown -R appuser:appuser /app
+ENV TILE_CACHE_DIR=/app/tile-cache \
+    MEDIA_CACHE_DIR=/app/media-cache
+RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/tile-cache /app/media-cache && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8080

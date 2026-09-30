@@ -212,8 +212,10 @@ class PollerManager:
                 audit(db, site.tenant_id, "site.online", site_id=site.id)
                 await db.commit()
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": "online"})
+            from app.services import clips  # late import: clips uses this module's manager
             for a in created:
                 bus.publish(site.tenant_id, "alarm.new", alarm_dict(a))
+                clips.schedule_prefetch(a)
             return created
 
     async def _set_status(self, rt: SiteRuntime, status: str, detail: str) -> None:

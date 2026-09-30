@@ -41,6 +41,9 @@ def create_app() -> FastAPI:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("X-Frame-Options", "DENY")
         response.headers.setdefault("Referrer-Policy", "same-origin")
+        # Our own JS/CSS change on deploy; make browsers revalidate (cheap 304s via ETag).
+        if request.url.path.startswith(("/static/js/", "/static/css/")):
+            response.headers["Cache-Control"] = "no-cache"
         return response
 
     @app.exception_handler(NotAuthenticated)

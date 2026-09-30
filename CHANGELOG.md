@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Alarm video clips**:
+  - A looping clip around each alarm (default −10 s / +20 s) in the drawer and the critical pop-up.
+  - Timeline with an alarm marker and object-presence marks; play/pause, frame step, speed, jump to alarm, widen earlier/later, HD, live and download.
+  - NX's recorded start time keeps playback frame-accurate. Non-H.264 streams (H.265, MPEG-4 Part 2) are converted by ffmpeg.
+  - Clips are cached on disk with range support, and pre-built for Critical and Alarm events.
+- **Analytics bounding boxes** over the video, from NX object tracks and their per-frame metadata, in sync with playback.
+- `tools/fake_nx.py` serves synthetic clips and moving object tracks.
 - **Alarm levels**: Critical, Alarm, Warning or Ignore for each NX event type, set on an admin Settings page. Force-acknowledge NX rules are always Critical. Saving re-levels open alarms.
 - **Audible alarms**:
   - Critical: a siren repeating every 4 s. Alarm: a chime repeating every 30 s. Warning: one tone.

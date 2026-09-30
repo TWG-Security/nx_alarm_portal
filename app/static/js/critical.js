@@ -2,45 +2,21 @@
 
 import { openAlarms, on, emit, esc, fmtTime, timerHtml, acknowledge } from "./common.js";
 import { silence, isSilenced } from "./sound.js";
+import { mountPlayer } from "./player.js";
 
 const dlg = document.getElementById("critical-dialog");
 const MIN_KEY = "twg-crit-minimized";
 let minimized = new Set();
 try { minimized = new Set(JSON.parse(sessionStorage.getItem(MIN_KEY) || "[]")); } catch (e) { /* ignore */ }
-let shownId = null, idx = 0, signature = "";
+let shownId = null, idx = 0, signature = "", player = null;
 
 const criticals = () => [...openAlarms.values()].filter((a) => a.priority === 1).sort((a, b) => a.event_ts_ms - b.event_ts_ms);
 const queue = () => criticals().filter((a) => !minimized.has(a.id));
 function saveMin() { try { sessionStorage.setItem(MIN_KEY, JSON.stringify([...minimized])); } catch (e) { /* ignore */ } }
 
-function snapshotHtml(a) {
-  if (!a.has_snapshot) return "";
-  return `<div class="snapshot crit-snap"><img alt="Camera frame at alarm time" data-alarm="${a.id}" src="/media/alarms/${a.id}/snapshot.jpg">
-    <div class="snap-msg" hidden></div></div>`;
-}
-
-// Event-time frames can lag the alarm by a few seconds; retry, then fall back to live.
-function wireSnapshot(root) {
-  const img = root.querySelector("img[data-alarm]");
-  if (!img) return;
-  let tries = 0;
-  img.addEventListener("error", () => {
-    tries++;
-    const id = img.dataset.alarm;
-    if (tries === 1) setTimeout(() => { img.src = `/media/alarms/${id}/snapshot.jpg?r=1`; }, 3000);
-    else if (tries === 2) img.src = `/media/alarms/${id}/live.jpg?t=${Date.now()}`;
-    else {
-      img.classList.add("failed");
-      const m = root.querySelector(".snap-msg");
-      m.hidden = false;
-      m.textContent = "No camera image available right now.";
-    }
-  });
-}
-
 function render() {
   const q = queue();
-  if (!q.length) { if (dlg.open) dlg.close("empty"); shownId = null; signature = ""; return; }
+  if (!q.length) { player?.destroy(); player = null; if (dlg.open) dlg.close("empty"); shownId = null; signature = ""; return; }
   idx = Math.min(idx, q.length - 1);
   const a = q[idx];
   const sig = `${a.id}|${q.length}|${idx}`;
@@ -58,7 +34,7 @@ function render() {
       <div class="crit-where"><b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}</div>
       <div class="muted">${a.source_name ? esc(a.source_name) + " · " : ""}${fmtTime(a.event_ts_ms)}</div>
       ${a.description ? `<p style="white-space:pre-wrap">${esc(a.description)}</p>` : ""}
-      ${snapshotHtml(a)}
+      <div class="player-mount crit-player"></div>
       <div class="field"><label for="crit-note">Disposition note</label>
         <textarea id="crit-note" maxlength="4000" placeholder="What did you see / do? (e.g. verified on camera, dispatched, false alarm)"></textarea></div>
       <div class="crit-actions">
@@ -72,7 +48,8 @@ function render() {
         <button class="btn btn-sm" data-act="next" ${idx === q.length - 1 ? "disabled" : ""}>Next ›</button></div>` : ""}
     </div>`;
   dlg.querySelector("#crit-note").value = keepNote || "";
-  wireSnapshot(dlg);
+  player?.destroy();
+  player = mountPlayer(dlg.querySelector(".player-mount"), a);
   if (!dlg.open) dlg.showModal();
 }
 

@@ -18,7 +18,13 @@ One place where TWG Security operators see alarms from every NX Witness deployme
   | **Ignore** | Not stored or shown |
 
   **Silence 2 min** pauses the repeats (a new critical breaks the silence). With several portal tabs open, only one plays sound.
-- **Unified alarm queue**: filter by site, level and state. Each alarm shows the camera frame at the moment it happened, and a live view is one click away.
+- **Unified alarm queue**: filter by site, level and state.
+- **Alarm video**:
+  - Every alarm opens with a looping clip from 10 s before to 20 s after, in the details drawer and in the critical pop-up.
+  - The timeline shows an alarm marker and marks where analytics objects were present.
+  - Controls: play/pause, 0.1 s frame steps (← →), 0.25×–4× speed, jump to the alarm, widening the window 15 s earlier or later (up to 5 min), HD, live view and download.
+  - **Analytics bounding boxes** are drawn over the video in sync, labeled with the object type and its first attribute. The event's own object is red; other objects in the clip are orange.
+  - Clips for Critical and Alarm events are pre-built as soon as the footage exists, so they open instantly.
 - **Acknowledge + log**: the operator writes a disposition note and clicks Acknowledge. The portal writes the ack back to NX (either clearing a forced-acknowledgement notification or adding a bookmark), and every step goes into an append-only audit log.
 - **Add sites through the vmsproxy relay**: enter the site's Nx Cloud ID, the credentials and a map pin, then click **Connect**.
 - Dark mode is the default; a light theme is available.
@@ -53,6 +59,16 @@ One place where TWG Security operators see alarms from every NX Witness deployme
   - Forced-ack alarms go to `POST /rest/v4/events/acknowledges`, which creates an NX bookmark and clears the notification in the NX Desktop client. Everything else gets a camera bookmark tagged `alarm-portal`.
   - If NX can't be reached, the local acknowledgement still stands, and the failure is shown and logged.
 - **NX API client** (`app/nx/client.py`): copied from [nx-witness-mcp](https://github.com/TWG-Security/nx-witness-mcp) with a few small local changes, which are listed in the file header.
+
+## How alarm video works
+
+- The portal requests `GET /rest/v4/devices/{id}/media.mp4?positionMs&durationMs` from NX.
+  - SD is the camera's secondary stream as recorded. This is fast, with no transcoding on NX.
+  - HD is the primary stream, converted by NX to 720p H.264.
+- NX starts the clip on the keyframe before the requested time and writes the true start time into the MP4 comment tag. ffprobe reads it, so boxes line up with the video to the frame.
+- ffmpeg rewraps H.264 as-is. H.265 and MPEG-4 Part 2, which many NX secondary streams use, are converted to H.264 so every browser can play them. On the TWG sites, a 30 s clip including conversion takes about 2 s.
+- Clips are cached in the `mediacache` volume (4 GB cap, oldest evicted first) and served with HTTP range support, so the video can seek and loop.
+- Bounding boxes come from `/rest/v4/analytics/objectTracks` plus each track's per-frame `objectMetadata`. Cameras whose analytics don't produce object tracks (for example camera-side ONVIF line crossing) have no boxes to draw.
 
 ## Alarm sound on operator workstations
 

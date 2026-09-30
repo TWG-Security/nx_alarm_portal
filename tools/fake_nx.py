@@ -6,12 +6,16 @@ Fire events:  curl -X POST localhost:8199/_inject/panic   (critical: soft trigge
               curl -X POST localhost:8199/_inject/line    (alarm: analytics line crossing)
               curl -X POST localhost:8199/_inject/dock    (warning: camera disconnected)
 Inspect NX-side write-backs:  curl localhost:8199/_state
+Clips: /rest/v4/devices/{id}/media.mp4 returns an ffmpeg test pattern (MPEG-4 Part 2, like many
+NX secondary streams) tagged with NX's startTimeMs comment; set FAKE_NX_FFMPEG if ffmpeg isn't on PATH.
+Every injected event also gets an analytics object track with a box that moves across the frame.
 """
-import io, time, uuid
+import json, os, subprocess, tempfile, time, uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import Response, JSONResponse
 app = FastAPI()
-EVENTS, ACKS, BOOKMARKS = [], [], []
+EVENTS, ACKS, BOOKMARKS, TRACKS = [], [], [], []
+FFMPEG = os.environ.get("FAKE_NX_FFMPEG", "ffmpeg")
 DEV = [{"id": "{11111111-1111-1111-1111-111111111111}", "name": "Front Gate PTZ", "deviceType": "Camera"},
        {"id": "{22222222-2222-2222-2222-222222222222}", "name": "Loading Dock", "deviceType": "Camera"}]
 # 1x1 grey JPEG
@@ -33,6 +37,30 @@ async def image(d: str): return Response(JPG, media_type="image/jpeg")
 async def ack(req: Request): ACKS.append(await req.json()); return {"id": str(uuid.uuid4())}
 @app.post("/rest/v4/devices/{d}/bookmarks")
 async def bm(d: str, req: Request): BOOKMARKS.append(await req.json()); return {"id": str(uuid.uuid4())}
+@app.get("/rest/v4/devices/{d}/media.mp4")
+async def media(d: str, positionMs: int, durationMs: int = 10000):
+    start = positionMs - 500                       # NX starts on the keyframe before positionMs
+    with tempfile.TemporaryDirectory() as tmp:
+        out = f"{tmp}/clip.mp4"
+        subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=15",
+                        "-t", str((durationMs + 500) / 1000), "-c:v", "mpeg4", "-q:v", "5",
+                        "-metadata", "comment=" + json.dumps({"startTimeMs": str(start), "version": 4}), out], check=True)
+        return Response(open(out, "rb").read(), media_type="video/mp4")
+
+@app.get("/rest/v4/analytics/objectTracks")
+async def tracks(startTimeMs: int = 0, endTimeMs: int = 2**62):
+    return [t for t in TRACKS if t["endTimeMs"] >= startTimeMs and t["startTimeMs"] <= endTimeMs]
+
+@app.get("/rest/v4/analytics/objectTracks/{tid}")
+async def track(tid: str): return next(t for t in TRACKS if t["id"] == tid)
+
+@app.get("/rest/v4/analytics/objectTracks/{tid}/objectMetadata")
+async def metadata(tid: str):
+    t = next(t for t in TRACKS if t["id"] == tid)
+    n = (t["endTimeMs"] - t["startTimeMs"]) // 200
+    return [{"timestampMs": t["startTimeMs"] + i * 200, "durationMs": 0, "attributes": [],
+             "boundingBox": f"{0.1 + 0.6 * i / n:.4f},0.35,0.18x0.4"} for i in range(n + 1)]
+
 @app.get("/_state")
 async def state(): return {"acks": ACKS, "bookmarks": BOOKMARKS, "events": len(EVENTS)}
 @app.post("/_inject/{kind}")
@@ -49,5 +77,8 @@ async def inject(kind: str):
     else:
         ev = {"type": "deviceDisconnected", "state": "instant", "deviceId": DEV[1]["id"], "timestamp": str(ts*1000)}
         act = {"id": aid, "type": "desktopNotification", "serverId": "{srv-1}", "sourceName": "Loading Dock", "deviceIds": [DEV[1]["id"]]}
+    TRACKS.append({"id": str(uuid.uuid4()), "deviceId": dev.strip("{}"), "objectTypeId": "nx.base.Person",
+                   "startTimeMs": ts - 2000, "endTimeMs": ts + 4000, "attributes": [{"name": "Clothing", "value": "Dark jacket"}]})
+    ev["objectTrackId"] = TRACKS[-1]["id"]
     EVENTS.append({**base, "eventData": ev, "actionData": act})
     return {"ok": True}

@@ -4,14 +4,18 @@ import asyncio
 import json
 from collections import OrderedDict
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+import re
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import get_db, sessionmaker
 from app.deps import current_user
 from app.models import Alarm, User
+from app.services import clips
 from app.services.bus import bus
 from app.services.poller import manager
 from app.services.sites import describe_http_error
@@ -86,3 +90,58 @@ async def alarm_live(alarm_id: int, user: User = Depends(current_user), db: Asyn
     alarm = await _alarm_for(db, user, alarm_id)
     data = await _frame(alarm, -1)
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+# ------------------------------------------------------------------ video clips
+
+async def _clip_alarm(db: AsyncSession, user: User, alarm_id: int) -> Alarm:
+    alarm = await db.scalar(select(Alarm).where(Alarm.id == alarm_id, Alarm.tenant_id == user.tenant_id))
+    if alarm is None:
+        raise HTTPException(404)
+    return alarm
+
+
+@router.get("/api/alarms/{alarm_id}/clip")
+async def alarm_clip(alarm_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+                     pre: int | None = Query(None, ge=0, le=600), post: int | None = Query(None, ge=1, le=600),
+                     quality: str = Query("sd", pattern="^(sd|hd)$")):
+    """Clip status; poll until status == "ready", then play `url`."""
+    alarm = await _clip_alarm(db, user, alarm_id)
+    try:
+        info = await clips.get_clip(alarm, pre, post, quality)
+    except clips.ClipError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return info.to_dict()
+
+
+_CLIP_NAME = re.compile(r"^a(\d+)_\d+_\d+_(sd|hd)$")
+
+
+@router.get("/media/clips/{name}.mp4")
+async def clip_file(name: str, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    m = _CLIP_NAME.match(name)
+    if not m:
+        raise HTTPException(404)
+    await _clip_alarm(db, user, int(m.group(1)))          # tenant check
+    path = clips.clip_path(name)
+    if not path.exists():
+        raise HTTPException(404, "Clip expired from cache; request it again")
+    # FileResponse answers Range requests, which <video> needs for seeking and looping.
+    return FileResponse(path, media_type="video/mp4", filename=f"alarm-{m.group(1)}.mp4",
+                        content_disposition_type="inline", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@router.get("/api/alarms/{alarm_id}/objects")
+async def alarm_objects(alarm_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+                        from_ms: int | None = None, to_ms: int | None = None):
+    """Analytics object tracks (per-frame bounding boxes) around the alarm."""
+    alarm = await _clip_alarm(db, user, alarm_id)
+    s = get_settings()
+    start = from_ms if from_ms is not None else alarm.event_ts_ms - s.clip_pre_s * 1000
+    end = to_ms if to_ms is not None else alarm.event_ts_ms + s.clip_post_s * 1000
+    if end <= start or end - start > s.clip_max_window_s * 1000 + 60_000:
+        raise HTTPException(400, "Bad time range")
+    try:
+        return await clips.objects(alarm, start, end)
+    except Exception as exc:  # noqa: BLE001 — analytics is best-effort; the clip still plays
+        return JSONResponse({"detail": str(describe_http_error(exc))}, status_code=502)

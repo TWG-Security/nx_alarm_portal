@@ -31,6 +31,16 @@ class Settings(BaseSettings):
     device_refresh_s: float = 600.0      # camera-name cache refresh
 
     nx_timeout_s: float = 15.0
+
+    # Alarm video clips (app/services/clips.py)
+    clip_pre_s: int = 10                 # default window: this long before the alarm...
+    clip_post_s: int = 20                # ...to this long after
+    clip_max_window_s: int = 300         # operators can widen the window up to this total
+    media_cache_dir: str = "./media-cache"
+    media_cache_max_mb: int = 4096       # oldest clips are evicted beyond this
+    ffmpeg_path: str = "ffmpeg"
+    ffprobe_path: str = "ffprobe"
+    prefetch_clips: bool = True          # build clips for critical/alarm events as soon as footage exists
     session_max_age_s: int = 12 * 3600
     cookie_secure: bool = True           # set False only for plain-http local dev
     start_pollers: bool = True           # tests turn this off

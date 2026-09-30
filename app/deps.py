@@ -66,6 +66,7 @@ def render(request: Request, name: str, user: User | None = None, **ctx):
     return templates.TemplateResponse(request, name, {
         "user": user,
         "csrf_token": ensure_csrf(request),
+        "clip_config": {"pre": settings.clip_pre_s, "post": settings.clip_post_s, "max": settings.clip_max_window_s},
         "map_config": {
             "tileUrl": "/tiles/{z}/{x}/{y}.png",
             "attribution": settings.map_tile_attribution,

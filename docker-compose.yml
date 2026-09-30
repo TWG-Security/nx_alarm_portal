@@ -24,6 +24,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@db:5432/portal
     volumes:
       - tilecache:/app/tile-cache
+      - mediacache:/app/media-cache
     depends_on:
       db:
         condition: service_healthy
@@ -46,5 +47,6 @@ services:
 volumes:
   pgdata:
   tilecache:
+  mediacache:
   caddy_data:
   caddy_config:
