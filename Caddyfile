@@ -1,5 +1,10 @@
 # Serves the portal over HTTPS. "tls internal" uses Caddy's own CA, which is fine on the LAN.
 # With a real DNS name pointing here, drop "tls internal" and Caddy fetches a public certificate.
+{
+	# Browsers send no SNI when connecting by IP address; tell Caddy which certificate to use then.
+	default_sni {$PORTAL_HOST}
+}
+
 {$PORTAL_HOST}, localhost {
 	tls internal
 	encode gzip
