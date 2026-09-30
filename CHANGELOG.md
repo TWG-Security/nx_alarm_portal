@@ -16,6 +16,8 @@
 - `tools/e2e/prod_probe.py`: measures alarm delivery over the LAN and the public (Cloudflare Tunnel) address side by side.
 
 ### Fixed
+- The Sites page failed to load through Cloudflare after a deploy: Cloudflare turns `no-cache` into a 4-hour browser cache, so old and new scripts got mixed. Assets are now served from content-versioned URLs.
+- Arming on the map's site panel is a clear card: ARMED or DISARMED, how long, who and why, when it changes next, and one full-width Arm or Disarm button.
 - The public name `alarmportal.twgsecurity.net` showed a blank page: Caddy answered unknown hostnames with an empty 200. The name is now in the Caddyfile (`PUBLIC_HOST`).
 - **Growing clips**: video starts about 7 s after an alarm (was about 30 s). The clip covers the footage recorded so far, is extended every 5 s in place, and is replaced by the full clip once recorded. Prefetch builds the first growing clip at +5 s.
 - The portal logs the lag of every event NX pushes, which shows delays upstream of the portal.
