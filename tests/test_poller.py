@@ -128,3 +128,47 @@ async def test_nx_rule_tags_set_levels_and_loudest_rule_wins(session, admin):
     assert (by_ts[6_001_000].priority, by_ts[6_001_000].level_source) == (3, "rule_tag")
     assert (by_ts[6_002_000].priority, by_ts[6_002_000].level_source) == (1, "rule_tag")
     assert rules.called
+
+
+@respx.mock
+async def test_editing_a_rule_tag_relevels_open_alarms_within_a_poll(session, admin, monkeypatch):
+    from app.config import get_settings
+    from app.models import Alarm
+    monkeypatch.setattr(get_settings(), "rules_refresh_s", 0)
+    tenant, _ = admin
+    site = await make_site(session, tenant, cursor=7_000_000)
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[]))
+    rules = respx.get(f"{NX}/rest/v4/events/rules")
+    rules.mock(return_value=httpx.Response(200, json=[{"id": "r1", "comment": ""}]))
+    row = nx_row(7_001_000, type_="softTrigger"); row["ruleId"] = "r1"
+    events = respx.get(f"{NX}/rest/v4/events/log")
+    events.mock(return_value=httpx.Response(200, json=[row]))
+    rt = manager._runtime(site)
+    [a] = await manager.poll_once(rt)
+    assert (a.priority, a.level_source) == (1, "default")
+
+    # The operator adds "#warning" to the rule in NX; the next poll picks it up.
+    rules.mock(return_value=httpx.Response(200, json=[{"id": "r1", "comment": "Truss 8 test #warning"}]))
+    events.mock(return_value=httpx.Response(200, json=[]))
+    sub = bus.subscribe(tenant.id)
+    await manager.poll_once(rt)
+    stored = (await session.execute(select(Alarm).execution_options(populate_existing=True))).scalar_one()
+    assert (stored.priority, stored.level_source) == (3, "rule_tag")
+    assert "alarms.reload" in [sub.queue.get_nowait()[0] for _ in range(sub.queue.qsize())]
+    bus.unsubscribe(sub)
+
+
+@respx.mock
+async def test_forbidden_rules_back_off_quietly(session, admin):
+    tenant, _ = admin
+    site = await make_site(session, tenant, cursor=8_000_000)
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[]))
+    rules = respx.get(f"{NX}/rest/v4/events/rules").mock(return_value=httpx.Response(403))
+    row = nx_row(8_001_000, type_="softTrigger"); row["ruleId"] = "r1"
+    respx.get(f"{NX}/rest/v4/events/log").mock(return_value=httpx.Response(200, json=[row]))
+    rt = manager._runtime(site)
+    [a] = await manager.poll_once(rt)
+    await manager.poll_once(rt)
+    assert a.level_source == "default" and rt.rules_forbidden and rules.call_count == 1

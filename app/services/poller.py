@@ -11,6 +11,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -43,6 +44,7 @@ class SiteRuntime:
     rule_levels: dict[str, str] = field(default_factory=dict)   # NX rule id -> level from its #tag
     rule_ids: set[str] = field(default_factory=set)
     rules_refreshed: float = 0.0
+    rules_forbidden: bool = False
     devices_refreshed: float = 0.0
     failing_since: float | None = None
     task: asyncio.Task | None = None
@@ -203,16 +205,16 @@ class PollerManager:
                 except Exception:  # noqa: BLE001
                     pass
                 rt.devices_refreshed = time.monotonic()
-            await self._refresh_rules(rt, force=False)
             tenant = await db.get(Tenant, site.tenant_id)
             policy = Policy.from_settings(tenant.settings if tenant else None)
+            relevelled = await self._refresh_rules(rt, db, site, policy)
 
             cursor = site.event_cursor_ms or (now_ms() - settings.initial_lookback_ms)
             rows = await rt.client.get_events(limit=500, from_ms=max(1, cursor - settings.poll_overlap_ms),
                                               descending=False) or []
-            # A rule we haven't seen (just created or edited in NX): re-read rules, at most once a minute.
-            if any((r.get("ruleId") or "").strip("{}") not in rt.rule_ids for r in rows):
-                await self._refresh_rules(rt, force=True)
+            # A rule we haven't seen yet (just created in NX): re-read rules now.
+            if not rt.rules_forbidden and any((r.get("ruleId") or "").strip("{}") not in rt.rule_ids for r in rows):
+                relevelled += await self._refresh_rules(rt, db, site, policy, force=True)
             created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy, rt.rule_levels)
             rt.failing_since = None
             site.event_cursor_ms = max([cursor] + [int(r.get("timestampMs") or 0) for r in rows])
@@ -226,26 +228,57 @@ class PollerManager:
                 audit(db, site.tenant_id, "site.online", site_id=site.id)
                 await db.commit()
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": "online"})
+            if relevelled:
+                bus.publish(site.tenant_id, "alarms.reload", {})
             from app.services import clips  # late import: clips uses this module's manager
             for a in created:
                 bus.publish(site.tenant_id, "alarm.new", alarm_dict(a))
                 clips.schedule_prefetch(a)
             return created
 
-    async def _refresh_rules(self, rt: SiteRuntime, force: bool) -> None:
-        """Read NX rules for #critical/#alarm/#warning/#ignore tags in their Title/Comment."""
-        age = time.monotonic() - rt.rules_refreshed
-        if age < (60 if force else get_settings().device_refresh_s):
-            return
+    async def _refresh_rules(self, rt: SiteRuntime, db: AsyncSession, site: Site, policy: Policy,
+                             force: bool = False) -> int:
+        """Re-read NX rules for #critical/#alarm/#warning/#ignore tags in their Title/Comment.
+
+        Runs every rules_refresh_s (so tag edits apply within a minute), or right away for
+        a rule id we haven't seen. If a rule's tag changed, its still-open alarms are
+        re-levelled. Returns how many alarms changed level.
+        """
+        settings = get_settings()
+        interval = settings.device_refresh_s if rt.rules_forbidden else settings.rules_refresh_s
+        if time.monotonic() - rt.rules_refreshed < (min(interval, 5) if force else interval):
+            return 0
         rt.rules_refreshed = time.monotonic()
         try:
             rules = await rt.client.get_rules() or []
-        except Exception as exc:  # noqa: BLE001 — needs rule-read rights; levels fall back to event type
-            log.info("site %s: could not read NX rules (%s); rule tags ignored", rt.site_id, exc)
-            return
+        except httpx.HTTPStatusError as exc:
+            if not rt.rules_forbidden:
+                log.warning("site %s: NX account can't read rules (HTTP %s); #tags ignored, using event-type levels",
+                            rt.site_id, exc.response.status_code)
+            rt.rules_forbidden = True
+            return 0
+        except Exception as exc:  # noqa: BLE001 — rules are optional; never let them break alarm polling
+            log.info("site %s: could not read NX rules (%s)", rt.site_id, exc.__class__.__name__)
+            return 0
+        rt.rules_forbidden = False
+        old = rt.rule_levels
         rt.rule_ids = {(r.get("id") or "").strip("{}") for r in rules}
         rt.rule_levels = {rid: lvl for r in rules
                           if (lvl := rule_tag(r.get("comment"))) and (rid := (r.get("id") or "").strip("{}"))}
+        changed_rules = {rid for rid in set(old) | set(rt.rule_levels) if old.get(rid) != rt.rule_levels.get(rid)}
+        if not changed_rules:
+            return 0
+        n = 0
+        open_alarms = (await db.scalars(select(Alarm).where(
+            Alarm.site_id == site.id, Alarm.state == "new", Alarm.rule_id.in_(changed_rules)))).all()
+        for a in open_alarms:
+            c = classify(a.raw or {}, policy, site.alarm_types, rt.rule_levels)
+            if c.is_alarm and (c.priority, c.source) != (a.priority, a.level_source):
+                a.priority, a.level_source = c.priority, c.source
+                n += 1
+        if n:
+            log.info("site %s: re-levelled %d open alarm(s) after NX rule tag changes", site.id, n)
+        return n
 
     async def _set_status(self, rt: SiteRuntime, status: str, detail: str) -> None:
         async with sessionmaker()() as db:

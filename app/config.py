@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     offline_after_s: float = 60.0        # only show a site offline after failing this long (relay 503s are often one-off)
     initial_lookback_ms: int = 0         # on first connect, how far back to pull events (0 = from now)
     device_refresh_s: float = 600.0      # camera-name cache refresh
+    rules_refresh_s: float = 60.0        # how quickly NX rule #tag edits take effect
 
     nx_timeout_s: float = 15.0
 
