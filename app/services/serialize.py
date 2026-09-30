@@ -3,6 +3,7 @@
 from datetime import timezone
 
 from app.models import Alarm, AuditLog, Site
+from app.services.alarm_filter import LEVEL_NAMES
 
 
 def _iso(dt):
@@ -18,6 +19,8 @@ def alarm_dict(a: Alarm) -> dict:
         "id": a.id,
         "site_id": a.site_id,
         "site_name": a.site.name if a.site else "",
+        "site_address": a.site.address if a.site else "",
+        "level": LEVEL_NAMES.get(a.priority, "warning"),
         "event_type": a.event_type,
         "event_subtype": a.event_subtype,
         "category": a.category,
@@ -39,15 +42,14 @@ def alarm_dict(a: Alarm) -> dict:
 
 
 def site_dict(s: Site, open_counts: dict | None = None) -> dict:
-    """open_counts: {"security": n, "system": n} of unacknowledged alarms. Never includes credentials."""
+    """open_counts: {priority: n} of unacknowledged alarms. Never includes credentials."""
     open_counts = open_counts or {}
-    security = open_counts.get("security", 0)
-    system = open_counts.get("system", 0)
+    critical, alarm, warning = (open_counts.get(p, 0) for p in (1, 2, 3))
     if s.status in ("offline", "auth_error") or not s.enabled:
         marker = "offline"
-    elif security:
+    elif critical or alarm:
         marker = "alarm"
-    elif system:
+    elif warning:
         marker = "warn"
     else:
         marker = "ok"
@@ -68,8 +70,9 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "nx_site_name": s.nx_site_name,
         "nx_version": s.nx_version,
         "camera_count": s.camera_count,
-        "open_security": security,
-        "open_system": system,
+        "open_critical": critical,
+        "open_alarm": alarm,
+        "open_warning": warning,
         "marker": marker,
     }
 

@@ -21,9 +21,11 @@
     <a href="/alarms" class="{{ 'active' if page == 'alarms' }}">Alarms <span id="nav-alarm-count" class="badge" hidden>0</span></a>
     <a href="/sites" class="{{ 'active' if page == 'sites' }}">Sites</a>
     <a href="/audit" class="{{ 'active' if page == 'audit' }}">Audit log</a>
-    {% if user.is_admin %}<a href="/users" class="{{ 'active' if page == 'users' }}">Users</a>{% endif %}
+    {% if user.is_admin %}<a href="/settings" class="{{ 'active' if page == 'settings' }}">Settings</a>
+    <a href="/users" class="{{ 'active' if page == 'users' }}">Users</a>{% endif %}
   </nav>
   <div class="topbar-actions">
+    <button id="silence-btn" class="btn btn-sm btn-silence" type="button" hidden title="Stop repeating alarm sounds for 2 minutes">Silence 2 min</button>
     <button id="mute-toggle" class="btn icon-btn" type="button" title="Mute alarm sound" aria-label="Mute alarm sound">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path class="sound-on" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/><path class="sound-off" d="m16 9 6 6m0-6-6 6" hidden/></svg>
     </button>
@@ -37,6 +39,10 @@
     </form>
   </div>
 </header>
+<div id="sound-banner" class="sound-banner" role="button" tabindex="0" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="m16 9 6 6m0-6-6 6"/></svg>
+  <span><b>Alarm sound is off.</b> Your browser blocks sound until you interact with the page. Click anywhere to turn it on.</span>
+</div>
 {% endif %}
 <main>{% block content %}{% endblock %}</main>
 
@@ -57,9 +63,12 @@
 </dialog>
 
 {% if user %}
+<dialog id="critical-dialog" class="critical-dialog" aria-labelledby="crit-title"></dialog>
+<div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Alarm detail"></aside>
 <script>window.PORTAL = {{ {"user": user.label, "isAdmin": user.is_admin, "map": map_config} | tojson }};</script>
 <script src="/static/vendor/leaflet/leaflet.js"></script>
-<script type="module" src="/static/js/common.js"></script>
+<script type="module" src="/static/js/console.js"></script>
 {% endif %}
 {% block scripts %}{% endblock %}
 </body>

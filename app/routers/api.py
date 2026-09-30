@@ -8,14 +8,15 @@ import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, current_user, require_admin
-from app.models import Alarm, AuditLog, Site, User
+from app.models import Alarm, AuditLog, Site, Tenant, User
+from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
 from app.services.bus import bus
@@ -53,15 +54,16 @@ class ConnTest(BaseModel):
     site_id: int | None = None
 
 
-async def _open_counts(db: AsyncSession, tenant_id: int) -> dict[int, dict]:
+async def _open_counts(db: AsyncSession, tenant_id: int) -> dict[int, dict[int, int]]:
+    """{site_id: {priority: open_count}}"""
     rows = await db.execute(
-        select(Alarm.site_id, Alarm.category, func.count())
+        select(Alarm.site_id, Alarm.priority, func.count())
         .where(Alarm.tenant_id == tenant_id, Alarm.state == "new")
-        .group_by(Alarm.site_id, Alarm.category)
+        .group_by(Alarm.site_id, Alarm.priority)
     )
-    out: dict[int, dict] = {}
-    for site_id, category, n in rows.all():
-        out.setdefault(site_id, {})[category] = n
+    out: dict[int, dict[int, int]] = {}
+    for site_id, priority, n in rows.all():
+        out.setdefault(site_id, {})[priority] = n
     return out
 
 
@@ -208,6 +210,7 @@ class AckIn(BaseModel):
 async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
                       state: str = Query("open", pattern="^(open|acknowledged|all)$"),
                       site_id: int | None = None, category: str | None = Query(None, pattern="^(security|system)$"),
+                      priority: int | None = Query(None, ge=1, le=3),
                       q: str | None = Query(None, max_length=200),
                       before_id: int | None = None, limit: int = Query(100, ge=1, le=500)):
     stmt = select(Alarm).where(Alarm.tenant_id == user.tenant_id)
@@ -219,6 +222,8 @@ async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Dep
         stmt = stmt.where(Alarm.site_id == site_id)
     if category:
         stmt = stmt.where(Alarm.category == category)
+    if priority:
+        stmt = stmt.where(Alarm.priority == priority)
     if q:
         like = f"%{q}%"
         stmt = stmt.where(Alarm.caption.ilike(like) | Alarm.source_name.ilike(like) | Alarm.description.ilike(like))
@@ -254,10 +259,8 @@ async def ack_alarm(alarm_id: int, body: AckIn, request: Request, user: User = D
 @router.get("/summary")
 async def summary(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     counts = await _open_counts(db, user.tenant_id)
-    return {
-        "open_security": sum(c.get("security", 0) for c in counts.values()),
-        "open_system": sum(c.get("system", 0) for c in counts.values()),
-    }
+    total = lambda p: sum(c.get(p, 0) for c in counts.values())  # noqa: E731
+    return {"open_critical": total(1), "open_alarm": total(2), "open_warning": total(3)}
 
 
 # --------------------------------------------------------------------------- audit
@@ -278,6 +281,61 @@ async def list_audit(user: User = Depends(current_user), db: AsyncSession = Depe
         stmt = stmt.where(AuditLog.id < before_id)
     rows = (await db.scalars(stmt.order_by(AuditLog.id.desc()).limit(limit))).unique().all()
     return [audit_dict(r) for r in rows]
+
+
+# ------------------------------------------------------------------------ settings
+
+class AlarmPolicyIn(BaseModel):
+    levels: dict[str, str]
+    force_ack_critical: bool = True
+
+
+def _policy_payload(policy: Policy) -> dict:
+    return {
+        "force_ack_critical": policy.force_ack_critical,
+        "types": [{"type": t, "label": label, "category": cat, "default": default, "level": policy.level_for(t)}
+                  for t, (label, cat, default) in EVENT_TYPES.items()],
+    }
+
+
+@router.get("/settings/alarm-levels")
+async def get_alarm_levels(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    tenant = await db.get(Tenant, user.tenant_id)
+    return _policy_payload(Policy.from_settings(tenant.settings))
+
+
+@router.put("/settings/alarm-levels")
+async def put_alarm_levels(body: AlarmPolicyIn, request: Request, user: User = Depends(require_admin),
+                           db: AsyncSession = Depends(get_db)):
+    bad = {t: lv for t, lv in body.levels.items() if lv not in CHOICES or t not in EVENT_TYPES}
+    if bad:
+        raise HTTPException(400, f"Unknown event type or level: {bad}")
+    tenant = await db.get(Tenant, user.tenant_id)
+    old = Policy.from_settings(tenant.settings)
+    # Store only differences from the defaults so future default changes still apply.
+    overrides = {t: lv for t, lv in body.levels.items() if lv != EVENT_TYPES[t][2]}
+    policy = Policy(levels=overrides, force_ack_critical=body.force_ack_critical)
+    tenant.settings = {**(tenant.settings or {}), "alarm_policy": policy.to_settings()}
+
+    # Re-level alarms that are still open so the console reflects the change right away.
+    for t in EVENT_TYPES:
+        level = policy.level_for(t)
+        if level == "ignore":
+            continue
+        stmt = update(Alarm).where(Alarm.tenant_id == user.tenant_id, Alarm.state == "new", Alarm.event_type == t)
+        if policy.force_ack_critical:
+            stmt = stmt.where(Alarm.nx_ack_required.is_(False))
+        await db.execute(stmt.values(priority=LEVELS[level]))
+    if policy.force_ack_critical:
+        await db.execute(update(Alarm).where(Alarm.tenant_id == user.tenant_id, Alarm.state == "new",
+                                             Alarm.nx_ack_required.is_(True)).values(priority=1))
+
+    changed = {t: [old.level_for(t), policy.level_for(t)] for t in EVENT_TYPES if old.level_for(t) != policy.level_for(t)}
+    audit(db, user.tenant_id, "settings.alarm_levels", user_id=user.id, ip=client_ip(request), changed=changed,
+          force_ack_critical=policy.force_ack_critical)
+    await db.commit()
+    bus.publish(user.tenant_id, "alarms.reload", {})
+    return _policy_payload(policy)
 
 
 # --------------------------------------------------------------------------- users

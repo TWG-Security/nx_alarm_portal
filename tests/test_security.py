@@ -110,3 +110,22 @@ async def test_html_errors_keep_their_status_code(client, session, admin):
     await login(client, op.email)
     assert (await client.get("/users")).status_code == 403          # admin-only page
     assert (await client.get("/sites/999/edit")).status_code == 403
+
+
+async def test_alarm_levels_settings_relevel_open_alarms(client, session, admin):
+    tenant, user = admin
+    site = await make_site(session, tenant)
+    [a] = await ingest(session, site, [nx_row(9_500_000, type_="deviceDisconnected")], {})
+    await session.commit()
+    assert a.priority == 3
+    await login(client, user.email)
+    cur = (await client.get("/api/settings/alarm-levels")).json()
+    levels = {t["type"]: t["level"] for t in cur["types"]}
+    levels["deviceDisconnected"] = "critical"
+    r = await client.put("/api/settings/alarm-levels", json={"levels": levels, "force_ack_critical": True})
+    assert r.status_code == 200
+    assert next(t for t in r.json()["types"] if t["type"] == "deviceDisconnected")["level"] == "critical"
+    await session.refresh(a)
+    assert a.priority == 1
+    bad = await client.put("/api/settings/alarm-levels", json={"levels": {"motion": "loud"}})
+    assert bad.status_code == 400

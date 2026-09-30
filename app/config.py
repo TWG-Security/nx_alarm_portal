@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     poll_interval_s: float = 5.0         # how often each site's event log is read
     poll_overlap_ms: int = 5000          # re-read window so late-arriving events are not missed
     poll_max_backoff_s: float = 120.0    # ceiling for retry delay on a failing site
+    offline_after_s: float = 60.0        # only show a site offline after failing this long (relay 503s are often one-off)
     initial_lookback_ms: int = 0         # on first connect, how far back to pull events (0 = from now)
     device_refresh_s: float = 600.0      # camera-name cache refresh
 

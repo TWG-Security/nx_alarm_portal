@@ -1,4 +1,4 @@
-import { CFG, api, esc, relTime, on, markerState, STATUS } from "./common.js";
+import { CFG, api, esc, relTime, on, openCounts, markerState, STATUS } from "./common.js";
 
 const tbody = document.getElementById("site-rows");
 let sites = [];
@@ -9,14 +9,15 @@ function render() {
     return;
   }
   tbody.innerHTML = sites.map((s) => {
-    const marker = markerState(s, s.open_security, s.open_system);
+    const c = openCounts(s.id);
+    const marker = markerState(s, c);
     return `<tr>
       <td><div style="display:flex;gap:8px;align-items:center"><span class="dot dot--${marker}"></span><b>${esc(s.name)}</b></div>
         <div class="muted mono">${esc(s.cloud_id || s.host)}</div>${s.address ? `<div class="muted">${esc(s.address)}</div>` : ""}</td>
       <td><span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : ' <span class="chip">disabled</span>'}
         ${s.status_detail ? `<div class="muted" style="max-width:260px">${esc(s.status_detail)}</div>` : ""}</td>
-      <td>${s.open_security ? `<a class="badge" href="/alarms?site_id=${s.id}" style="text-decoration:none">${s.open_security}</a>` : '<span class="muted">0</span>'}
-        ${s.open_system ? `<span class="chip p3">${s.open_system} system</span>` : ""}</td>
+      <td>${c[1] + c[2] ? `<a class="badge" href="/alarms?site_id=${s.id}" style="text-decoration:none">${c[1] + c[2]}</a>` : '<span class="muted">0</span>'}
+        ${c[3] ? `<span class="chip p3">${c[3]} warning</span>` : ""}</td>
       <td>${esc(s.nx_site_name || "—")}<div class="muted">${s.nx_version ? "v" + esc(s.nx_version) : ""}</div></td>
       <td>${s.camera_count}</td>
       <td>${relTime(s.last_seen_at)}</td>
@@ -40,5 +41,6 @@ tbody.addEventListener("click", async (e) => {
   catch (err) { alert(err.message); e.target.disabled = false; }
 });
 
-for (const ev of ["site.status", "site.updated", "site.removed", "alarm.new", "alarm.acked", "reconnect"]) on(ev, () => load().catch(() => {}));
+for (const ev of ["site.status", "site.updated", "site.removed", "reconnect"]) on(ev, () => load().catch(() => {}));
+on("store", render);
 await load().catch((e) => { tbody.innerHTML = `<tr><td colspan="7" class="empty">${esc(e.message)}</td></tr>`; });

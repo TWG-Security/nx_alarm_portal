@@ -21,6 +21,7 @@ class Tenant(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
+    settings: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # e.g. {"alarm_policy": {...}}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -63,7 +64,7 @@ class Site(Base):
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
     notes: Mapped[str] = mapped_column(Text, default="")
-    alarm_types: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # per-site filter override
+    alarm_types: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # per-site {eventType: level} override
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

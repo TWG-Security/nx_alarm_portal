@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1>Alarm levels</h1><button class="btn btn-primary" id="save-levels" disabled>Save changes</button></div>
+  <div class="level-legend">
+    <div class="card"><span class="chip p1">Critical</span><p>A pop-up on every page and a siren repeating every 4 seconds, until acknowledged or silenced.</p><button class="btn btn-sm" data-test="critical">▶ Test sound</button></div>
+    <div class="card"><span class="chip p2">Alarm</span><p>A red card in the live feed and a chime repeating every 30 seconds, until acknowledged or silenced.</p><button class="btn btn-sm" data-test="alarm">▶ Test sound</button></div>
+    <div class="card"><span class="chip p3">Warning</span><p>An amber card in the live feed and one soft tone when it arrives.</p><button class="btn btn-sm" data-test="warning">▶ Test sound</button></div>
+    <div class="card"><span class="chip">Ignore</span><p>Not stored or shown. The event still appears in NX.</p></div>
+  </div>
+  <label class="check"><input type="checkbox" id="force-ack"> NX rules with <b>Force acknowledgement</b> are always Critical, whatever their event type</label>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>NX event type</th><th>Kind</th><th style="width:200px">Level</th></tr></thead>
+      <tbody id="level-rows"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <p class="muted">Saving also re-levels alarms that are still open. NX only reports events that some NX rule fires on, so an event must be covered by at least one rule (a "Write to log" action is enough) to reach the portal.</p>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="/static/js/settings.js"></script>{% endblock %}

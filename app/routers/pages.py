@@ -46,6 +46,11 @@ async def audit_page(request: Request, user: User = Depends(current_user)):
     return render(request, "audit.html", user, page="audit")
 
 
+@router.get("/settings")
+async def settings_page(request: Request, user: User = Depends(require_admin)):
+    return render(request, "settings.html", user, page="settings")
+
+
 @router.get("/users")
 async def users_page(request: Request, user: User = Depends(require_admin)):
     return render(request, "users.html", user, page="users")

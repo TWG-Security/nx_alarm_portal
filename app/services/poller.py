@@ -17,10 +17,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import audit
 from app.config import get_settings
 from app.db import sessionmaker
-from app.models import Alarm, Site
+from app.models import Alarm, Site, Tenant
 from app.nx.client import NXClient
 from app.security import decrypt
-from app.services.alarm_filter import classify
+from app.services.alarm_filter import DEFAULT_POLICY, Policy, classify
 from app.services.bus import bus
 from app.services.nx_events import event_key, summarize
 from app.services.serialize import alarm_dict
@@ -39,15 +39,18 @@ class SiteRuntime:
     tenant_id: int
     client: NXClient
     device_names: dict[str, str] = field(default_factory=dict)
+    user_names: dict[str, str] = field(default_factory=dict)
     devices_refreshed: float = 0.0
+    failing_since: float | None = None
     task: asyncio.Task | None = None
 
 
-async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str]) -> list[Alarm]:
+async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str],
+                 user_names: dict[str, str] | None = None, policy: Policy = DEFAULT_POLICY) -> list[Alarm]:
     """Store qualifying rows as alarms. Returns only the newly created alarms."""
     candidates: dict[str, tuple[dict, object]] = {}
     for row in rows:
-        c = classify(row, site.alarm_types)
+        c = classify(row, policy, site.alarm_types)
         if not c.is_alarm:
             continue
         key = event_key(row)
@@ -66,15 +69,18 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     }
 
     created: list[Alarm] = []
+    upgraded: list[Alarm] = []
     for key, (row, c) in candidates.items():
-        info = summarize(row, device_names)
+        info = summarize(row, device_names, user_names)
         prior = existing.get(key)
         if prior is not None:
             if info["nx_ack_required"] and not prior.nx_ack_required and prior.state == "new":
                 prior.nx_ack_required = True
                 prior.nx_action_id = info["nx_action_id"]
                 prior.nx_action_server_id = info["nx_action_server_id"]
-                prior.priority = min(prior.priority, c.priority)
+                if c.priority < prior.priority:
+                    prior.priority = c.priority
+                    upgraded.append(prior)
             continue
         alarm = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=key,
                       category=c.category, priority=c.priority, raw=row, **info)
@@ -86,6 +92,8 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
         for a in created:
             audit(db, site.tenant_id, "alarm.received", site_id=site.id, alarm_id=a.id,
                   event_type=a.event_type, caption=a.caption, priority=a.priority)
+    for a in upgraded:
+        bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
     return created
 
 
@@ -156,9 +164,16 @@ class PollerManager:
                 raise
             except Exception as exc:  # noqa: BLE001
                 err = describe_http_error(exc)
-                log.warning("site %s poll failed: %s", rt.site_id, err)
-                await self._set_status(rt, err.status, str(err))
-                delay = min(max(delay * 2, settings.poll_interval_s), settings.poll_max_backoff_s)
+                now = time.monotonic()
+                rt.failing_since = rt.failing_since or now
+                failing_for = now - rt.failing_since
+                log.warning("site %s poll failed (%.0fs): %s", rt.site_id, failing_for, err)
+                # Bad credentials show at once; transient errors only after offline_after_s.
+                if err.status == "auth_error" or failing_for >= settings.offline_after_s:
+                    await self._set_status(rt, err.status, str(err))
+                    delay = min(max(delay * 2, settings.poll_interval_s), settings.poll_max_backoff_s)
+                else:
+                    delay = settings.poll_interval_s
             await asyncio.sleep(delay)
 
     async def poll_once(self, rt: SiteRuntime) -> list[Alarm]:
@@ -171,13 +186,21 @@ class PollerManager:
             if time.monotonic() - rt.devices_refreshed > settings.device_refresh_s:
                 devices = await rt.client.list_devices() or []
                 rt.device_names = {(d.get("id") or "").strip("{}"): d.get("name", "") for d in devices}
-                rt.devices_refreshed = time.monotonic()
                 site.camera_count = sum(1 for d in devices if (d.get("deviceType") or "Camera").lower() != "server")
+                try:  # user names label soft triggers ("pressed by ..."); needs user-list rights, so optional
+                    users = await rt.client.list_users() or []
+                    rt.user_names = {(u.get("id") or "").strip("{}"): u.get("fullName") or u.get("name", "") for u in users}
+                except Exception:  # noqa: BLE001
+                    pass
+                rt.devices_refreshed = time.monotonic()
+            tenant = await db.get(Tenant, site.tenant_id)
+            policy = Policy.from_settings(tenant.settings if tenant else None)
 
             cursor = site.event_cursor_ms or (now_ms() - settings.initial_lookback_ms)
             rows = await rt.client.get_events(limit=500, from_ms=max(1, cursor - settings.poll_overlap_ms),
                                               descending=False) or []
-            created = await ingest(db, site, rows, rt.device_names)
+            created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy)
+            rt.failing_since = None
             site.event_cursor_ms = max([cursor] + [int(r.get("timestampMs") or 0) for r in rows])
 
             status_changed = site.status != "online"

@@ -7,7 +7,18 @@ One place where TWG Security operators see alarms from every NX Witness deployme
   - **amber**: open system-health issue only
   - **green**: all clear
   - **grey**: site offline or login failing
-- **Unified alarm queue**: alarms from every site in one live list. A chime sounds on new alarms (can be muted). Each alarm shows the camera frame at the moment it happened, and a live view is one click away.
+- **Live overview**: sites on the left, the map in the middle, and on the right a live alarm feed. Each card shows the level, site and address, camera, and a running "active for" timer.
+- **Alarm levels, configurable per NX event type** (Settings page):
+
+  | Level | Behavior |
+  |---|---|
+  | **Critical** | Pop-up on every page, siren repeating every 4 s until acknowledged or silenced |
+  | **Alarm** | Red card in the feed, chime repeating every 30 s |
+  | **Warning** | Amber card in the feed, one soft tone |
+  | **Ignore** | Not stored or shown |
+
+  **Silence 2 min** pauses the repeats (a new critical breaks the silence). With several portal tabs open, only one plays sound.
+- **Unified alarm queue**: filter by site, level and state. Each alarm shows the camera frame at the moment it happened, and a live view is one click away.
 - **Acknowledge + log**: the operator writes a disposition note and clicks Acknowledge. The portal writes the ack back to NX (either clearing a forced-acknowledgement notification or adding a bookmark), and every step goes into an append-only audit log.
 - **Add sites through the vmsproxy relay**: enter the site's Nx Cloud ID, the credentials and a map pin, then click **Connect**.
 - Dark mode is the default; a light theme is available.
@@ -42,6 +53,11 @@ One place where TWG Security operators see alarms from every NX Witness deployme
   - Forced-ack alarms go to `POST /rest/v4/events/acknowledges`, which creates an NX bookmark and clears the notification in the NX Desktop client. Everything else gets a camera bookmark tagged `alarm-portal`.
   - If NX can't be reached, the local acknowledgement still stands, and the failure is shown and logged.
 - **NX API client** (`app/nx/client.py`): copied from [nx-witness-mcp](https://github.com/TWG-Security/nx-witness-mcp) with a few small local changes, which are listed in the file header.
+
+## Alarm sound on operator workstations
+
+Browsers block audio until someone clicks on the page. The portal shows a banner until that first click.
+For an unattended monitoring screen, launch Chrome with `--autoplay-policy=no-user-gesture-required` (for example in a kiosk shortcut) so sound works right after a reload.
 
 ## NX account per site
 
@@ -82,6 +98,8 @@ python -m app.cli create-admin --email you@twgsecurity.com
 uvicorn app.main:app --reload --port 8099
 pytest
 ```
+
+For browser testing without a real NX site, run the fake NX server in `tools/fake_nx.py`. It lets you fire panic, analytics and health events on demand; see the file header for how.
 
 ## Roadmap (not in this base)
 

@@ -68,6 +68,28 @@ async def test_poll_once_advances_cursor_and_publishes(session, admin):
 
 
 @respx.mock
+async def test_one_off_503_does_not_flap_site_offline(session, admin, monkeypatch):
+    import asyncio
+    from app.config import get_settings
+    from app.services import poller
+    tenant, _ = admin
+    site = await make_site(session, tenant)
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(503))
+    monkeypatch.setattr(get_settings(), "poll_interval_s", 0.01)
+    monkeypatch.setattr(get_settings(), "offline_after_s", 0.2)
+    real_sleep = asyncio.sleep
+    rt = manager._runtime(site)
+    task = asyncio.create_task(manager._run(rt))
+    await real_sleep(0.08)                      # several failures, but under offline_after_s
+    s = (await session.execute(select(Site).execution_options(populate_existing=True))).scalar_one()
+    assert s.status == "online"
+    await real_sleep(0.35)                      # now past the threshold
+    s = (await session.execute(select(Site).execution_options(populate_existing=True))).scalar_one()
+    task.cancel()
+    assert s.status == "offline"
+
+
+@respx.mock
 async def test_poll_failure_marks_site_auth_error(session, admin):
     tenant, _ = admin
     site = await make_site(session, tenant)

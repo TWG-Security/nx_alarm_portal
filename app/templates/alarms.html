@@ -10,15 +10,13 @@
       <button type="button" data-state="all">All</button>
     </div>
     <select id="f-site" aria-label="Site"><option value="">All sites</option></select>
-    <select id="f-category" aria-label="Category">
-      <option value="">All types</option><option value="security">Security</option><option value="system">System health</option>
+    <select id="f-priority" aria-label="Level">
+      <option value="">All levels</option><option value="1">Critical</option><option value="2">Alarm</option><option value="3">Warning</option>
     </select>
     <input type="search" id="f-q" placeholder="Search caption, camera, description" aria-label="Search">
   </div>
   <ul class="alarm-list" id="alarm-list"><li class="empty">Loading…</li></ul>
   <div class="list-footer"><button class="btn" id="load-more" hidden>Load more</button></div>
 </div>
-<div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
-<aside class="drawer" id="drawer" hidden aria-label="Alarm detail"></aside>
 {% endblock %}
 {% block scripts %}<script type="module" src="/static/js/alarms.js"></script>{% endblock %}
