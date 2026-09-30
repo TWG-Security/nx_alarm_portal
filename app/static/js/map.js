@@ -1,6 +1,6 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
 import { CFG, api, esc, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon,
-         markerState, STATUS, PRIORITY, armChip, armLine, setArmed, ruleHealthHtml } from "./common.js";
+         markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml } from "./common.js";
 import { openDrawer } from "./drawer.js";
 
 const sites = new Map();     // id -> site
@@ -52,10 +52,8 @@ function renderDetail() {
       <div><h2 style="margin-bottom:2px">${esc(s.name)}</h2><div class="muted">${esc(s.address || "No address")}</div></div>
       <button class="btn btn-sm" id="close-detail" aria-label="Close">✕</button>
     </div>
+    ${armCardHtml(s)}
     <dl class="kv">
-      <dt>Arming</dt><dd>${armChip(s)}
-        <button class="btn btn-sm" data-arm="${s.arming?.armed === false ? "arm" : "disarm"}" style="margin-left:6px">${s.arming?.armed === false ? "Arm now" : "Disarm…"}</button>
-        <div class="arm-line">${armLine(s)}</div></dd>
       <dt>Status</dt><dd><span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : ' <span class="chip">disabled</span>'}</dd>
       ${s.status_detail ? `<dt>Detail</dt><dd>${esc(s.status_detail)}</dd>` : ""}
       <dt>Last contact</dt><dd>${relTime(s.last_seen_at)}</dd>

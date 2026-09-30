@@ -59,4 +59,4 @@
 </div>
 <script>window.SITE = {{ site | tojson }};</script>
 {% endblock %}
-{% block scripts %}<script type="module" src="/static/js/site_form.js"></script>{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/site_form.js') }}"></script>{% endblock %}

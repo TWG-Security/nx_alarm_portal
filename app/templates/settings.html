@@ -27,4 +27,4 @@
   <p class="muted">Saving also re-levels alarms that are still open. NX only reports events that some NX rule fires on, so an event must be covered by at least one rule (a "Write to log" action is enough) to reach the portal.</p>
 </div>
 {% endblock %}
-{% block scripts %}<script type="module" src="/static/js/settings.js"></script>{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/settings.js') }}"></script>{% endblock %}

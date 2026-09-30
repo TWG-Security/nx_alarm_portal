@@ -14,6 +14,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Server:** Ubuntu 24.04, `10.1.10.97`, 2 vCPU / 4 GB. User `twg` has passwordless sudo and is in the `docker` group.
 - **Live URL:** `https://10.1.10.97`, via Caddy with an internal CA, so browsers show a certificate warning.
   **Public:** `https://alarmportal.twgsecurity.net` through a Cloudflare Tunnel the user set up on 2026-09-30. The cloudflared connector is **not** on this server. It connects to Caddy on :443 with the tunnel hostname as Host, so that name must be in the Caddyfile site list (`{$PUBLIC_HOST:alarmportal.twgsecurity.net}`). Otherwise Caddy answers an **empty 200**, which is a white page; that was the case until 2026-09-30.
+  **Cloudflare rewrites `Cache-Control: no-cache` to `max-age=14400`**. Browsers mixed old and new JS after deploys, and the Sites page broke. So pages load assets from `/static/v/<content hash>/…` (`app/static_version.py`: any version is accepted, and responses are cached as immutable). Always reference assets with `{{ asset('js/x.js') }}` in templates.
   Measured through the tunnel: alarms arrive **+3 ms vs LAN**, the SSE stream isn't buffered, and the longest silence is 5.0 s. Password login is the only gate so far (see Open items).
 - **The NX API client** (`app/nx/client.py`) is copied from `github.com/TWG-Security/nx-witness-mcp`, with its local changes listed in the file header.
   The claude.ai **NX_Witness MCP** (TWG MCP Gateway) talks to the same systems: `TWG`, `Bethel_Church`, `MedEvac`, `SecTV`, `TheWaterfront`. It's handy for probing NX, and `nx_write_fire_trigger` fires test soft triggers.
@@ -25,7 +26,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
 ## Current production state (2026-09-30)
-- **Production runs commit `5108781`** (deployed 2026-09-30 18:00 UTC): site arming plus NX rule health. **Arming was verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
+- **Production runs the latest `feature/base-portal`** (deployed 2026-09-30 18:39 UTC): site arming, NX rule health, versioned assets, and the arming card on the map's site panel. **Arming was verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
 - **NX rule health:** `poller.rule_delays` flags enabled alarm-level rules with `action.intervalS > 0` (NX merges repeats inside the interval and writes them when it ends). The map site panel and Sites page show it, along with "can't read rules".
 - **The Truss 8 rule's "Interval of action" was 60 s** (repeat presses measured 35 s and 60.6 s late). The user OK'd turning it off, and it has been `intervalS: 0` since 2026-09-30. Verified at 18:00 UTC: two presses 1 s apart arrived 15 ms and 23 ms after their timestamps.
 - Sites:
@@ -153,7 +154,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 57 tests; clip tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 58 tests; clip tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up

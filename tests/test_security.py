@@ -129,3 +129,15 @@ async def test_alarm_levels_settings_relevel_open_alarms(client, session, admin)
     assert a.priority == 1
     bad = await client.put("/api/settings/alarm-levels", json={"levels": {"motion": "loud"}})
     assert bad.status_code == 400
+
+
+async def test_static_files_are_versioned_so_deploys_never_mix_old_and_new(client, admin):
+    from app.static_version import VERSION
+    await login(client, admin[1].email)
+    page = (await client.get("/sites")).text
+    assert f'src="/static/v/{VERSION}/js/sites.js"' in page and f"/static/v/{VERSION}/css/theme.css" in page
+    r = await client.get(f"/static/v/{VERSION}/js/common.js")
+    assert r.status_code == 200 and "immutable" in r.headers["cache-control"] and "export" in r.text
+    assert (await client.get("/static/v/old-build/js/common.js")).status_code == 200       # stale pages still load
+    assert (await client.get("/static/v/x/js/nope.js")).status_code == 404
+    assert (await client.get("/static/js/common.js")).headers["cache-control"] == "no-cache"

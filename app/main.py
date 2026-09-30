@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.routers import api, auth, pages, stream, tiles
 from app.services import arming
+from app.static_version import VersionedStatic
 from app.services.poller import manager
 
 # Paths that answer errors as JSON instead of an HTML page / login redirect.
@@ -71,6 +72,7 @@ def create_app() -> FastAPI:
         return PlainTextResponse("ok")
 
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
+    app.add_middleware(VersionedStatic)     # outermost: /static/v/<hash>/... -> /static/..., cached for good
     app.include_router(auth.router)
     app.include_router(pages.router)
     app.include_router(api.router)

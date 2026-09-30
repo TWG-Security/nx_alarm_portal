@@ -138,6 +138,18 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--o
 .chip.armed { color: var(--ok); }
 .chip.disarmed { background: var(--warn-soft); color: var(--warn); letter-spacing: .03em; text-transform: uppercase; }
 .arm-line { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.arm-card { margin: 12px 0 4px; padding: 12px; border-radius: 8px; border: 1px solid var(--border); }
+.arm-card.is-armed { background: rgba(47, 163, 107, .10); border-color: rgba(47, 163, 107, .45); }
+.arm-card.is-disarmed { background: var(--warn-soft); border-color: var(--warn); }
+.arm-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.arm-card-head svg { width: 24px; height: 24px; flex: 0 0 auto; }
+.arm-card.is-armed .arm-card-head { color: var(--ok); }
+.arm-card.is-disarmed .arm-card-head { color: var(--warn); }
+.arm-card-state { font-size: 16px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.arm-card-for { margin-left: auto; font: 700 14px var(--font); font-variant-numeric: tabular-nums; }
+.arm-card-line { font-size: 12px; color: var(--text-muted); line-height: 1.45; }
+.arm-card-line b { color: var(--text); }
+.arm-card-btn { width: 100%; justify-content: center; margin-top: 10px; }
 .arm-line .timer { font-weight: 600; }
 
 /* ---------- tables ---------- */
@@ -243,7 +255,8 @@ tr:last-child td { border-bottom: 0; }
 .snapshot .snap-msg { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #bbb; font-size: 13px; padding: 12px; text-align: center; }
 .kv { display: grid; grid-template-columns: 120px 1fr; gap: 6px 12px; margin: 12px 0; }
 .kv dt { color: var(--text-muted); }
-.kv dd { margin: 0; word-break: break-word; }
+.kv dd { margin: 0; word-break: break-word; min-width: 0; }
+.kv dd .chip { white-space: normal; height: auto; min-height: 22px; padding: 2px 8px; }
 .ack-box { border-top: 1px solid var(--border); padding-top: 14px; margin-top: 14px; }
 
 /* ---------- dialog / toast ---------- */

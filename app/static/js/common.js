@@ -118,7 +118,7 @@ export function ruleHealthHtml(site, { brief = false } = {}) {
   }
   if (site.rules_readable === false) return '<span class="chip">Can\'t read NX rules</span><div class="arm-line">Give the portal\'s NX account rule-read rights (e.g. Power Users) so #tags, #24h and this check work.</div>';
   if (!d.length) return site.rules_readable ? '<span class="chip online">OK</span>' : "—";
-  return `<span class="chip p3">${d.length} ${d.length > 1 ? "rules delay" : "rule delays"} repeat alarms</span>` + d.map((r) =>
+  return `<span class="chip p3">${d.length} ${d.length > 1 ? "rules delay" : "rule delays"} repeats</span>` + d.map((r) =>
     `<div class="arm-line">“${esc(r.name)}” holds repeats up to <b>${r.interval_s} s</b>. In NX, turn off its “Interval of action”.</div>`).join("");
 }
 
@@ -136,18 +136,38 @@ export function fmtWhen(ms) {
 const ARM_SOURCE = { manual: "", schedule: "by schedule", timer: "disarm timer ran out", default: "" };
 export const armChip = (site) => site.arming?.armed === false
   ? '<span class="chip disarmed">Disarmed</span>' : '<span class="chip armed">Armed</span>';
-// One line: who/what set the state, since when, and what happens next.
+const nextHtml = (a) => a.next_ms
+  ? `${a.next_armed ? "Re-arms" : "Disarms"} ${esc(fmtWhen(a.next_ms))}${a.next_source === "timer" ? " (timer)" : a.next_source === "schedule" ? " (schedule)" : ""}`
+  : a.armed ? "" : "<b>Stays disarmed until someone re-arms it</b>";
+// Who disarmed it and why. Armed sites only say how they got armed if it wasn't the default.
+function whoHtml(a) {
+  if (a.armed) return a.source === "default" ? "" : `Armed ${a.source === "manual" ? `by ${esc(a.by || "operator")} ` : `${ARM_SOURCE[a.source]} `}${relTime(a.since_ms)}`;
+  const who = a.source === "manual" ? `by ${esc(a.by || "operator")}` : ARM_SOURCE[a.source] || "";
+  return [who, a.note ? `“${esc(a.note)}”` : ""].filter(Boolean).join(" · ");
+}
+// One line for tables: who/why, and what happens next.
 export function armLine(site) {
   const a = site.arming;
   if (!a) return "";
-  const parts = [];
-  if (a.source === "manual") parts.push(`by ${esc(a.by || "operator")}`);
-  else if (ARM_SOURCE[a.source]) parts.push(ARM_SOURCE[a.source]);
-  if (a.since_ms) parts.push(a.armed ? relTime(a.since_ms) : `for ${timerHtml(a.since_ms)}`);
-  if (a.note) parts.push(`“${esc(a.note)}”`);
-  if (a.next_ms) parts.push(`${a.next_armed ? "re-arms" : "disarms"} ${esc(fmtWhen(a.next_ms))}${a.next_source === "timer" ? " (timer)" : ""}`);
-  else if (!a.armed) parts.push("<b>stays disarmed until someone re-arms it</b>");
-  return parts.join(" · ");
+  return [a.armed ? "" : `for ${timerHtml(a.since_ms)}`, whoHtml(a), nextHtml(a)].filter(Boolean).join(" · ");
+}
+
+const SHIELD = '<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6l-8-3z"/>';
+const ICON_ARMED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">${SHIELD}<path d="m8.5 12 2.5 2.5 4.5-5"/></svg>`;
+const ICON_DISARMED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">${SHIELD}<path d="M9 9l6 6m0-6-6 6"/></svg>`;
+// The site panel's arming card: state at a glance, why, what's next, and one clear button.
+export function armCardHtml(site) {
+  const a = site.arming;
+  if (!a) return "";
+  const lines = [whoHtml(a), nextHtml(a)].filter(Boolean);
+  return `<div class="arm-card ${a.armed ? "is-armed" : "is-disarmed"}">
+    <div class="arm-card-head">${a.armed ? ICON_ARMED : ICON_DISARMED}
+      <span class="arm-card-state">${a.armed ? "Armed" : "Disarmed"}</span>
+      ${a.armed ? "" : `<span class="arm-card-for" title="Disarmed for">${timerHtml(a.since_ms)}</span>`}</div>
+    ${lines.map((l) => `<div class="arm-card-line">${l}</div>`).join("")}
+    ${a.armed ? "" : '<div class="arm-card-line">Security events are recorded, not raised.</div>'}
+    <button class="btn ${a.armed ? "" : "btn-primary"} arm-card-btn" data-arm="${a.armed ? "disarm" : "arm"}">${a.armed ? "Disarm site…" : "Arm site now"}</button>
+  </div>`;
 }
 
 const DURATIONS = [[30, "In 30 minutes"], [60, "In 1 hour"], [120, "In 2 hours"], [240, "In 4 hours"],

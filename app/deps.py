@@ -10,8 +10,10 @@ from app.config import get_settings
 from app.db import get_db
 from app.models import User
 from app.security import new_csrf_token
+from app.static_version import asset
 
 templates = Jinja2Templates(directory="app/templates")
+templates.env.globals["asset"] = asset
 
 UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 

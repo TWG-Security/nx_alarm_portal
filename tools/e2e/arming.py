@@ -65,8 +65,8 @@ with sync_playwright() as p:
     pg.click("#arm-submit")
     pg.wait_for_selector(".site-item .chip.disarmed", timeout=5000)
     check(count(pg, ".pin.disarmed") == 1, "map pin marked DISARMED")
-    check("re-arms" in pg.inner_text("#site-detail .arm-line"), "site panel shows the re-arm time: "
-          + pg.inner_text("#site-detail .arm-line"))
+    card = pg.inner_text("#site-detail .arm-card").replace("\n", " | ")
+    check("Re-arms" in card, "site panel arming card shows the re-arm time: " + card)
 
     # --- 2. security event while disarmed: stored, not raised, silent
     pg.wait_for_timeout(500)
