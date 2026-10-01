@@ -129,3 +129,30 @@ async def test_live_video_is_relayed_and_capped_per_site(client, session, admin,
     respx.get(url__regex=rf"{NX}/media/dev-1\.webm.*").mock(return_value=httpx.Response(500))
     assert (await client.get(f"/media/alarms/{a.id}/live.webm")).status_code == 502
     assert stream._live_slots[a.site_id]._value == stream.LIVE_MAX_PER_SITE      # released on failure too
+
+
+async def test_follow_up_notes_after_acknowledging(client, session, admin):
+    from app.services.bus import bus
+    tenant, user = admin
+    [a] = await _alarms(session, tenant)
+    await login(client, user.email)
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "real", "note": "Intruder at the gate"})
+    sub = bus.subscribe(tenant.id)
+
+    r = await client.post(f"/api/alarms/{a.id}/notes", json={"text": "  Police on scene 11:45  "})
+
+    assert r.status_code == 200, r.text
+    assert (r.json()["text"], r.json()["by"]) == ("Police on scene 11:45", user.display_name)
+    assert sub.queue.get_nowait()[0] == "alarm.note"
+    await client.post(f"/api/alarms/{a.id}/notes", json={"text": "Keyholder called back, all clear"})
+    notes = (await client.get(f"/api/alarms/{a.id}/notes")).json()
+    assert [n["text"] for n in notes] == ["Police on scene 11:45", "Keyholder called back, all clear"]
+    assert (await client.post(f"/api/alarms/{a.id}/notes", json={"text": "   "})).status_code == 422
+    log = (await session.scalars(select(AuditLog).where(AuditLog.action == "alarm.note"))).all()
+    assert [x.detail["text"] for x in log] == ["Police on scene 11:45", "Keyholder called back, all clear"]
+    # Other tenants can't read or add notes.
+    _, stranger = await make_tenant_user(session, "Other Co", "x@other.test")
+    await _as(client, stranger.email)
+    assert (await client.get(f"/api/alarms/{a.id}/notes")).status_code == 404
+    assert (await client.post(f"/api/alarms/{a.id}/notes", json={"text": "hi"})).status_code == 404
+    bus.unsubscribe(sub)

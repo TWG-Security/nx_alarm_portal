@@ -167,6 +167,22 @@ class Alarm(Base):
     verdict_by: Mapped[User | None] = relationship(foreign_keys=[verdict_by_id], lazy="joined")
 
 
+class AlarmNote(Base):
+    """Follow-up notes on an alarm (e.g. "police on scene 11:45"). Append-only: never edited or deleted."""
+
+    __tablename__ = "alarm_notes"
+    __table_args__ = (Index("ix_alarm_notes_alarm", "alarm_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    alarm_id: Mapped[int] = mapped_column(ForeignKey("alarms.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    user: Mapped[User | None] = relationship(lazy="joined")
+
+
 class AuditLog(Base):
     """Append-only record of everything operators and the system did."""
 

@@ -34,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from xml.sax.saxutils import escape
 
 from app.config import get_settings
-from app.models import Alarm, AuditLog, User
+from app.models import Alarm, AlarmNote, AuditLog, User
 from app.services import arming, clips
 from app.services.alarm_filter import LEVEL_NAMES
 
@@ -214,6 +214,9 @@ def _audit_row(a: AuditLog) -> dict:
         detail = f"NX write-back: {nx.get('method') or '-'}{' (failed: ' + str(nx.get('error')) + ')' if nx.get('ok') is False else ''}"
         verdict = {"real": "Real event. ", "false": "False alarm. "}.get(d.get("verdict", ""), "")
         return {"ts": ts, "what": "Acknowledged" + (" (bulk)" if d.get("bulk") else ""), "who": who, "detail": verdict + detail}
+    if a.action == "alarm.note":
+        text = d.get("text", "")
+        return {"ts": ts, "what": "Note added", "who": who, "detail": text if len(text) <= 90 else text[:88] + "…"}
     if a.action == "alarm.verdict":
         name = {"real": "real event", "false": "false alarm", "": "not marked"}
         return {"ts": ts, "what": "Verdict changed" + (" (bulk)" if d.get("bulk") else ""), "who": who,
@@ -327,7 +330,7 @@ class _NumberedCanvas(rl_canvas.Canvas):
 
 
 def build_pdf(alarm: Alarm, ev: Evidence, events: list[dict], user: User, note: str, pre: int, post: int,
-              quality: str, now_ms: int) -> bytes:
+              quality: str, now_ms: int, notes: list[dict] | None = None) -> bytes:
     st = _styles()
     site = alarm.site
     tz = arming.zone(site.timezone if site else "")
@@ -408,12 +411,14 @@ def build_pdf(alarm: Alarm, ev: Evidence, events: list[dict], user: User, note: 
 
     story.append(_h2("Operator notes", st))
     if alarm.ack_note:
-        story += [_p(f"Disposition, by {alarm.acked_by.label if alarm.acked_by else '-'} at "
+        story += [_p(f"Disposition at acknowledgement, by {alarm.acked_by.label if alarm.acked_by else '-'} at "
                      f"{_fmt(_ms(alarm.acked_at), tz) if alarm.acked_at else '-'}", st["cap"]), _p(alarm.ack_note, st["note"])]
     elif alarm.state == "acknowledged":
-        story.append(_p("Acknowledged without a note.", st["base"]))
-    else:
+        story.append(_p("Acknowledged without a disposition note.", st["base"]))
+    elif not notes:
         story.append(_p("No disposition yet: the alarm has not been acknowledged.", st["base"]))
+    for n in notes or []:
+        story += [_p(f"Follow-up, by {n['by']} at {_fmt(n['ts'], tz)}", st["cap"]), _p(n["text"], st["note"])]
     if note.strip():
         story += [_p(f"Export note, by {user.label}", st["cap"]), _p(note.strip(), st["note"])]
 
@@ -452,7 +457,8 @@ def _ms(dt: datetime | None) -> int:
 
 # ------------------------------------------------------------------ package
 
-def build_zip(alarm: Alarm, ev: Evidence, pdf: bytes, user: User, note: str, now_ms: int) -> tuple[bytes, dict]:
+def build_zip(alarm: Alarm, ev: Evidence, pdf: bytes, user: User, note: str, now_ms: int,
+              notes: list[dict] | None = None) -> tuple[bytes, dict]:
     tz = arming.zone(alarm.site.timezone if alarm.site else "")
     root = f"alarm-{alarm.id}_{datetime.fromtimestamp(alarm.event_ts_ms / 1000, tz):%Y-%m-%d_%H%M%S}"
     files: dict[str, bytes] = {"incident-report.pdf": pdf}
@@ -475,6 +481,7 @@ def build_zip(alarm: Alarm, ev: Evidence, pdf: bytes, user: User, note: str, now
         "event_time_utc": _fmt(alarm.event_ts_ms, timezone.utc), "event_time_site": _fmt(alarm.event_ts_ms, tz),
         "state": alarm.state, "verdict": alarm.verdict or None, "ack_note": alarm.ack_note, "acked_by": alarm.acked_by.label if alarm.acked_by else None,
         "clip": ev.clip.to_dict() if ev.clip else None, "exported_by": user.label, "exported_at_ms": now_ms,
+        "notes": [{"by": n["by"], "at_ms": n["ts"], "text": n["text"]} for n in notes or []],
         "export_note": note, "files": sums,
     }
     buf = io.BytesIO()
@@ -493,12 +500,14 @@ async def export(db: AsyncSession, alarm: Alarm, user: User, fmt: str, note: str
     pre, post = clips.normalize(pre, post)
     ev = await gather(alarm, pre, post, quality, need_clip=fmt == "zip")
     events = await timeline(db, alarm)
+    notes = [{"by": n.user.label if n.user else "system", "ts": _ms(n.created_at), "text": n.text}
+             for n in (await db.scalars(select(AlarmNote).where(AlarmNote.alarm_id == alarm.id).order_by(AlarmNote.id))).all()]
     now = int(time.time() * 1000)
-    pdf = await asyncio.to_thread(build_pdf, alarm, ev, events, user, note, pre, post, quality, now)
+    pdf = await asyncio.to_thread(build_pdf, alarm, ev, events, user, note, pre, post, quality, now, notes)
     detail = {"format": fmt, "note": note, "window": [pre, post], "quality": quality,
               "clip_sha256": ev.clip_sha256 or None, "pdf_sha256": hashlib.sha256(pdf).hexdigest()}
     if fmt == "pdf":
         return pdf, f"incident-report_alarm-{alarm.id}.pdf", "application/pdf", detail
-    data, info = await asyncio.to_thread(build_zip, alarm, ev, pdf, user, note, now)
+    data, info = await asyncio.to_thread(build_zip, alarm, ev, pdf, user, note, now, notes)
     detail["zip_sha256"] = hashlib.sha256(data).hexdigest()
     return data, f"{info['root']}.zip", "application/zip", detail

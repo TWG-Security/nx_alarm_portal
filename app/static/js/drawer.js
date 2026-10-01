@@ -12,7 +12,7 @@ const LEVEL_SOURCE = {
 };
 const drawer = document.getElementById("drawer");
 const backdrop = document.getElementById("drawer-backdrop");
-let current = null, player = null, live = null;
+let current = null, player = null, live = null, notes = [];
 
 export function closeDrawer() {
   current = null;
@@ -32,6 +32,7 @@ function render(a) {
     ${override ? `<div class="verdict-override">${Object.entries(VERDICT).filter(([v]) => v !== a.verdict).map(([v, label]) =>
       `<button class="btn btn-sm" data-override="${v}" title="Admin override (logged)">Mark ${label.toLowerCase()}</button>`).join("")}</div>` : ""}</dd>`;
   const keepNote = drawer.querySelector("#drawer-note")?.value || "";
+  const keepFollow = drawer.querySelector("#note-text")?.value || "";
   drawer.querySelector(".drawer-top").innerHTML = `
     <div class="drawer-head">
       <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
@@ -60,25 +61,60 @@ function render(a) {
           <dt>By</dt><dd>${esc(a.acked_by || "—")}</dd>
           <dt>At</dt><dd>${fmtTime(a.acked_at)} <span class="muted">(${relTime(a.acked_at)})</span></dd>
           ${verdictRow}
-          <dt>Note</dt><dd style="white-space:pre-wrap">${esc(a.ack_note || "—")}</dd>
+          <dt>Disposition</dt><dd style="white-space:pre-wrap">${esc(a.ack_note || "—")}</dd>
           <dt>NX write-back</dt><dd>${nx ? (nx.ok ? `<span class="chip acked">${esc(nx.method)}</span>` : `<span class="chip offline">failed</span> ${esc(nx.error || "")}`) : "—"}</dd>
         </dl>` : `
-        <div class="field"><label for="drawer-note">Disposition note</label>
+        <div class="field"><label for="drawer-note">Disposition note <span class="muted">(saved when you acknowledge)</span></label>
           <textarea id="drawer-note" maxlength="4000" placeholder="What did you see / do?"></textarea></div>
         <div class="verdict-buttons"><span class="muted ack-as">Acknowledge as</span>
           <button class="btn btn-verdict-real" data-ack="real">Real event</button>
           <button class="btn btn-verdict-false" data-ack="false">False alarm</button></div>`}
-      <a class="btn btn-sm" style="margin-left:8px" href="/audit?alarm_id=${a.id}">Audit trail</a>
+      <div class="notes-box">
+        <h3>Notes</h3>
+        <ul class="notes-list"></ul>
+        <div class="note-add">
+          <textarea id="note-text" maxlength="4000" rows="2" placeholder="Add a follow-up note (e.g. police on scene, keyholder called back). Ctrl+Enter to add."></textarea>
+          <button class="btn" id="note-add" type="button">Add note</button>
+        </div>
+      </div>
+      <a class="btn btn-sm" href="/audit?alarm_id=${a.id}">Audit trail</a>
       <button class="btn btn-sm" id="drawer-export" title="Incident report PDF, or PDF + video clip + stills">Export report / clip…</button>
     </div>`;
   const note = drawer.querySelector("#drawer-note");
   if (note) note.value = keepNote;
+  drawer.querySelector("#note-text").value = keepFollow;
+  renderNotes();
+}
+
+// ---------------------------------------------------------------- follow-up notes (append-only)
+function renderNotes() {
+  const ul = drawer.querySelector(".notes-list");
+  if (!ul) return;
+  ul.innerHTML = notes.length ? notes.map((n) => `
+    <li><div class="note-meta"><b>${esc(n.by)}</b> · ${fmtTime(n.at)} <span class="muted">(${relTime(n.at)})</span></div>
+      <div class="note-text">${esc(n.text)}</div></li>`).join("")
+    : '<li class="muted note-empty">No follow-up notes yet.</li>';
+}
+
+async function addNote() {
+  const box = drawer.querySelector("#note-text"), btn = drawer.querySelector("#note-add");
+  const text = box.value.trim();
+  if (!text || !current) return;
+  btn.disabled = true;
+  try {
+    const n = await api(`/api/alarms/${current.id}/notes`, { method: "POST", body: { text } });
+    if (!notes.some((x) => x.id === n.id)) notes.push(n);
+    box.value = "";
+    renderNotes();
+  } catch (e) { toast(esc(e.message), { kind: "error" }); }
+  finally { btn.disabled = false; }
 }
 
 export async function openDrawer(id, fallback) {
   let a = fallback;
   try { a = await api(`/api/alarms/${id}`); } catch (e) { if (!a) { toast(esc(e.message), { kind: "error" }); return; } }
   current = a;
+  notes = [];
   player?.destroy(); live?.destroy(); live = null;
   drawer.innerHTML = `<div class="drawer-top"></div>
     <div class="drawer-media${a.device_id ? "" : " single"}">
@@ -89,6 +125,7 @@ export async function openDrawer(id, fallback) {
   render(a);
   player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
   if (a.device_id) live = mountLive(drawer.querySelector(".live-mount"), a);
+  api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
   drawer.hidden = false;
   backdrop.hidden = false;
   drawer.querySelector("#drawer-close").focus();
@@ -97,6 +134,7 @@ export async function openDrawer(id, fallback) {
 drawer.addEventListener("click", async (e) => {
   if (e.target.id === "drawer-close") return closeDrawer();
   if (e.target.id === "drawer-export") return openExport(current);
+  if (e.target.id === "note-add") return addNote();
   const verdict = e.target.dataset.ack;
   if (verdict) {
     const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target, verdict);
@@ -117,6 +155,13 @@ drawer.addEventListener("click", async (e) => {
   }
 });
 backdrop.addEventListener("click", closeDrawer);
+drawer.addEventListener("keydown", (e) => {
+  if (e.target.id === "note-text" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addNote(); }
+});
+// Someone else added a note to the alarm we're looking at.
+on("alarm.note", (n) => {
+  if (current && n.alarm_id === current.id && !notes.some((x) => x.id === n.id)) { notes.push(n); renderNotes(); }
+});
 
 // ---------------------------------------------------------------- export (app/services/report.py)
 const exp = document.getElementById("export-dialog");

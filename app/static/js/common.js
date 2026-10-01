@@ -329,7 +329,7 @@ function scheduleReconnect() {
   backoff = Math.min(backoff * 2, 15_000);
 }
 
-const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push"];
+const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarm.note", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push"];
 function connect() {
   es = new EventSource("/api/events");
   lastBeat = Date.now();

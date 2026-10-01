@@ -3,7 +3,7 @@
 import time
 from datetime import timezone
 
-from app.models import Alarm, AuditLog, Site
+from app.models import Alarm, AlarmNote, AuditLog, Site
 from app.services import arming
 from app.services.alarm_filter import LEVEL_NAMES
 
@@ -85,6 +85,11 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "arm_schedule": (s.arm_schedule or {}).get("entries", []),
         "arming": arming.site_state(s, int(time.time() * 1000)).as_dict(),
     }
+
+
+def note_dict(n: AlarmNote) -> dict:
+    return {"id": n.id, "alarm_id": n.alarm_id, "text": n.text, "by": n.user.label if n.user else "system",
+            "at": _iso(n.created_at)}
 
 
 def audit_dict(r: AuditLog) -> dict:

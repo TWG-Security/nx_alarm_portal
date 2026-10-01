@@ -3,6 +3,9 @@
 ## [Unreleased]
 
 ### Added
+- **Follow-up notes** on any alarm, open or closed: "Notes" in the alarm drawer, with author and time, and Ctrl+Enter to add.
+  - Append-only (never edited or deleted), audit-logged, and pushed live to other operators' drawers.
+  - Included in the PDF report (Operator notes and timeline) and the evidence package manifest (migration 0006).
 - **Verdicts:**
   - Every acknowledgement records the operator's call: **Real event** or **False alarm**. This applies in the drawer, the quick dialog and the critical pop-up, which now have two buttons instead of one Acknowledge.
   - The alarm list shows verdict chips and can be filtered by verdict (real / false / not marked).

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, current_user, require_admin
-from app.models import Alarm, AuditLog, Site, Tenant, User, UserGroup, UserGroupMember
+from app.models import Alarm, AlarmNote, AuditLog, Site, Tenant, User, UserGroup, UserGroupMember
 from app.permissions import PERMISSIONS, require
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
@@ -23,7 +23,7 @@ from app.services import ack as ack_service
 from app.services import arming
 from app.services.bus import bus
 from app.services.poller import manager, now_ms
-from app.services.serialize import alarm_dict, audit_dict, site_dict
+from app.services.serialize import alarm_dict, audit_dict, note_dict, site_dict
 from app.services.sites import ConnectError, make_client, probe, resolve_host
 from app.config import get_settings
 
@@ -266,6 +266,17 @@ class AckIn(BaseModel):
     verdict: str = Field(default="", pattern="^(|real|false)$")     # optional so pages opened before verdicts still ack
 
 
+class NoteIn(BaseModel):
+    text: str = Field(min_length=1, max_length=4000)
+
+    @field_validator("text")
+    @classmethod
+    def _not_blank(cls, v: str) -> str:
+        if not v.strip():
+            raise ValueError("Note is empty")
+        return v.strip()
+
+
 class BulkIn(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=500)
     verdict: str = Field(pattern="^(real|false)$")
@@ -354,6 +365,30 @@ async def ack_alarm(alarm_id: int, body: AckIn, request: Request, user: User = D
     except ack_service.AlreadyAcknowledged as exc:
         raise HTTPException(409, "Alarm was already acknowledged") from exc
     return alarm_dict(alarm)
+
+
+@router.get("/alarms/{alarm_id}/notes")
+async def list_notes(alarm_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    alarm = await _get_alarm(db, user, alarm_id)
+    rows = (await db.scalars(select(AlarmNote).where(AlarmNote.alarm_id == alarm.id).order_by(AlarmNote.id))).all()
+    return [note_dict(n) for n in rows]
+
+
+@router.post("/alarms/{alarm_id}/notes")
+async def add_note(alarm_id: int, body: NoteIn, request: Request, user: User = Depends(current_user),
+                   db: AsyncSession = Depends(get_db)):
+    """Follow-up note on any alarm, open or closed. Append-only; broadcast so open drawers update."""
+    alarm = await _get_alarm(db, user, alarm_id)
+    note = AlarmNote(tenant_id=user.tenant_id, alarm_id=alarm.id, user_id=user.id, text=body.text)
+    note.user = user
+    db.add(note)
+    await db.flush()
+    audit(db, user.tenant_id, "alarm.note", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), note_id=note.id, text=body.text)
+    await db.commit()
+    data = note_dict(note)
+    bus.publish(user.tenant_id, "alarm.note", data)
+    return data
 
 
 @router.get("/summary")

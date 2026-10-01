@@ -11,7 +11,7 @@ const alarmId = params.get("alarm_id");
 const LABELS = {
   "alarm.received": "Alarm received", "alarm.acknowledged": "Alarm acknowledged",
   "site.created": "Site added", "site.updated": "Site edited", "site.enabled": "Site enabled", "site.disabled": "Site disabled",
-  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
+  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
   login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited",
 };
 
@@ -22,6 +22,10 @@ function details(r) {
       return `Alarm #${r.alarm_id}${d.note ? ` · “${esc(d.note)}”` : ""}<div class="muted">NX: ${esc(d.nx?.method || "—")} ${d.nx?.ok === false ? `(failed: ${esc(d.nx.error)})` : d.nx?.ok ? "(ok)" : ""}</div>`;
     case "alarm.received":
       return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> ${esc(d.caption || "")} <span class="muted">${esc(d.event_type || "")}</span>${d.site_disarmed ? ' <span class="chip disarmed">Site disarmed</span>' : ""}`;
+    case "alarm.note":
+      return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> “${esc(d.text || "")}”`;
+    case "alarm.verdict":
+      return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> ${esc(d.old || "not marked")} → ${esc(d.new)}${d.bulk ? ` <span class="muted">(bulk of ${d.bulk})</span>` : ""}${d.note ? ` · “${esc(d.note)}”` : ""}`;
     case "alarm.exported":
       return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> ${esc((d.format || "").toUpperCase())}${d.note ? ` · “${esc(d.note)}”` : ""}`
         + (d.clip_sha256 ? `<div class="muted mono">clip sha256 ${esc(d.clip_sha256.slice(0, 16))}…</div>` : "");
