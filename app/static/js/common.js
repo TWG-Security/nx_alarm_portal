@@ -12,7 +12,7 @@ export async function api(path, { method = "GET", body } = {}) {
     opts.body = JSON.stringify(body);
   }
   const res = await fetch(path, opts);
-  if (res.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
+  if (res.status === 401) { signedOut(); throw new Error("Signed out"); }
   const data = res.headers.get("content-type")?.includes("json") ? await res.json() : null;
   if (!res.ok) {
     const d = data?.detail;
@@ -329,6 +329,7 @@ const liveEl = document.getElementById("live-status");
 const bannerEl = document.getElementById("conn-banner");
 
 function setDown(down) {
+  if (signedOutAt !== null) return;
   if (down && downSince === null) {
     downSince = Date.now();
     clearInterval(fallbackTimer);
@@ -355,7 +356,32 @@ function paintLive(state) {
     : "Live updates are interrupted. Alarms may be delayed until the connection is back";
 }
 
+// Signed out (revoked elsewhere, expired, "sign out everywhere"): never quietly. The page stays, marked
+// as not live, with a red banner and the connection tone every 10 s until someone signs in again.
+let signedOutAt = null;
+export function signedOut() {
+  if (signedOutAt !== null) return;
+  signedOutAt = Date.now();
+  es?.close();
+  clearTimeout(reconnectTimer); reconnectTimer = null;
+  clearInterval(fallbackTimer); fallbackTimer = null;
+  const banner = document.getElementById("signedout-banner");
+  if (banner) {
+    banner.hidden = false;
+    const link = banner.querySelector("a");
+    if (link) link.href = `/login?reason=signed_out&next=${encodeURIComponent(location.pathname + location.search)}`;
+  }
+  if (bannerEl) bannerEl.hidden = true;
+  document.body.classList.add("signed-out");
+  if (liveEl) { liveEl.className = "live-status down"; liveEl.textContent = "Signed out"; liveEl.title = "Not receiving alarms: sign in again"; }
+  emit("signedout");
+  const shout = () => emit("connection", { down: true, loud: true });
+  shout();
+  setInterval(shout, 2000);              // sound.js plays the tone at most every 10 s
+}
+
 function scheduleReconnect() {
+  if (signedOutAt !== null) return;
   if (reconnectTimer) return;
   es?.close();
   paintLive("down");
@@ -379,6 +405,7 @@ function connect() {
     if (es.readyState === EventSource.CLOSED) scheduleReconnect(); else paintLive("down");
   });
   es.addEventListener("ping", () => { lastBeat = Date.now(); });
+  es.addEventListener("signedout", () => signedOut());
   for (const name of EVENTS) {
     es.addEventListener(name, async (ev) => {
       lastBeat = Date.now();
@@ -398,9 +425,23 @@ function connect() {
   }
 }
 
+// Optional idle sign-out (Platform page; off by default because a wall screen is never "used").
+function watchIdle(minutes) {
+  let last = Date.now();
+  const touch = () => { last = Date.now(); };
+  ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"].forEach((e) => addEventListener(e, touch, { passive: true }));
+  setInterval(async () => {
+    if (signedOutAt !== null || Date.now() - last < minutes * 60_000) return;
+    signedOutAt = Date.now();
+    await fetch("/logout", { method: "POST", credentials: "same-origin", headers: { "X-CSRF-Token": csrf } }).catch(() => {});
+    location.href = "/login?reason=idle";
+  }, 15_000);
+}
+
 export function startLive() {
   if (started || !CFG.user) return;
   started = true;
+  if (CFG.idleMin > 0) watchIdle(CFG.idleMin);
   paintLive("connecting");
   connect();
   setInterval(() => { if (Date.now() - lastBeat > HEARTBEAT_TIMEOUT_MS) scheduleReconnect(); }, 5000);

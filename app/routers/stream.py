@@ -13,6 +13,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import sessions
 from app.audit import audit
 from app.config import get_settings
 from app.db import get_db, sessionmaker
@@ -35,15 +36,22 @@ async def events(request: Request, scope: Scope = Depends(get_scope), db: AsyncS
     ids = None if scope.tenant_ids is None else scope.tenant_ids | {scope.own_id}
     await db.commit()          # release the DB connection: an open stream mustn't pin one
     sub = bus.subscribe(ids)
+    uid, sid, tv = request.session.get("uid"), request.session.get("sid"), request.session.get("tv")
 
     async def gen():
         try:
             yield "retry: 3000\n\n"
             while not await request.is_disconnected():
+                if sessions.stream_revoked(uid, sid, tv):
+                    # Signed out elsewhere: tell the page (it goes loudly "SIGNED OUT"), then stop.
+                    yield "event: signedout\ndata: {}\n\n"
+                    return
                 try:
                     event, data = await asyncio.wait_for(sub.queue.get(), KEEPALIVE_S)
                 except asyncio.TimeoutError:
                     yield "event: ping\ndata: {}\n\n"   # heartbeat the page's watchdog listens for
+                    continue
+                if event == "session.revoked":           # internal wake-up: the check at the loop top decides
                     continue
                 yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
         finally:

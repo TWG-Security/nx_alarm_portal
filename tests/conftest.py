@@ -64,6 +64,8 @@ async def admin(session):
 
 
 async def login(client: httpx.AsyncClient, email: str) -> str:
+    client.headers.pop("X-CSRF-Token", None)
+    client.cookies.clear()
     r = await client.get("/login")
     csrf = r.text.split('name="csrf_token" value="')[1].split('"')[0]
     r = await client.post("/login", data={"email": email, "password": PASSWORD, "csrf_token": csrf})

@@ -54,6 +54,10 @@ class Settings(BaseSettings):
     # Sign-in protection (app/security_guard.py, app/net.py). Both also editable on the Platform page.
     trusted_proxy_ips: str = ""          # comma-separated IPs/CIDRs allowed to send CF-Connecting-IP (the tunnel connector)
     ip_allowlist: str = ""               # comma-separated IPs/CIDRs that are never banned
+    # Passkeys (WebAuthn) only work on this exact host name; the page hides them elsewhere (e.g. the LAN IP).
+    webauthn_rp_id: str = "alarmportal.twgsecurity.net"
+    webauthn_origins: str = "https://alarmportal.twgsecurity.net"   # comma-separated
+    webauthn_rp_name: str = "TWG Alarm Portal"
     cookie_secure: bool = True           # set False only for plain-http local dev
     start_pollers: bool = True           # tests turn this off
 

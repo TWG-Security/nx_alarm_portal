@@ -42,7 +42,7 @@
     <button id="theme-toggle" class="btn icon-btn" type="button" title="Toggle light/dark" aria-label="Toggle light or dark theme">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
     </button>
-    <span class="user-label">{{ user.label }}</span>
+    <a class="user-label{{ ' active' if page == 'account' }}" href="/account" title="Your account: password, two-step sign-in, passkeys, sessions">{{ user.label }}</a>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="btn btn-sm" type="submit">Sign out</button>
@@ -58,6 +58,9 @@
   <button class="btn btn-sm" id="scope-exit" type="button">Back to {{ user._tenant.label }}</button>
 </div>
 {% endif %}
+<div id="signedout-banner" class="conn-banner" role="alert" hidden>
+  <b>SIGNED OUT.</b> This screen is no longer receiving alarms. <a class="btn btn-sm" href="/login?reason=signed_out">Sign in again</a>
+</div>
 <div id="conn-banner" class="conn-banner" role="alert" hidden>
   <b>LIVE UPDATES LOST.</b> Reconnecting… The portal is checking for alarms every 2 seconds meanwhile. If this stays, reload the page or check the network.
 </div>
@@ -136,7 +139,7 @@
 <script>window.PORTAL = {{ {"user": user.label, "isAdmin": user.is_admin, "perms": user.permissions | sort | list,
   "tenantId": user.tenant_id, "tenantName": user._tenant.label,
   "scope": {"mode": scope.mode if scope else "own", "tenantId": scope.tenant_id if scope else user.tenant_id,
-            "tenantIds": (scope.tenant_ids | list) if scope and scope.tenant_ids is not none else none}, "map": map_config, "clip": clip_config} | tojson }};</script>
+            "tenantIds": (scope.tenant_ids | list) if scope and scope.tenant_ids is not none else none}, "map": map_config, "clip": clip_config, "idleMin": session_config.idleMin} | tojson }};</script>
 <script src="{{ asset('vendor/leaflet/leaflet.js') }}"></script>
 <script type="module" src="{{ asset('js/console.js') }}"></script>
 {% endif %}

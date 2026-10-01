@@ -538,3 +538,18 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; b
 .card-head .filters > * { flex: 0 1 170px; }
 .small-print { font-size: 12px; }
 .steps { margin: 0; padding-left: 20px; line-height: 1.7; }
+
+/* ---------- sign-in stages, account ---------- */
+.login-or { display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: 12px; margin: 12px 0; }
+.login-or::before, .login-or::after { content: ""; flex: 1; border-top: 1px solid var(--border); }
+.login-links { text-align: center; font-size: 13px; margin: 14px 0 0; }
+.code-input { font: 600 20px ui-monospace, Menlo, Consolas, monospace !important; letter-spacing: .2em; text-align: center; }
+.enroll-card { width: min(460px, 100%); }
+.qr-box { display: flex; justify-content: center; background: #fff; border-radius: 6px; padding: 10px; margin: 6px auto 8px; width: fit-content; }
+.recovery-codes { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; list-style: none; padding: 12px; margin: 0 0 12px;
+                  background: var(--surface-2); border-radius: 6px; font-size: 14px; }
+@media print { .recovery-codes { color: #000; background: #fff; } .btn { display: none; } }
+body.signed-out main { opacity: .45; pointer-events: none; }
+#signedout-banner .btn { margin-left: 8px; background: #fff; color: #1A1A1A; border-color: #fff; }
+a.user-label { color: var(--text-muted); text-decoration: none; }
+a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: underline; }

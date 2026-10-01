@@ -6,6 +6,7 @@ from fastapi import Depends, HTTPException, Request
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import platform_settings, sessions
 from app.config import get_settings
 from app.db import get_db
 from app.models import Tenant, User
@@ -57,6 +58,9 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
     if tenant is None or not tenant.is_active:      # the company's sign-in is disabled
         request.session.clear()
         raise NotAuthenticated()
+    if await sessions.check(request, db, user):         # revoked, signed out everywhere, or expired
+        request.session.clear()
+        raise NotAuthenticated()
     user._tenant = tenant
     user._perms = await load_permissions(db, user, tenant)
     note_session_ip(client_ip(request))       # IPs with a live session are never banned (security_guard)
@@ -94,6 +98,7 @@ def render(request: Request, name: str, user: User | None = None, scope=None, **
         "brand": _brand(user, scope),
         "csrf_token": ensure_csrf(request),
         "clip_config": {"pre": settings.clip_pre_s, "post": settings.clip_post_s, "max": settings.clip_max_window_s},
+        "session_config": {"idleMin": platform_settings.current().idle_timeout_min},
         "map_config": {
             "tileUrl": "/tiles/{z}/{x}/{y}.png",
             "attribution": settings.map_tile_attribution,

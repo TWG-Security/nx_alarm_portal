@@ -15,6 +15,12 @@
         <button class="btn btn-sm" type="button" id="b-remove" hidden>Remove logo</button></div>
       <small>PNG, JPEG or WebP, up to 2 MB, resized to fit 600×160. A wide logo on a white or transparent background works best.</small></div>
   </div>
+  <div class="card" id="security-card" style="margin-bottom:16px" hidden>
+    <h2>Sign-in security</h2>
+    <label class="check"><input type="checkbox" id="sec-2fa"> Require two-step sign-in for everyone in <span id="sec-company"></span></label>
+    <p class="muted small-print" id="sec-note">Everyone then needs a code from an authenticator app on their phone (or a passkey) when signing in.
+      Anyone who hasn't set it up is walked through it at their next sign-in; nobody already signed in is signed out.</p>
+  </div>
   <div class="page-head"><h1>Alarm levels</h1><button class="btn btn-primary" id="save-levels" disabled>Save changes</button></div>
   <div class="level-legend">
     <div class="card"><span class="chip p1">Critical</span><p>A pop-up on every page and a siren repeating every 4 seconds, until acknowledged or silenced.</p><button class="btn btn-sm" data-test="critical">▶ Test sound</button></div>

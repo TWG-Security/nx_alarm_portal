@@ -516,17 +516,26 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=12, max_length=200)
 
 
-def _user_dict(u: User) -> dict:
+def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0) -> dict:
     return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
-            "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None}
+            "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
+            "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in}
 
 
 @router.get("/users")
 async def list_users(user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
                      db: AsyncSession = Depends(get_db)):
+    from app import sessions
+    from app.models import WebAuthnCredential
     tid = _one_company(scope).id
     rows = (await db.scalars(select(User).where(User.tenant_id == tid).order_by(User.email))).all()
-    return [_user_dict(u) for u in rows]
+    ids = [u.id for u in rows]
+    keys = dict((await db.execute(select(WebAuthnCredential.user_id, func.count()).where(WebAuthnCredential.user_id.in_(ids))
+                                  .group_by(WebAuthnCredential.user_id))).all()) if ids else {}
+    live: dict[int, int] = {}
+    for r in await sessions.active(db, ids):
+        live[r.user_id] = live.get(r.user_id, 0) + 1
+    return [_user_dict(u, keys.get(u.id, 0), live.get(u.id, 0)) for u in rows]
 
 
 @router.post("/users")
@@ -562,7 +571,11 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
             setattr(target, name, value)
             fields.append(name)
     if body.password:
-        target.password_hash = hash_password(body.password)
+        from app import sessions
+        target.password_hash, target.password_changed_at = hash_password(body.password), sessions.utcnow()
+        # A reset ends their sessions (yours stays if you reset your own).
+        await sessions.revoke_all(db, target, "password reset by an admin",
+                                  keep_sid=request.session.get("sid") if target.id == user.id else None)
         fields.append("password")
     audit(db, target.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
     await db.commit()

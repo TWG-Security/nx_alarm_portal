@@ -99,7 +99,13 @@ Replaces the in-memory `_FAILS` brake in `app/routers/auth.py` (10 failures per 
   - `test_tenancy` additions for the new endpoints
   - an e2e run: 5 bad sign-ins → banned page, then unban from the Platform page
 
-## Phase 2: two-factor, passkeys, sessions
+## Phase 2: two-factor, passkeys, sessions: **DONE** (not deployed yet)
+Built as specified, with these choices: the between-stage state (`pending`) lives in the signed session cookie
+instead of an itsdangerous URL ticket; passkey sign-in is usernameless (no email, so no "has a passkey"
+oracle; challenge in the session); with 2FA required, a passkey-only user's password sign-in asks for the
+passkey; "lifetime" is the **closed-browser** limit (12 h, as the cookie did before), plus optional max age and
+idle sign-out (both off); a revoked screen stays on the page with a loud SIGNED OUT banner + tone (no redirect);
+sessions from before are adopted (no sign-out on deploy); the live stream is woken by a bus event on revoke.
 - **Tables** (migration 0009):
   - `users`: `totp_secret_enc`, `totp_enabled`, `last_totp_step`, `password_changed_at`, `token_version`
   - `mfa_recovery_codes` (user_id, code_hash, used_at)

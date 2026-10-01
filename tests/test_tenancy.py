@@ -80,6 +80,10 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("POST", f"/api/sites/{sb.id}/disable", None), ("POST", f"/api/sites/{sb.id}/archive", None),
         ("POST", "/api/sites/test", {"host": "https://x.test", "nx_user": "x", "site_id": sb.id}),
         ("PUT", f"/api/users/{world['b_op'].id}", {"is_active": False}),
+        ("GET", f"/api/users/{world['b_op'].id}/security", None),
+        ("POST", f"/api/users/{world['b_op'].id}/reset-2fa", {}),
+        ("DELETE", f"/api/users/{world['b_op'].id}/sessions", None),
+        ("DELETE", f"/api/users/{world['b_op'].id}/sessions/x", None),
         ("GET", f"/media/alarms/{ab.id}/snapshot.jpg", None), ("GET", f"/media/alarms/{ab.id}/live.jpg", None),
         ("GET", f"/media/alarms/{ab.id}/live.webm", None), ("GET", f"/api/alarms/{ab.id}/clip", None),
         ("GET", f"/api/alarms/{ab.id}/objects", None), ("GET", f"/api/alarms/{ab.id}/export", None),
@@ -103,7 +107,8 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
                          ("PUT", "/api/platform/settings/cloudflare"), ("POST", "/api/platform/cloudflare/test"),
                          ("POST", "/api/platform/bans"), ("DELETE", "/api/platform/bans/1"),
                          ("POST", "/api/platform/allowlist"), ("DELETE", "/api/platform/allowlist/1"),
-                         ("POST", "/api/platform/locks/clear")):
+                         ("POST", "/api/platform/locks/clear"), ("PUT", "/api/platform/settings/two-factor"),
+                         ("PUT", "/api/platform/settings/sessions")):
         assert (await client.request(method, path, json={})).status_code in (403, 422), path
     assert (await client.post("/api/scope", json={"scope": "all"})).status_code == 403
 

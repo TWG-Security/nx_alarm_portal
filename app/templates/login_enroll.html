@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Set up two-step sign-in{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <form class="card login-card enroll-card" method="post" action="/login/enroll">
+    <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
+    <h1 style="text-align:center">Set up two-step sign-in</h1>
+    <p class="muted" style="margin-top:0">{{ company }} requires a second step when signing in, so a stolen password alone can't get in.
+      It takes a minute, once.</p>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    <ol class="steps">
+      <li>On your phone, open an authenticator app (Google Authenticator, Microsoft Authenticator, 1Password, Authy…).</li>
+      <li>Add an account and scan this code:</li>
+    </ol>
+    <div class="qr-box"><img src="{{ setup.qr }}" alt="QR code for your authenticator app" width="200" height="200"></div>
+    <p class="muted small-print">Can't scan? Enter this key by hand: <span class="mono" id="totp-secret">{{ setup.secret }}</span></p>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label for="code">3. Type the 6-digit code the app shows</label>
+      <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus class="code-input"></div>
+    <button class="btn btn-primary" style="width:100%" type="submit">Turn on and sign in</button>
+    <p class="login-links"><a href="/login">Cancel</a></p>
+  </form>
+</div>
+{% endblock %}

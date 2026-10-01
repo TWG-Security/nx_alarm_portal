@@ -115,6 +115,44 @@ $("cf-test").addEventListener("click", async () => {
   } catch (err) { errBox("cf-error", err); } finally { $("cf-test").disabled = false; }
 });
 
+// ---------------------------------------------------------------- two-step sign-in, sessions
+function paintTwoFactor() {
+  const t = settings.two_factor;
+  $("mfa-twg").checked = t.require_twg;
+  document.querySelectorAll('input[name="mfa-cust"]').forEach((r) => { r.checked = r.value === t.customers; });
+  $("mfa-passkeys").checked = t.passkeys_enabled;
+}
+$("mfa-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errBox("mfa-error");
+  try {
+    settings = await api("/api/platform/settings/two-factor", { method: "PUT", body: { require_twg: $("mfa-twg").checked,
+      customers: document.querySelector('input[name="mfa-cust"]:checked')?.value || "company", passkeys_enabled: $("mfa-passkeys").checked } });
+    paintTwoFactor(); toast(settings.changed.length ? "Saved. It applies at each person's next sign-in." : "Nothing changed");
+  } catch (err) { errBox("mfa-error", err); }
+});
+
+function sessWarn() {
+  const warn = [];
+  if (Number($("s-idle").value) > 0) warn.push(`Screens nobody touches for ${$("s-idle").value} minutes sign out, <b>including wall-mounted monitoring screens</b>. They then stop receiving alarms (with a red banner) until someone signs in.`);
+  if (Number($("s-max").value) > 0) warn.push(`Every screen is signed out ${$("s-max").value} hours after signing in, <b>monitoring screens included</b>.`);
+  $("sess-warn").innerHTML = warn.map((w) => `<div class="alert alert-warn">${w}</div>`).join("");
+}
+function paintSessions() {
+  const s = settings.sessions;
+  $("s-closed").value = s.closed_h; $("s-max").value = s.max_h; $("s-idle").value = s.idle_min;
+  sessWarn();
+}
+["s-max", "s-idle"].forEach((id) => $(id).addEventListener("input", sessWarn));
+$("sess-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errBox("sess-error");
+  const body = { closed_h: Number($("s-closed").value), max_h: Number($("s-max").value), idle_min: Number($("s-idle").value) };
+  if ((body.max_h || body.idle_min) && !confirm("These settings sign out monitoring screens too. Save anyway?")) return;
+  try { settings = await api("/api/platform/settings/sessions", { method: "PUT", body }); paintSessions(); toast("Saved"); }
+  catch (err) { errBox("sess-error", err); }
+});
+
 // ---------------------------------------------------------------- security overview
 function paintSecurity() {
   const s = security;
@@ -205,7 +243,7 @@ async function refresh() { await Promise.all([loadSecurity(), loadEvents()]); }
 
 try {
   settings = await api("/api/platform/settings");
-  paintRules(); paintProxies(); paintCloudflare();
+  paintRules(); paintProxies(); paintCloudflare(); paintTwoFactor(); paintSessions();
   await refresh();
 } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }
 setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 15000);

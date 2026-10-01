@@ -81,6 +81,9 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Sign-in protection (bans, account lock, allowlist) | `app/security_guard.py`; client IP `app/net.py`; settings cache `app/platform_settings.py`; `BanGate` in `app/main.py`; tables `platform_settings`, `auth_events`, `ip_bans`, `ip_allowlist` (migration 0008) |
 | Cloudflare edge bans | `app/cloudflare_edge.py` (IP Access Rules, notes prefix `twg-alarm-portal auto-ban`); sweep every 60 s in `security_guard.run_sweeper` |
 | Platform page (TWG only) | `app/routers/platform.py`, `templates/platform.html`, `js/platform.js`; tests `tests/test_sign_in_protection.py`, e2e `tools/e2e/signin.py` |
+| Two-step sign-in (TOTP, recovery codes, passkeys) | `app/mfa.py`; login stages in `app/routers/auth.py` (`pending` in the session between stages); templates `login*.html`, `recovery_codes.html`; `js/login.js`, `js/webauthn.js`; tests `tests/test_two_factor.py` (+ `tests/soft_passkey.py`, a software authenticator), e2e `tools/e2e/twofactor.py` (Chrome virtual authenticator) |
+| Sessions (one row per browser) | `app/sessions.py` (`check` in `deps.current_user`, adopts old cookies), `user_sessions` (migration 0009); revoked streams get `event: signedout` → `common.js signedOut()` |
+| Account page, admin user security, company 2FA switch | `app/routers/account.py`, `templates/account.html`, `js/account.js`; password rules `app/passwords.py` |
 | Companies / tenancy | `app/scope.py` (`Scope`, `get_scope`), `app/routers/tenants.py` (`/api/scope`, `/api/tenants`, logo, `/branding/{id}/logo`), `templates/companies.html` + `js/companies.js`; tests `tests/test_tenancy.py`, e2e `tools/e2e/tenancy.py` |
 | Verdicts (real / false), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`) |
 | Groups & permissions | `app/permissions.py` (catalog, `require()`), `user_groups` / `user_group_members` (migration 0005), `/api/groups`; `deps.current_user` loads `user._perms`, pages get `CFG.perms` |
@@ -128,6 +131,13 @@ JS modules:
 - **Account lock** (per email, any IP) fails open on DB errors. Admin unban/unlock writes an `auth_events` row with outcome `cleared`; only later failures count.
 - **Cloudflare** is best-effort and background (`after_commit` → `spawn`); the sweeper pushes missing rules and removes expired ones. Removal runs whenever a token exists, even with the switch off.
 - Settings live in `platform_settings` (id 1), read through the `platform_settings.current()` snapshot (refreshed on save, at most 30 s old). Secrets are Fernet-encrypted, never returned, and the audit log records field names only.
+
+### Two-step sign-in and sessions
+- Required for: TWG users if `mfa_require_twg`; customers if `mfa_customers == "all"`, else `tenant.settings["require_2fa"]` (`mfa.required_for`).
+- After the password: TOTP on (or required + passkeys) → `/login/2fa`; required but nothing set up → `/login/enroll`; else signed in. A passkey sign-in skips all of it.
+- Passkeys: RP ID `WEBAUTHN_RP_ID` (default `alarmportal.twgsecurity.net`), origins `WEBAUTHN_ORIGINS`. The page hides passkey buttons on other hosts (the LAN IP). Dev uses `localhost` (set in `tools/dev_up.sh`).
+- **A revoked or expired session must never look live:** the page keeps showing, with the SIGNED OUT banner and tone. Keep `signedOut()` in `common.js` as the only reaction to a 401.
+- Session limits (Platform page): `session_closed_h` (12) counts from the last request, so an open screen never expires; `session_max_h` and `idle_timeout_min` default to 0 (off).
 
 ### How an alarm's level is decided (first match wins)
 1. A `#critical` / `#alarm` / `#warning` / `#ignore` tag in the NX rule's Title/Comment. Rules are re-read every 60 s, and still-open alarms are re-levelled.
@@ -214,7 +224,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 98 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 113 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -222,6 +232,7 @@ POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.arming   # ~
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.export /tmp      # export ZIP from the drawer, checksums, alarm latency mid-export
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.verdicts /tmp    # live beside recorded, verdict buttons, groups, operator bulk edit
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.signin /tmp      # 5 bad sign-ins -> blocked page, operator's alarms unaffected, unblock on Platform page
+tools/dev_up.sh && .venv/bin/python -m tools.e2e.twofactor /tmp   # authenticator app, passkey (virtual authenticator), forced enrolment, remote sign-out -> SIGNED OUT banner + tone
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh

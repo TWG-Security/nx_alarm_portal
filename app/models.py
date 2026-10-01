@@ -53,6 +53,12 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Two-factor (app/mfa.py) and sessions (app/sessions.py)
+    totp_secret_enc: Mapped[str] = mapped_column(Text, default="")              # Fernet; kept while enrolling
+    totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a code's step can't be reused
+    password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
 
     @property
     def is_admin(self) -> bool:
@@ -72,6 +78,53 @@ class User(Base):
 
     def can(self, perm: str) -> bool:
         return perm in self.permissions
+
+
+class MfaRecoveryCode(Base):
+    """Single-use recovery codes (SHA-256 of the normalised code), shown to the user once."""
+
+    __tablename__ = "mfa_recovery_codes"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WebAuthnCredential(Base):
+    """A passkey. credential_id and public_key are base64url."""
+
+    __tablename__ = "webauthn_credentials"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    credential_id: Mapped[str] = mapped_column(String(1400), unique=True)
+    public_key: Mapped[str] = mapped_column(Text)
+    sign_count: Mapped[int] = mapped_column(BigInteger, default=0)
+    transports: Mapped[list | None] = mapped_column(JSONType, nullable=True)
+    name: Mapped[str] = mapped_column(String(100), default="Passkey")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserSession(Base):
+    """One signed-in browser. The session cookie carries its id (sid); revoking the row signs it out."""
+
+    __tablename__ = "user_sessions"
+    __table_args__ = (Index("ix_user_sessions_user", "user_id", "revoked_at"),)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    method: Mapped[str] = mapped_column(String(20), default="password")   # password | totp | recovery | passkey | sso | legacy
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    user_agent: Mapped[str] = mapped_column(String(300), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(100), default="")
 
 
 class UserGroup(Base):
@@ -247,6 +300,14 @@ class PlatformSettings(Base):
     cf_last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     cf_last_error: Mapped[str] = mapped_column(Text, default="")
     cf_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Two-factor (app/mfa.py)
+    mfa_require_twg: Mapped[bool] = mapped_column(Boolean, default=False)      # TWG's own users must use 2FA
+    mfa_customers: Mapped[str] = mapped_column(String(20), default="company")  # company (each decides) | all
+    passkeys_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Sessions (app/sessions.py). A monitoring screen makes requests all the time, so it never goes idle.
+    session_closed_h: Mapped[int] = mapped_column(Integer, default=12)         # signed out after this long with no requests
+    session_max_h: Mapped[int] = mapped_column(Integer, default=0)             # absolute limit; 0 = none
+    idle_timeout_min: Mapped[int] = mapped_column(Integer, default=0)          # no keyboard/mouse; 0 = off
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 

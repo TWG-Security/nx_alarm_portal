@@ -72,3 +72,23 @@ render(await api("/api/settings/alarm-levels"));
   });
   remove.addEventListener("click", async () => { await api(`/api/tenants/${tid}/logo`, { method: "DELETE" }); paint({ has_logo: false }); });
 })();
+
+// ---------------------------------------------------------------- sign-in security (app/routers/account.py)
+(async () => {
+  const card = document.getElementById("security-card"), box = document.getElementById("sec-2fa");
+  let sec;
+  try { sec = await api("/api/settings/security"); } catch { return; }
+  card.hidden = false;
+  document.getElementById("sec-company").textContent = sec.company;
+  box.checked = sec.require_2fa;
+  if (sec.decided_by === "platform") {
+    box.disabled = true;
+    document.getElementById("sec-note").textContent = sec.require_2fa
+      ? "TWG Security requires two-step sign-in here (Platform settings)." : "TWG Security sets this on the Platform page.";
+  }
+  box.addEventListener("change", async () => {
+    try { await api("/api/settings/security", { method: "PUT", body: { require_2fa: box.checked } });
+      toast(box.checked ? "Two-step sign-in is now required. It applies at each person's next sign-in." : "Two-step sign-in is optional again"); }
+    catch (err) { box.checked = !box.checked; toast(esc(err.message), { kind: "error" }); }
+  });
+})();

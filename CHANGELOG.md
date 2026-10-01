@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Two-step sign-in** (migration 0009):
+  - **Authenticator app** (Google/Microsoft Authenticator, 1Password…): set up on the new **Account** page (click your name, top right) with a QR code, confirmed with a code. 10 single-use **recovery codes** are shown once. Codes can't be replayed.
+  - **Passkeys** (fingerprint, face, device PIN): add, test and remove them on the Account page. **"Sign in with a passkey"** needs no email, password or code. A passkey also works as the second step. They work at `https://alarmportal.twgsecurity.net` only (browsers refuse them on an IP address), so the LAN address keeps using the code.
+  - **Who must use it** (Platform page → Two-step sign-in): TWG's own users, and customer companies either deciding for themselves (their admins: Settings → Sign-in security) or all required. Anyone required but not set up is walked through it at their next sign-in; nobody is locked out and nobody already signed in is signed out.
+  - Admins see each user's two-step state on the Users page and can **reset** it (lost phone), optionally removing passkeys. CLI break-glass: `app.cli reset-mfa --email … [--passkeys]`.
+- **Sessions:** every signed-in browser is listed on the Account page ("Where you're signed in") with a **Sign out** per browser and **Sign out everywhere**. Admins see and end their users' sessions. Changing or resetting a password signs out the other browsers.
+  - **A signed-out screen is never quiet:** it keeps the page, turns the top bar to "Signed out", shows a red **SIGNED OUT, not receiving alarms** banner and sounds the connection tone every 10 s until someone signs in again. Measured: banner within 50 ms of an admin signing it out (e2e).
+  - Browsers signed in before this release are adopted on the first request, so the upgrade signs nobody out.
+  - Platform page → Sessions: how long a **closed** browser stays signed in (12 h, as before; an open page never goes idle), plus an optional maximum session length and keyboard/mouse idle sign-out, both **off** by default with a warning that they sign monitoring screens out too.
 - **Sign-in protection** (Platform page → Sign-in protection; migration 0008):
   - Every sign-in attempt is recorded. **5 failures from one address in 10 minutes block it for 15 minutes**; each later block lasts 4× longer (1 h, 4 h, 16 h), capped at 7 days, and the 5th is permanent. A blocked address gets a "Temporarily blocked" page instead of the sign-in form.
   - **Account lock:** 10 failures for one email from any addresses in the window refuse that email (same "invalid" answer) until the window passes. Unknown emails take as long to answer as real ones.
@@ -12,6 +21,10 @@
   - CLI break-glass: `unban`, `allow-ip`, `clear-lock`, `trust-proxy`.
 - **Cloudflare edge bans** (Platform page → Cloudflare): with an API token and Zone ID, each block is also pushed to Cloudflare as an IP Access Rule and removed on unblock, allowlist or expiry. Best-effort: Cloudflare being down never weakens the portal's own block; errors show on the page and a sweep retries every minute. Only rules the portal made are ever removed.
 - **Platform page** (`/platform`, TWG only; changes need `platform.manage`), linked from the top bar and the Companies page.
+
+### Fixed
+- **Users page:** an earlier edit had pasted the groups code inside the role/disable handler, so every role change or disable re-registered the group form's handlers (one Save could then submit several times). Rewritten. "+ New group" now waits until the user list and permissions have loaded (it could open an empty form).
+- A signed-out page redirect now returns you to the page you were on after signing in.
 - **Backups**: `tools/backup.sh` saves the database dump, `.env` and checksums. Each run is verified by restoring into a scratch database and comparing row counts, and rotation keeps 14. Cron runs it nightly at 03:15 UTC.
 - **Multiple companies:**
   - Other security companies get their own portal at the same address. They see only their own sites, alarms, users, groups, settings and audit log, with their name and logo ("Powered by TWG Security").

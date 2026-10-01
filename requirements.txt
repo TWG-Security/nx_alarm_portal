@@ -13,3 +13,6 @@ cryptography>=42
 pydantic-settings>=2.3
 tzdata>=2024.1          # IANA time zones for arming schedules (slim images lack /usr/share/zoneinfo)
 reportlab>=4.2          # incident report PDFs (pulls in Pillow, also used to draw analytics boxes on stills)
+pyotp>=2.9              # two-factor codes (TOTP)
+qrcode>=7.4             # QR code for authenticator apps
+webauthn>=2.0           # passkeys (py_webauthn)

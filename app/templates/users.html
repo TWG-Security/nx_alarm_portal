@@ -5,8 +5,8 @@
   <div class="page-head"><h1>Users</h1></div>
   <div class="table-wrap" style="margin-bottom:20px">
     <table>
-      <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Last sign-in</th><th></th></tr></thead>
-      <tbody id="user-rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Two-step</th><th>Last sign-in</th><th></th></tr></thead>
+      <tbody id="user-rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
   <div class="card groups-card" style="margin-bottom:20px">
@@ -25,7 +25,7 @@
         <button class="btn btn-danger" type="button" id="g-delete" style="flex:0 0 auto;margin-left:auto" hidden>Delete group</button>
       </div>
     </form>
-    <button class="btn" id="g-new" type="button">+ New group</button>
+    <button class="btn" id="g-new" type="button" disabled>+ New group</button>
   </div>
   <form class="card" id="user-form" style="max-width:640px">
     <h2>Add user</h2>
@@ -40,5 +40,12 @@
     <button class="btn btn-primary" type="submit">Create user</button>
   </form>
 </div>
+<dialog id="sec-dialog">
+  <div style="width:min(620px, calc(100vw - 48px))">
+    <h2 id="sec-title">Sign-in security</h2>
+    <div id="sec-body"><span class="muted">Loading…</span></div>
+    <div class="dialog-actions"><button class="btn" type="button" id="sec-close">Close</button></div>
+  </div>
+</dialog>
 {% endblock %}
 {% block scripts %}<script type="module" src="{{ asset('js/users.js') }}"></script>{% endblock %}

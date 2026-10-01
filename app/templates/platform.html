@@ -8,6 +8,8 @@
   <div class="seg tabbar" role="tablist" id="tabs">
     <button type="button" data-tab="signin" class="active">Sign-in protection</button>
     <button type="button" data-tab="cloudflare">Cloudflare</button>
+    <button type="button" data-tab="twofactor">Two-step sign-in</button>
+    <button type="button" data-tab="sessions">Sessions</button>
   </div>
 
   <!-- ============================================================ sign-in protection -->
@@ -144,6 +146,44 @@
         <li>Tick <b>Push bans to Cloudflare</b>, click <b>Save</b>, then <b>Test connection</b>. It should say "Connected".</li>
       </ol>
     </div>
+  </section>
+  <!-- ============================================================ two-step sign-in -->
+  <section data-panel="twofactor" hidden>
+    <form class="card" id="mfa-form">
+      <h2>Who must use two-step sign-in</h2>
+      <p class="muted" style="margin-top:0">With two-step sign-in, a password alone isn't enough: people also type a code from an authenticator app
+        on their phone, or use a passkey. People who must use it but haven't set it up are walked through it at their next sign-in
+        (it takes a minute; nobody is locked out). People already signed in stay signed in.</p>
+      <label class="check"><input type="checkbox" id="mfa-twg"> Require it for TWG Security's own users</label>
+      <div class="field"><label>Customer companies</label>
+        <label class="radio"><input type="radio" name="mfa-cust" value="company"><span><b>Each company decides</b><small>Their admins turn it on under Settings → Sign-in security.</small></span></label>
+        <label class="radio"><input type="radio" name="mfa-cust" value="all"><span><b>Required for every company</b><small>Their admins can't turn it off.</small></span></label>
+      </div>
+      <label class="check"><input type="checkbox" id="mfa-passkeys"> Allow passkeys (fingerprint, face or device PIN) for signing in and as the second step</label>
+      <p class="muted small-print">Passkeys only work at <span class="mono">https://alarmportal.twgsecurity.net</span>; on the LAN address the code from the app is used.</p>
+      <div id="mfa-error"></div>
+      <button class="btn btn-primary manage-only" type="submit">Save</button>
+    </form>
+  </section>
+
+  <!-- ============================================================ sessions -->
+  <section data-panel="sessions" hidden>
+    <form class="card" id="sess-form">
+      <h2>How long people stay signed in</h2>
+      <p class="muted" style="margin-top:0">An open portal page talks to the server all the time, so a monitoring screen that's left open never
+        counts as inactive and stays signed in. These limits are about browsers that were closed, and optional stricter rules.</p>
+      <div class="rules-grid">
+        <div class="field"><label for="s-closed">Sign out a closed browser after (hours)</label><input id="s-closed" type="number" min="1" max="2160" required>
+          <small>No page open for this long: sign in again. Today 12.</small></div>
+        <div class="field"><label for="s-max">Always sign out after (hours)</label><input id="s-max" type="number" min="0" max="8760" required>
+          <small>0 = never. Anything else signs monitoring screens out too.</small></div>
+        <div class="field"><label for="s-idle">Sign out after no keyboard or mouse for (minutes)</label><input id="s-idle" type="number" min="0" max="1440" required>
+          <small>0 = off (recommended).</small></div>
+      </div>
+      <div id="sess-warn"></div>
+      <div id="sess-error"></div>
+      <button class="btn btn-primary manage-only" type="submit">Save</button>
+    </form>
   </section>
 </div>
 {% endblock %}

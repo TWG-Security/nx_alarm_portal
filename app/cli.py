@@ -7,6 +7,7 @@
     python -m app.cli allow-ip --ip 204.186.88.58 --label "TWG office"   never ban this address or range
     python -m app.cli clear-lock --email someone@example.com   unlock an account locked by failed sign-ins
     python -m app.cli trust-proxy --ip 10.0.2.58           believe CF-Connecting-IP from this tunnel connector
+    python -m app.cli reset-mfa --email someone@example.com [--passkeys]   turn off their two-step sign-in
 The first company created becomes the platform (TWG Security); later ones are customer companies.
 """
 
@@ -108,6 +109,23 @@ async def trust_proxy(ip: str) -> None:
         print(f"Trusted proxies: {row.trusted_proxies}. The app picks it up within 30 s.")
 
 
+async def reset_mfa(email: str, passkeys: bool) -> None:
+    from sqlalchemy import delete, func
+    from app import mfa
+    from app.audit import audit
+    from app.models import WebAuthnCredential
+    async with sessionmaker()() as db:
+        user = await db.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
+        if user is None:
+            sys.exit(f"No user {email}")
+        await mfa.disable_totp(db, user)
+        if passkeys:
+            await db.execute(delete(WebAuthnCredential).where(WebAuthnCredential.user_id == user.id))
+        audit(db, user.tenant_id, "mfa.reset", target=user.email, via="CLI", passkeys_removed=passkeys)
+        await db.commit()
+    print(f"Two-step sign-in reset for {user.email}" + (" (passkeys removed too)" if passkeys else ""))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="app.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -128,10 +146,16 @@ def main() -> None:
     al.add_argument("--label", default="")
     cl = sub.add_parser("clear-lock")
     cl.add_argument("--email", required=True)
+    rm = sub.add_parser("reset-mfa")
+    rm.add_argument("--email", required=True)
+    rm.add_argument("--passkeys", action="store_true", help="also remove their passkeys")
     tp = sub.add_parser("trust-proxy")
     tp.add_argument("--ip", required=True)
     args = p.parse_args()
 
+    if args.cmd == "reset-mfa":
+        asyncio.run(reset_mfa(args.email, args.passkeys))
+        return
     if args.cmd == "trust-proxy":
         asyncio.run(trust_proxy(args.ip.strip()))
         return

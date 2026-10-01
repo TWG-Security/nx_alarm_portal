@@ -2,14 +2,21 @@
 {% block title %}Sign in{% endblock %}
 {% block content %}
 <div class="login-wrap">
-  <form class="card login-card" method="post" action="/login">
+  <form class="card login-card" method="post" action="/login" id="login-form">
     <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
     <h1 style="text-align:center">Alarm Portal</h1>
+    {% if notice %}<div class="alert alert-warn">{{ notice }}</div>{% endif %}
     {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    <div id="pk-error"></div>
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" value="{{ email or '' }}" required autofocus></div>
+    <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username webauthn" value="{{ email or '' }}" required autofocus></div>
     <div class="field"><label for="password">Password</label><input id="password" name="password" type="password" autocomplete="current-password" required></div>
     <button class="btn btn-primary" style="width:100%" type="submit">Sign in</button>
+    {% if passkeys %}
+    <div class="login-or" data-passkey-only hidden><span>or</span></div>
+    <button class="btn" style="width:100%" type="button" id="passkey-login" data-passkey-only hidden>Sign in with a passkey</button>
+    {% endif %}
   </form>
 </div>
 {% endblock %}
+{% block scripts %}{% if passkeys %}<script type="module" src="{{ asset('js/login.js') }}" data-rp-id="{{ rp_id }}" id="login-js"></script>{% endif %}{% endblock %}

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+from urllib.parse import quote
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
@@ -14,7 +15,7 @@ from app import platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import api, auth, pages, platform, stream, tenants, tiles
+from app.routers import account, api, auth, pages, platform, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -86,7 +87,8 @@ def create_app() -> FastAPI:
     async def _not_authenticated(request: Request, exc: NotAuthenticated):
         if request.url.path.startswith(API_PREFIXES):
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
-        return RedirectResponse("/login", 303)
+        target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        return RedirectResponse("/login" if target == "/" else f"/login?next={quote(target)}", 303)
 
     @app.exception_handler(HTTPException)
     async def _http_error(request: Request, exc: HTTPException):
@@ -108,6 +110,7 @@ def create_app() -> FastAPI:
     app.include_router(stream.router)
     app.include_router(tenants.router)
     app.include_router(platform.router)
+    app.include_router(account.router)
     app.include_router(tiles.router)
     return app
 

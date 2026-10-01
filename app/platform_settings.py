@@ -40,6 +40,12 @@ class Snapshot:
     cf_enabled: bool = False
     cf_zone_id: str = ""
     cf_token: str = ""                           # decrypted; "" when unset
+    mfa_require_twg: bool = False
+    mfa_customers: str = "company"               # company (each company decides) | all
+    passkeys_enabled: bool = True
+    session_closed_h: int = 12
+    session_max_h: int = 0
+    idle_timeout_min: int = 0
 
 
 def parse_networks(text: str) -> list[Network]:
@@ -128,7 +134,10 @@ async def refresh() -> Snapshot:
                            max_min=row.ban_max_min, permanent_after=row.ban_permanent_after,
                            account_lock_max=row.account_lock_max),
             trusted=tuple(trusted), allow=tuple(allow),
-            cf_enabled=row.cf_enabled, cf_zone_id=row.cf_zone_id or "", cf_token=token)
+            cf_enabled=row.cf_enabled, cf_zone_id=row.cf_zone_id or "", cf_token=token,
+            mfa_require_twg=row.mfa_require_twg, mfa_customers=row.mfa_customers or "company",
+            passkeys_enabled=row.passkeys_enabled, session_closed_h=row.session_closed_h,
+            session_max_h=row.session_max_h, idle_timeout_min=row.idle_timeout_min)
     _snap, _loaded_at = snap, time.monotonic()
     return snap
 

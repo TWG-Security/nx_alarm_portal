@@ -10,7 +10,7 @@ from tests.conftest import NX, login, make_site, make_tenant_user, nx_row
 
 async def test_pages_require_login(client):
     r = await client.get("/alarms")
-    assert r.status_code == 303 and r.headers["location"] == "/login"
+    assert r.status_code == 303 and r.headers["location"] == "/login?next=/alarms"
     assert (await client.get("/api/alarms")).status_code == 401
 
 

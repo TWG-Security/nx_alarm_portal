@@ -6,6 +6,8 @@
 - PUT  /api/platform/settings/proxies     trusted tunnel connectors (private addresses only)
 - PUT  /api/platform/settings/cloudflare  Cloudflare edge bans: token, zone, on/off
 - POST /api/platform/cloudflare/test      read-only check of the saved token and zone
+- PUT  /api/platform/settings/two-factor  require 2FA for TWG / every company (or each decides); passkeys on/off
+- PUT  /api/platform/settings/sessions    how long a closed browser stays signed in; optional max age and idle sign-out
 - GET  /api/platform/security             your IP, bans, allowlist, locked accounts, untrusted connectors
 - GET  /api/platform/auth-events          recent sign-in attempts (filter by ip, email, outcome)
 - POST /api/platform/bans, DELETE /api/platform/bans/{id}
@@ -60,6 +62,9 @@ def _settings_dict(row) -> dict:
                        "token_readable": bool(snap.cf_token) or not row.cf_api_token_enc,
                        "last_ok_at": _iso(row.cf_last_ok_at), "last_error": row.cf_last_error,
                        "last_error_at": _iso(row.cf_last_error_at)},
+        "two_factor": {"require_twg": row.mfa_require_twg, "customers": row.mfa_customers,
+                       "passkeys_enabled": row.passkeys_enabled},
+        "sessions": {"closed_h": row.session_closed_h, "max_h": row.session_max_h, "idle_min": row.idle_timeout_min},
         "updated_at": _iso(row.updated_at),
     }
 
@@ -168,6 +173,41 @@ async def put_cloudflare(body: CloudflareIn, request: Request, user: User = Depe
     if {"cf_zone_id", "cf_api_token"} & set(changed):
         row.cf_last_ok_at, row.cf_last_error, row.cf_last_error_at = None, "", None
     return await _saved(db, request, user, row, "cloudflare", changed)
+
+
+class TwoFactorIn(BaseModel):
+    require_twg: bool
+    customers: str = Field(pattern="^(company|all)$")
+    passkeys_enabled: bool
+
+
+@router.put("/api/platform/settings/two-factor")
+async def put_two_factor(body: TwoFactorIn, request: Request, user: User = Depends(MANAGE),
+                         db: AsyncSession = Depends(get_db)):
+    row = await platform_settings.get_row(db)
+    changed = []
+    for k, col in (("require_twg", "mfa_require_twg"), ("customers", "mfa_customers"), ("passkeys_enabled", "passkeys_enabled")):
+        if getattr(row, col) != getattr(body, k):
+            setattr(row, col, getattr(body, k))
+            changed.append(k)
+    return await _saved(db, request, user, row, "two_factor", changed)
+
+
+class SessionsIn(BaseModel):
+    closed_h: int = Field(ge=1, le=24 * 90)
+    max_h: int = Field(ge=0, le=24 * 365)
+    idle_min: int = Field(ge=0, le=24 * 60)
+
+
+@router.put("/api/platform/settings/sessions")
+async def put_sessions(body: SessionsIn, request: Request, user: User = Depends(MANAGE), db: AsyncSession = Depends(get_db)):
+    row = await platform_settings.get_row(db)
+    changed = []
+    for k, col in (("closed_h", "session_closed_h"), ("max_h", "session_max_h"), ("idle_min", "idle_timeout_min")):
+        if getattr(row, col) != getattr(body, k):
+            setattr(row, col, getattr(body, k))
+            changed.append(k)
+    return await _saved(db, request, user, row, "sessions", changed)
 
 
 @router.post("/api/platform/cloudflare/test")
