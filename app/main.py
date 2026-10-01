@@ -10,9 +10,11 @@ from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
+from app import platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
-from app.routers import api, auth, pages, stream, tenants, tiles
+from app.net import client_ip
+from app.routers import api, auth, pages, platform, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -24,21 +26,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
+# Sign-in pages a banned IP may not use. Signed-in sessions are never cut off by a ban.
+BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/")
+
+
+class BanGate:
+    """Answers banned IPs with the blocked page on the sign-in pages, and on /api/ calls that have no
+    signed-in session. Pure ASGI, so it costs nothing on the live stream and media. Sits inside
+    SessionMiddleware (it reads the session) and fails open (security_guard.active_ban)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            path = scope["path"]
+            if path.startswith(BAN_GUARDED) or (path.startswith("/api/") and not scope.get("session", {}).get("uid")):
+                request = Request(scope)
+                ban = await security_guard.active_ban(client_ip(request))
+                if ban is not None:
+                    response = auth.banned_page(request, ban, api=path.startswith("/api/"))
+                    return await response(scope, receive, send)
+        await self.app(scope, receive, send)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    scheduler = None
+    tasks = []
+    await platform_settings.refresh()
     if get_settings().start_pollers:
         await manager.start_all()
-        scheduler = asyncio.create_task(arming.run_scheduler(), name="arming-scheduler")
+        tasks.append(asyncio.create_task(arming.run_scheduler(), name="arming-scheduler"))
+        tasks.append(asyncio.create_task(security_guard.run_sweeper(), name="security-sweeper"))
     yield
-    if scheduler:
-        scheduler.cancel()
+    for t in tasks:
+        t.cancel()
     await manager.shutdown()
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="TWG Alarm Portal", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(BanGate)             # added first = runs inside SessionMiddleware
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="twg_portal",
                        max_age=settings.session_max_age_s, same_site="lax", https_only=settings.cookie_secure)
 
@@ -78,6 +107,7 @@ def create_app() -> FastAPI:
     app.include_router(api.router)
     app.include_router(stream.router)
     app.include_router(tenants.router)
+    app.include_router(platform.router)
     app.include_router(tiles.router)
     return app
 

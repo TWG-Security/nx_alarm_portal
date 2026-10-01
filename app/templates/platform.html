@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Platform{% endblock %}
+{% block content %}
+<div class="page platform-page">
+  <div class="page-head"><h1>Platform settings</h1>
+    <a class="btn" href="/companies">Companies</a></div>
+  <p class="muted" style="margin-top:-6px">Settings for the whole portal, every company included. Only TWG Security staff see this page{% if not user.can('platform.manage') %}; you can look, but changes need the <b>Manage companies</b> permission{% endif %}.</p>
+  <div class="seg tabbar" role="tablist" id="tabs">
+    <button type="button" data-tab="signin" class="active">Sign-in protection</button>
+    <button type="button" data-tab="cloudflare">Cloudflare</button>
+  </div>
+
+  <!-- ============================================================ sign-in protection -->
+  <section data-panel="signin">
+    <div class="platform-grid">
+      <div class="card">
+        <h2>Your address</h2>
+        <div id="my-ip"><span class="muted">Loading…</span></div>
+      </div>
+      <div class="card">
+        <h2>Tunnel connector</h2>
+        <p class="muted" style="margin-top:0">The Cloudflare Tunnel connector forwards each visitor's real address. The portal believes it only from
+          the connector's own address, so nobody else can pretend to be someone they aren't.</p>
+        <div id="untrusted"></div>
+        <form id="proxies-form" class="row" style="align-items:flex-end">
+          <div class="field" style="flex:1 1 240px"><label for="proxies">Trusted connector addresses</label>
+            <input id="proxies" type="text" maxlength="2000" placeholder="e.g. 10.0.2.58">
+            <small id="proxies-env"></small></div>
+          <button class="btn manage-only" type="submit" style="flex:0 0 auto;margin-bottom:14px">Save</button>
+        </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Ban rules</h2></div>
+      <form id="rules-form">
+        <div class="rules-grid">
+          <div class="field"><label for="r-max">Failed sign-ins from one address</label><input id="r-max" type="number" min="2" max="100" required></div>
+          <div class="field"><label for="r-window">…within (minutes)</label><input id="r-window" type="number" min="1" max="1440" required></div>
+          <div class="field"><label for="r-first">First ban (minutes)</label><input id="r-first" type="number" min="1" max="10080" required></div>
+          <div class="field"><label for="r-maxmin">Longest temporary ban (minutes)</label><input id="r-maxmin" type="number" min="1" max="525600" required></div>
+          <div class="field"><label for="r-perm">Permanent from ban number</label><input id="r-perm" type="number" min="0" max="50" required><small>0 = never permanent</small></div>
+          <div class="field"><label for="r-lock">Lock an account after</label><input id="r-lock" type="number" min="0" max="1000" required><small>failures for one email from any addresses in the window. 0 = off</small></div>
+        </div>
+        <p class="muted" id="rules-explain"></p>
+        <p class="muted small-print">Never banned: addresses on your own network (the LAN, so <span class="mono">https://10.1.10.97</span> always works), the
+          tunnel connector, the allowlist below, and any address a signed-in user was active from in the last 15 minutes, so a colleague's
+          typos can't cut the monitoring screens off. A ban only blocks the sign-in page: people already signed in stay signed in.</p>
+        <div id="rules-error"></div>
+        <button class="btn btn-primary manage-only" type="submit">Save ban rules</button>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Blocked addresses <span class="chip" id="ban-count">0</span></h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Address</th><th>Why</th><th>Until</th><th>Cloudflare</th><th></th></tr></thead>
+        <tbody id="ban-rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+      <form id="ban-form" class="row manage-only" style="align-items:flex-end;margin-top:12px">
+        <div class="field"><label for="b-ip">Block an address</label><input id="b-ip" type="text" maxlength="64" placeholder="203.0.113.7" required></div>
+        <div class="field"><label for="b-min">For</label><select id="b-min">
+          <option value="0">Permanently</option><option value="60">1 hour</option><option value="1440">1 day</option><option value="10080">7 days</option></select></div>
+        <div class="field" style="flex:2 1 220px"><label for="b-reason">Reason</label><input id="b-reason" type="text" maxlength="200" placeholder="optional"></div>
+        <button class="btn" type="submit" style="flex:0 0 auto;margin-bottom:14px">Block</button>
+      </form>
+    </div>
+
+    <div class="platform-grid">
+      <div class="card">
+        <h2>Always allowed</h2>
+        <p class="muted" style="margin-top:0">Addresses or ranges that are never banned, such as the TWG office. Adding one lifts its bans.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Address</th><th>Label</th><th></th></tr></thead>
+          <tbody id="allow-rows"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+        </table></div>
+        <form id="allow-form" class="row manage-only" style="align-items:flex-end;margin-top:12px">
+          <div class="field"><label for="a-ip">Address or range</label><input id="a-ip" type="text" maxlength="64" placeholder="204.186.88.58" required></div>
+          <div class="field"><label for="a-label">Label</label><input id="a-label" type="text" maxlength="100" placeholder="TWG office"></div>
+          <button class="btn" type="submit" style="flex:0 0 auto;margin-bottom:14px">Add</button>
+        </form>
+      </div>
+      <div class="card">
+        <h2>Locked accounts</h2>
+        <p class="muted" style="margin-top:0">Too many failed sign-ins for one email, from any addresses. They unlock on their own when the window passes.</p>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Email</th><th>Failures</th><th>Unlocks</th><th></th></tr></thead>
+          <tbody id="lock-rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+        </table></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Recent sign-in attempts</h2>
+        <form id="ev-filter" class="filters">
+          <input id="ev-ip" type="search" placeholder="Address" maxlength="64">
+          <input id="ev-email" type="search" placeholder="Email" maxlength="320">
+          <select id="ev-outcome"><option value="">Any outcome</option><option value="failure">Failed</option><option value="success">Signed in</option>
+            <option value="locked">Refused (account locked)</option><option value="denied">Refused (company off)</option><option value="cleared">Cleared by an admin</option></select>
+          <button class="btn btn-sm" type="submit">Filter</button>
+        </form></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>When</th><th>Result</th><th>Email</th><th>Address</th><th>Company</th><th>Detail</th></tr></thead>
+        <tbody id="ev-rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+    </div>
+  </section>
+
+  <!-- ============================================================ cloudflare -->
+  <section data-panel="cloudflare" hidden>
+    <div class="card">
+      <h2>Block banned addresses at Cloudflare</h2>
+      <p class="muted" style="margin-top:0">Without this, a banned address is refused by the portal itself. With it, each ban is also added to Cloudflare as
+        an IP Access Rule, so the attacker's traffic stops at Cloudflare and never reaches the tunnel. Unbanning, allowlisting and
+        expiry remove the rule again. Only rules the portal made are ever removed (their note starts with <code>twg-alarm-portal auto-ban</code>).
+        If Cloudflare is down or the token is wrong, bans still work locally and the error shows here.</p>
+      <div id="cf-status"></div>
+      <form id="cf-form">
+        <label class="check"><input type="checkbox" id="cf-enabled"> Push bans to Cloudflare</label>
+        <div class="row">
+          <div class="field"><label for="cf-zone">Zone ID</label><input id="cf-zone" type="text" maxlength="64" class="mono" placeholder="32 letters and digits" autocomplete="off"></div>
+          <div class="field"><label for="cf-token">API token</label><input id="cf-token" type="password" maxlength="200" autocomplete="new-password">
+            <small id="cf-token-hint"></small></div>
+        </div>
+        <label class="check" id="cf-clear-row" hidden><input type="checkbox" id="cf-clear"> Remove the saved token</label>
+        <div id="cf-error"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-primary manage-only" type="submit">Save</button>
+          <button class="btn manage-only" type="button" id="cf-test">Test connection</button>
+        </div>
+      </form>
+    </div>
+    <div class="card">
+      <h2>Getting the token and Zone ID</h2>
+      <ol class="steps">
+        <li>Sign in at <b>dash.cloudflare.com</b> and click the domain <b>twgsecurity.net</b>.</li>
+        <li>On the <b>Overview</b> page, find <b>Zone ID</b> in the right-hand column (scroll down a little). Click <b>Click to copy</b> and paste it above.</li>
+        <li>Top right, click the person icon → <b>My Profile</b> → <b>API Tokens</b> (left menu) → <b>Create Token</b>.</li>
+        <li>At the bottom, next to <b>Create Custom Token</b>, click <b>Get started</b>.</li>
+        <li><b>Token name</b>: <code>alarm portal edge bans</code>.</li>
+        <li><b>Permissions</b>: pick <b>Zone</b> → <b>Firewall Services</b> → <b>Edit</b>.</li>
+        <li><b>Zone Resources</b>: <b>Include</b> → <b>Specific zone</b> → <b>twgsecurity.net</b>.</li>
+        <li>Click <b>Continue to summary</b> → <b>Create Token</b>, then <b>Copy</b> the token and paste it above. Cloudflare shows it only once.</li>
+        <li>Tick <b>Push bans to Cloudflare</b>, click <b>Save</b>, then <b>Test connection</b>. It should say "Connected".</li>
+      </ol>
+    </div>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/platform.js') }}"></script>{% endblock %}

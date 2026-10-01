@@ -65,7 +65,11 @@ re-reading the other project.** The user decided the scope on 2026-10-01: build 
   7. **Google sign-in:** client ID, secret (masked), enabled, optional allowed email domains.
 - **Per-company settings** (that company's Settings page): "Require 2FA for our users" when the platform lets companies decide.
 
-## Phase 1: sign-in protection + Cloudflare edge bans
+## Phase 1: sign-in protection + Cloudflare edge bans: **DONE** (commit after `0589f1d`, not deployed yet)
+Built as specified, plus: an IP with a signed-in user active in the last 15 min is never banned (alarm safety);
+an admin unban/unlock writes a `cleared` auth event so older failures stop counting; the connector is trusted from
+the Platform page (or `app.cli trust-proxy`), and an untrusted connector sending `CF-Connecting-IP` is flagged there.
+**On deploy:** `trust-proxy --ip 10.0.2.58` and allowlist the office IP (this server's public IP is `204.186.88.58`; confirm with the user).
 Replaces the in-memory `_FAILS` brake in `app/routers/auth.py` (10 failures per IP per 15 min).
 - **Tables** (migration 0008): `platform_settings`, `auth_events` (ts, ip, email, kind, outcome, reason, tenant_id null), `ip_bans` (ip unique, reason, fail_count, ban_count, expires_at, permanent, cf_rule_id), `ip_allowlist` (ip, label).
 - **Client IP** (`app/net.py`):

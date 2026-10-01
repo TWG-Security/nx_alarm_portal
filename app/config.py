@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     ffprobe_path: str = "ffprobe"
     prefetch_clips: bool = True          # build clips for critical/alarm events as soon as footage exists
     session_max_age_s: int = 12 * 3600
+
+    # Sign-in protection (app/security_guard.py, app/net.py). Both also editable on the Platform page.
+    trusted_proxy_ips: str = ""          # comma-separated IPs/CIDRs allowed to send CF-Connecting-IP (the tunnel connector)
+    ip_allowlist: str = ""               # comma-separated IPs/CIDRs that are never banned
     cookie_secure: bool = True           # set False only for plain-http local dev
     start_pollers: bool = True           # tests turn this off
 

@@ -1,29 +1,37 @@
-import time
+import secrets
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Form, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app import security_guard as guard
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, render
 from app.models import Tenant, User
-from app.security import new_csrf_token, verify_password
+from app.security import hash_password, new_csrf_token, verify_password
 
 router = APIRouter()
 
-# Simple in-memory brute-force brake: 10 failures per IP per 15 minutes.
-_FAILS: dict[str, list[float]] = {}
-_WINDOW_S, _MAX_FAILS = 900, 10
+INVALID = "Invalid email or password."
+# Checked against when the email is unknown, so the answer takes as long as for a real account.
+_DUMMY_HASH = hash_password(secrets.token_urlsafe(16))
 
 
-def _too_many(ip: str) -> bool:
-    now = time.time()
-    recent = [t for t in _FAILS.get(ip, []) if now - t < _WINDOW_S]
-    _FAILS[ip] = recent
-    return len(recent) >= _MAX_FAILS
+def banned_page(request: Request, ban, *, api: bool = False):
+    """403 for a banned IP: the blocked page, or JSON for /api/ calls."""
+    until = None if ban.permanent else guard.aware(ban.expires_at)
+    msg = "This address is blocked after repeated failed sign-ins."
+    if api:
+        msg += f" Try again after {until.strftime('%Y-%m-%d %H:%M')} UTC." if until else " Contact TWG Security to lift it."
+        return JSONResponse({"detail": msg}, status_code=403)
+    if not until:
+        msg += " The block is permanent."
+    response = render(request, "banned.html", until=until.isoformat() if until else None, ip=ban.ip, message=msg)
+    response.status_code = 403
+    return response
 
 
 @router.get("/login")
@@ -37,25 +45,36 @@ async def login_page(request: Request):
 async def login(request: Request, email: str = Form(...), password: str = Form(...),
                 db: AsyncSession = Depends(get_db)):
     ip = client_ip(request)
-    if _too_many(ip):
-        return render(request, "login.html", error="Too many failed attempts. Try again in 15 minutes.", email=email)
-    user = await db.scalar(select(User).where(func.lower(User.email) == email.strip().lower()))
-    if user is None or not user.is_active or not verify_password(user.password_hash, password):
-        _FAILS.setdefault(ip, []).append(time.time())
-        if user is not None:
-            audit(db, user.tenant_id, "login.failed", user_id=user.id, ip=ip)
-            await db.commit()
-        return render(request, "login.html", error="Invalid email or password.", email=email)
+    addr = email.strip().lower()
+    # (A banned IP never gets here: app.main.BanGate answers it with the blocked page.)
+    if await guard.is_account_locked(db, addr):
+        verify_password(_DUMMY_HASH, password)
+        await guard.record(db, ip, "login", "locked", email=addr, reason="account locked: too many failures")
+        await db.commit()
+        return render(request, "login.html", error=INVALID, email=email)
+    user = await db.scalar(select(User).where(func.lower(User.email) == addr))
+    if user is None:
+        verify_password(_DUMMY_HASH, password)
+        banned = await guard.record(db, ip, "login", "failure", email=addr, reason="unknown email")
+        await db.commit()
+        return banned_page(request, banned) if banned else render(request, "login.html", error=INVALID, email=email)
+    if not verify_password(user.password_hash, password) or not user.is_active:
+        reason = "wrong password" if user.is_active else "account deactivated"
+        banned = await guard.record(db, ip, "login", "failure", email=addr, reason=reason, user=user)
+        audit(db, user.tenant_id, "login.failed", user_id=user.id, ip=ip)
+        await db.commit()
+        return banned_page(request, banned) if banned else render(request, "login.html", error=INVALID, email=email)
     tenant = await db.get(Tenant, user.tenant_id)
     if tenant is None or not tenant.is_active:
+        await guard.record(db, ip, "login", "denied", email=addr, reason="company sign-in disabled", user=user)
         audit(db, user.tenant_id, "login.failed", user_id=user.id, ip=ip, reason="company disabled")
         await db.commit()
         return render(request, "login.html", error="Your company's portal access is disabled. Contact TWG Security.",
                       email=email)
-    _FAILS.pop(ip, None)
     request.session.clear()
     request.session.update({"uid": user.id, "tid": user.tenant_id, "csrf": new_csrf_token()})
     user.last_login_at = datetime.now(timezone.utc)
+    await guard.record(db, ip, "login", "success", email=addr, user=user)
     audit(db, user.tenant_id, "login", user_id=user.id, ip=ip)
     await db.commit()
     return RedirectResponse("/", 303)

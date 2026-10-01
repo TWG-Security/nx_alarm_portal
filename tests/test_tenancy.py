@@ -96,8 +96,15 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
     await session.refresh(sb)
     assert (ab.state, sb.enabled, sb.armed) == ("new", True, True)
     # And the platform screens are TWG-only.
-    for path in ("/api/tenants", "/companies"):
+    for path in ("/api/tenants", "/companies", "/platform", "/api/platform/settings", "/api/platform/security",
+                 "/api/platform/auth-events"):
         assert (await client.get(path)).status_code == 403, path
+    for method, path in (("PUT", "/api/platform/settings/sign-in"), ("PUT", "/api/platform/settings/proxies"),
+                         ("PUT", "/api/platform/settings/cloudflare"), ("POST", "/api/platform/cloudflare/test"),
+                         ("POST", "/api/platform/bans"), ("DELETE", "/api/platform/bans/1"),
+                         ("POST", "/api/platform/allowlist"), ("DELETE", "/api/platform/allowlist/1"),
+                         ("POST", "/api/platform/locks/clear")):
+        assert (await client.request(method, path, json={})).status_code in (403, 422), path
     assert (await client.post("/api/scope", json={"scope": "all"})).status_code == 403
 
 

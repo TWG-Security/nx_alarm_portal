@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Sign-in protection** (Platform page → Sign-in protection; migration 0008):
+  - Every sign-in attempt is recorded. **5 failures from one address in 10 minutes block it for 15 minutes**; each later block lasts 4× longer (1 h, 4 h, 16 h), capped at 7 days, and the 5th is permanent. A blocked address gets a "Temporarily blocked" page instead of the sign-in form.
+  - **Account lock:** 10 failures for one email from any addresses in the window refuse that email (same "invalid" answer) until the window passes. Unknown emails take as long to answer as real ones.
+  - **Never blocked:** addresses on our own network (so `https://10.1.10.97` always works), the tunnel connector, the allowlist, and any address a signed-in user was active from in the last 15 minutes. A block never signs anyone out or touches the live alarm stream.
+  - **Real visitor addresses through the tunnel:** `CF-Connecting-IP` is believed only from the trusted connector (10.0.2.58), so the audit log stops showing the connector for everyone and a LAN user can't fake an address. The page flags an untrusted connector with a one-click "Trust".
+  - Platform page: editable rules, your own address, blocked addresses (unblock, block by hand), the allowlist, locked accounts (unlock) and recent attempts (filter by address, email, result). Every change is audit-logged.
+  - CLI break-glass: `unban`, `allow-ip`, `clear-lock`, `trust-proxy`.
+- **Cloudflare edge bans** (Platform page → Cloudflare): with an API token and Zone ID, each block is also pushed to Cloudflare as an IP Access Rule and removed on unblock, allowlist or expiry. Best-effort: Cloudflare being down never weakens the portal's own block; errors show on the page and a sweep retries every minute. Only rules the portal made are ever removed.
+- **Platform page** (`/platform`, TWG only; changes need `platform.manage`), linked from the top bar and the Companies page.
 - **Backups**: `tools/backup.sh` saves the database dump, `.env` and checksums. Each run is verified by restoring into a scratch database and comparing row counts, and rotation keeps 14. Cron runs it nightly at 03:15 UTC.
 - **Multiple companies:**
   - Other security companies get their own portal at the same address. They see only their own sites, alarms, users, groups, settings and audit log, with their name and logo ("Powered by TWG Security").

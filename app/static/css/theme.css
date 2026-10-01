@@ -526,3 +526,15 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; b
 .logo-edit { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .logo-edit .logo-chip { min-width: 60px; min-height: 40px; align-items: center; justify-content: center; }
 .logo-edit .logo-chip img { height: 34px; }
+
+/* ---------- platform settings ---------- */
+.tabbar { margin-bottom: 16px; flex-wrap: wrap; }
+.platform-page section > .card, .platform-grid { margin-bottom: 16px; }
+.platform-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 16px; }
+.rules-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 0 12px; }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.card-head h2 { margin: 0; }
+.card-head .filters { margin: 0; flex: 1 1 560px; justify-content: flex-end; }
+.card-head .filters > * { flex: 0 1 170px; }
+.small-print { font-size: 12px; }
+.steps { margin: 0; padding-left: 20px; line-height: 1.7; }

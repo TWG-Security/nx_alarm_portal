@@ -78,6 +78,9 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | NX push (JSON-RPC websocket) | `app/services/push.py` |
 | Acknowledge + NX write-back (forced-ack clear or bookmark) | `app/services/ack.py` |
 | Follow-up notes (append-only) | `alarm_notes` (migration 0006), `GET/POST /api/alarms/{id}/notes`, bus event `alarm.note`; drawer "Notes"; in PDF/ZIP |
+| Sign-in protection (bans, account lock, allowlist) | `app/security_guard.py`; client IP `app/net.py`; settings cache `app/platform_settings.py`; `BanGate` in `app/main.py`; tables `platform_settings`, `auth_events`, `ip_bans`, `ip_allowlist` (migration 0008) |
+| Cloudflare edge bans | `app/cloudflare_edge.py` (IP Access Rules, notes prefix `twg-alarm-portal auto-ban`); sweep every 60 s in `security_guard.run_sweeper` |
+| Platform page (TWG only) | `app/routers/platform.py`, `templates/platform.html`, `js/platform.js`; tests `tests/test_sign_in_protection.py`, e2e `tools/e2e/signin.py` |
 | Companies / tenancy | `app/scope.py` (`Scope`, `get_scope`), `app/routers/tenants.py` (`/api/scope`, `/api/tenants`, logo, `/branding/{id}/logo`), `templates/companies.html` + `js/companies.js`; tests `tests/test_tenancy.py`, e2e `tools/e2e/tenancy.py` |
 | Verdicts (real / false), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`) |
 | Groups & permissions | `app/permissions.py` (catalog, `require()`), `user_groups` / `user_group_members` (migration 0005), `/api/groups`; `deps.current_user` loads `user._perms`, pages get `CFG.perms` |
@@ -117,6 +120,14 @@ JS modules:
 - **Disabling a company** blocks its sign-in and ends open sessions, but **its sites keep being monitored** (pollers are untouched).
 - **Branding:** `tenants.display_name` and `logo` (uploads re-encoded to PNG ≤600×160, never served as uploaded). They're used in the top bar ("Powered by TWG Security" for customers) and on incident PDFs. A customer's own admin edits them under Settings → Company branding.
 - `python -m app.cli create-tenant --name … --admin-email …` creates a company from the shell.
+
+### Sign-in protection (the client address and bans)
+- **Client address:** uvicorn trusts `X-Forwarded-For` only from the docker network (Caddy). `app/net.py` then believes `CF-Connecting-IP` only when the peer is a trusted proxy (loopback, `TRUSTED_PROXY_IPS`, or the Platform page; private addresses only). Use `deps.client_ip` everywhere.
+- **Bans:** `security_guard.record()` stores every attempt in `auth_events` and bans an IP past the threshold (escalating, then permanent). `BanGate` answers banned IPs on the sign-in pages and on session-less `/api/` calls only; **a ban never cuts off a signed-in session**.
+- **Never banned:** internal ranges (`net.INTERNAL`), trusted proxies, the allowlist, and IPs with a signed-in request in the last 15 min (in memory, `note_session_ip` in `deps.current_user`).
+- **Account lock** (per email, any IP) fails open on DB errors. Admin unban/unlock writes an `auth_events` row with outcome `cleared`; only later failures count.
+- **Cloudflare** is best-effort and background (`after_commit` → `spawn`); the sweeper pushes missing rules and removes expired ones. Removal runs whenever a token exists, even with the switch off.
+- Settings live in `platform_settings` (id 1), read through the `platform_settings.current()` snapshot (refreshed on save, at most 30 s old). Secrets are Fernet-encrypted, never returned, and the audit log records field names only.
 
 ### How an alarm's level is decided (first match wins)
 1. A `#critical` / `#alarm` / `#warning` / `#ignore` tag in the NX rule's Title/Comment. Rules are re-read every 60 s, and still-open alarms are re-levelled.
@@ -203,13 +214,14 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 76 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 98 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.arming   # ~3 min: disarm/arm UI, suppression, #24h, timer, schedule
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.export /tmp      # export ZIP from the drawer, checksums, alarm latency mid-export
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.verdicts /tmp    # live beside recorded, verdict buttons, groups, operator bulk edit
+tools/dev_up.sh && .venv/bin/python -m tools.e2e.signin /tmp      # 5 bad sign-ins -> blocked page, operator's alarms unaffected, unblock on Platform page
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh

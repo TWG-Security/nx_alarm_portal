@@ -221,3 +221,79 @@ class AuditLog(Base):
 
     user: Mapped[User | None] = relationship(lazy="joined")
     site: Mapped[Site | None] = relationship(lazy="joined")
+
+
+# ---------------------------------------------------------------- platform & sign-in protection
+# These are TWG-wide (not per company), so they carry no tenant_id. Edited on the Platform page.
+
+class PlatformSettings(Base):
+    """One row (id=1) of TWG-wide settings. Secrets are Fernet-encrypted (*_enc) and never sent back to browsers."""
+
+    __tablename__ = "platform_settings"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    # Sign-in protection (app/security_guard.py)
+    ban_max_fails: Mapped[int] = mapped_column(Integer, default=5)            # failures from one IP within the window...
+    ban_window_min: Mapped[int] = mapped_column(Integer, default=10)
+    ban_first_min: Mapped[int] = mapped_column(Integer, default=15)           # ...ban it this long; each later ban x4
+    ban_max_min: Mapped[int] = mapped_column(Integer, default=10080)          # longest temporary ban (7 days)
+    ban_permanent_after: Mapped[int] = mapped_column(Integer, default=5)      # ban number N is permanent (0 = never)
+    account_lock_max: Mapped[int] = mapped_column(Integer, default=10)        # failures for one email, any IP (0 = off)
+    trusted_proxies: Mapped[str] = mapped_column(Text, default="")            # may send CF-Connecting-IP (app/net.py)
+    # Cloudflare edge bans (app/cloudflare_edge.py)
+    cf_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    cf_zone_id: Mapped[str] = mapped_column(String(64), default="")
+    cf_api_token_enc: Mapped[str] = mapped_column(Text, default="")
+    cf_last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    cf_last_error: Mapped[str] = mapped_column(Text, default="")
+    cf_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class AuthEvent(Base):
+    """Every sign-in attempt (and admin clears). Failures drive IP bans and account locks."""
+
+    __tablename__ = "auth_events"
+    __table_args__ = (Index("ix_auth_events_ip_ts", "ip", "ts"), Index("ix_auth_events_email_ts", "email", "ts"),
+                      Index("ix_auth_events_ts", "ts"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    email: Mapped[str] = mapped_column(String(320), default="")             # lower-cased as typed; "" if none
+    kind: Mapped[str] = mapped_column(String(20))       # login | totp | recovery | passkey | reset | sso | admin
+    outcome: Mapped[str] = mapped_column(String(20))    # success | failure | locked | denied | blocked | cleared
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class IpBan(Base):
+    """A banned client IP. Rows outlive their ban (expires_at in the past) to remember repeat offenders."""
+
+    __tablename__ = "ip_bans"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ip: Mapped[str] = mapped_column(String(64), unique=True)
+    reason: Mapped[str] = mapped_column(String(300), default="")
+    fail_count: Mapped[int] = mapped_column(Integer, default=0)
+    ban_count: Mapped[int] = mapped_column(Integer, default=1)               # episodes; drives escalation
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    permanent: Mapped[bool] = mapped_column(Boolean, default=False)
+    manual: Mapped[bool] = mapped_column(Boolean, default=False)
+    cf_rule_id: Mapped[str] = mapped_column(String(64), default="")         # the Cloudflare access rule we created
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class IpAllow(Base):
+    """IPs or ranges that are never banned (e.g. the TWG office)."""
+
+    __tablename__ = "ip_allowlist"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ip: Mapped[str] = mapped_column(String(64), unique=True)                 # an address or a CIDR range
+    label: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)

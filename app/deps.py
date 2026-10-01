@@ -9,8 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import get_db
 from app.models import Tenant, User
+from app.net import client_ip as _client_ip
 from app.permissions import load_permissions
 from app.security import new_csrf_token
+from app.security_guard import note_session_ip
 from app.static_version import asset
 
 templates = Jinja2Templates(directory="app/templates")
@@ -57,6 +59,7 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
         raise NotAuthenticated()
     user._tenant = tenant
     user._perms = await load_permissions(db, user, tenant)
+    note_session_ip(client_ip(request))       # IPs with a live session are never banned (security_guard)
     return user
 
 
@@ -78,7 +81,8 @@ def _brand(user, scope) -> dict:
 
 
 def client_ip(request: Request) -> str:
-    return request.client.host if request.client else ""
+    """The real client address (CF-Connecting-IP only from the trusted tunnel connector): app/net.py."""
+    return _client_ip(request)
 
 
 def render(request: Request, name: str, user: User | None = None, scope=None, **ctx):

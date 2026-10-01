@@ -25,7 +25,8 @@
     <a href="/audit" class="{{ 'active' if page == 'audit' }}">Audit log</a>
     {% if user.is_admin and not (scope and scope.mode == 'all') %}<a href="/settings" class="{{ 'active' if page == 'settings' }}">Settings</a>
     <a href="/users" class="{{ 'active' if page == 'users' }}">Users</a>{% endif %}
-    {% if user.can('platform.view') %}<a href="/companies" class="{{ 'active' if page == 'companies' }}">Companies</a>{% endif %}
+    {% if user.can('platform.view') %}<a href="/companies" class="{{ 'active' if page == 'companies' }}">Companies</a>
+    <a href="/platform" class="{{ 'active' if page == 'platform' }}">Platform</a>{% endif %}
   </nav>
   <div class="topbar-actions">
     {% if user.can('platform.view') %}

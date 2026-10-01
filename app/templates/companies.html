@@ -5,6 +5,7 @@
   <div class="page-head"><h1>Companies</h1>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       <button class="btn" id="view-all" type="button">View all companies</button>
+      <a class="btn" href="/platform">Platform settings</a>
       {% if user.can('platform.manage') %}<button class="btn btn-primary" id="new-company" type="button">+ New company</button>{% endif %}
     </div>
   </div>

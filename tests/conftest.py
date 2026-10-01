@@ -93,3 +93,14 @@ def nx_row(ts, *, type_="generic", action_id="a1", ack=False, device="dev-1", ca
         "ruleId": "rule-1",
         "flags": "noFlags",
     }
+
+
+@pytest.fixture(autouse=True)
+def fresh_security_state():
+    """Settings snapshot, session IPs and connector hints are per process; reset them per test."""
+    from app import net, platform_settings, security_guard
+    platform_settings.reset_cache()
+    security_guard._session_ips.clear()
+    net.untrusted_cf_peers.clear()
+    yield
+    platform_settings.reset_cache()
