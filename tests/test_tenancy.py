@@ -81,6 +81,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("POST", "/api/sites/test", {"host": "https://x.test", "nx_user": "x", "site_id": sb.id}),
         ("PUT", f"/api/users/{world['b_op'].id}", {"is_active": False}),
         ("GET", f"/api/users/{world['b_op'].id}/security", None),
+        ("POST", f"/api/users/{world['b_op'].id}/invite", None),
         ("POST", f"/api/users/{world['b_op'].id}/reset-2fa", {}),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions", None),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions/x", None),
@@ -101,14 +102,15 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
     assert (ab.state, sb.enabled, sb.armed) == ("new", True, True)
     # And the platform screens are TWG-only.
     for path in ("/api/tenants", "/companies", "/platform", "/api/platform/settings", "/api/platform/security",
-                 "/api/platform/auth-events"):
+                 "/api/platform/auth-events", "/api/platform/email-log"):
         assert (await client.get(path)).status_code == 403, path
     for method, path in (("PUT", "/api/platform/settings/sign-in"), ("PUT", "/api/platform/settings/proxies"),
                          ("PUT", "/api/platform/settings/cloudflare"), ("POST", "/api/platform/cloudflare/test"),
                          ("POST", "/api/platform/bans"), ("DELETE", "/api/platform/bans/1"),
                          ("POST", "/api/platform/allowlist"), ("DELETE", "/api/platform/allowlist/1"),
                          ("POST", "/api/platform/locks/clear"), ("PUT", "/api/platform/settings/two-factor"),
-                         ("PUT", "/api/platform/settings/sessions")):
+                         ("PUT", "/api/platform/settings/sessions"), ("PUT", "/api/platform/settings/passwords"),
+                         ("PUT", "/api/platform/settings/email"), ("POST", "/api/platform/email/test")):
         assert (await client.request(method, path, json={})).status_code in (403, 422), path
     assert (await client.post("/api/scope", json={"scope": "all"})).status_code == 403
 
@@ -160,7 +162,7 @@ async def test_twg_support_acts_and_the_customer_sees_it(client, session, world)
     r = await client.post(f"/api/alarms/{aa.id}/ack", json={"verdict": "false", "note": "Checked for Acme"})
     assert r.status_code == 200, r.text
     assert (await client.post(f"/api/sites/{sa.id}/disarm", json={"minutes": 30})).status_code == 200
-    r = await client.post("/api/users", json={"email": "night@acme.test", "password": "a-long-password-1", "role": "operator"})
+    r = await client.post("/api/users", json={"email": "night@acme.test", "password": "A-long-password-1!", "role": "operator"})
     assert r.status_code == 200
     assert (await session.scalar(select(User).where(User.email == "night@acme.test"))).tenant_id == world["a"].id
     # In the All companies view, creating needs a single company.
@@ -217,7 +219,7 @@ async def test_create_company_branding_and_logo_rules(client, session, world):
     assert r.status_code == 200, r.text
     cid = r.json()["id"]
     assert (await client.post("/api/tenants", json={"name": "Charlie Patrol", "admin_email": "z@z.test",
-                                                    "admin_password": "charlie-pass-1234"})).status_code == 409
+                                                    "admin_password": "Charlie-pass-1234!"})).status_code == 409
     stats = {t["name"]: t for t in (await client.get("/api/tenants")).json()}
     assert stats["Acme Security"]["sites"] == 1 and stats["Acme Security"]["open_alarm"] + stats["Acme Security"]["open_critical"] == 1
     assert stats["Charlie Patrol"]["sites"] == 0 and stats["TWG Security"]["kind"] == "platform"

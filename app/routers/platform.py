@@ -8,6 +8,10 @@
 - POST /api/platform/cloudflare/test      read-only check of the saved token and zone
 - PUT  /api/platform/settings/two-factor  require 2FA for TWG / every company (or each decides); passkeys on/off
 - PUT  /api/platform/settings/sessions    how long a closed browser stays signed in; optional max age and idle sign-out
+- PUT  /api/platform/settings/passwords   password rules and expiry
+- PUT  /api/platform/settings/email       SMTP server (password encrypted, never returned), From, portal address
+- POST /api/platform/email/test, GET /api/platform/email-log
+- PUT  /api/platform/settings/google      Google sign-in: client ID, secret (encrypted), allowed domains, on/off
 - GET  /api/platform/security             your IP, bans, allowlist, locked accounts, untrusted connectors
 - GET  /api/platform/auth-events          recent sign-in attempts (filter by ip, email, outcome)
 - POST /api/platform/bans, DELETE /api/platform/bans/{id}
@@ -65,6 +69,16 @@ def _settings_dict(row) -> dict:
         "two_factor": {"require_twg": row.mfa_require_twg, "customers": row.mfa_customers,
                        "passkeys_enabled": row.passkeys_enabled},
         "sessions": {"closed_h": row.session_closed_h, "max_h": row.session_max_h, "idle_min": row.idle_timeout_min},
+        "passwords": {"min_length": row.pw_min_length, "upper": row.pw_upper, "lower": row.pw_lower,
+                      "number": row.pw_number, "symbol": row.pw_symbol, "expiry_days": row.pw_expiry_days},
+        "email": {"enabled": row.smtp_enabled, "host": row.smtp_host, "port": row.smtp_port, "tls": row.smtp_tls,
+                  "user": row.smtp_user, "password_set": bool(row.smtp_password_enc), "sender": row.smtp_from,
+                  "portal_url": row.portal_url, "last_ok_at": _iso(row.smtp_last_ok_at),
+                  "last_error": row.smtp_last_error, "last_error_at": _iso(row.smtp_last_error_at)},
+        "google": {"enabled": row.google_enabled, "client_id": row.google_client_id,
+                   "secret_set": bool(row.google_client_secret_enc), "domains": row.google_domains,
+                   "redirect_uri": f"{(row.portal_url or '').rstrip('/')}/auth/google/callback",
+                   "origin": (row.portal_url or "").rstrip("/")},
         "updated_at": _iso(row.updated_at),
     }
 
@@ -208,6 +222,123 @@ async def put_sessions(body: SessionsIn, request: Request, user: User = Depends(
             setattr(row, col, getattr(body, k))
             changed.append(k)
     return await _saved(db, request, user, row, "sessions", changed)
+
+
+class PasswordsIn(BaseModel):
+    min_length: int = Field(ge=8, le=128)
+    upper: bool
+    lower: bool
+    number: bool
+    symbol: bool
+    expiry_days: int = Field(ge=0, le=3650)
+
+
+@router.put("/api/platform/settings/passwords")
+async def put_passwords(body: PasswordsIn, request: Request, user: User = Depends(MANAGE), db: AsyncSession = Depends(get_db)):
+    row = await platform_settings.get_row(db)
+    changed = []
+    for k, col in (("min_length", "pw_min_length"), ("upper", "pw_upper"), ("lower", "pw_lower"),
+                   ("number", "pw_number"), ("symbol", "pw_symbol"), ("expiry_days", "pw_expiry_days")):
+        if getattr(row, col) != getattr(body, k):
+            setattr(row, col, getattr(body, k))
+            changed.append(k)
+    return await _saved(db, request, user, row, "passwords", changed)
+
+
+class EmailIn(BaseModel):
+    enabled: bool
+    host: str = Field(default="", max_length=200)
+    port: int = Field(default=587, ge=1, le=65535)
+    tls: str = Field(default="starttls", pattern="^(starttls|ssl|none)$")
+    user: str = Field(default="", max_length=320)
+    password: str | None = Field(default=None, max_length=500)       # None = keep, "" = remove
+    sender: str = Field(default="", max_length=320)
+    portal_url: str = Field(default="https://alarmportal.twgsecurity.net", max_length=300)
+
+
+@router.put("/api/platform/settings/email")
+async def put_email(body: EmailIn, request: Request, user: User = Depends(MANAGE), db: AsyncSession = Depends(get_db)):
+    from email.utils import parseaddr
+    url = body.portal_url.strip().rstrip("/")
+    if not re.fullmatch(r"https?://[A-Za-z0-9.\-]+(:\d+)?", url):
+        raise HTTPException(400, "The portal address is like https://alarmportal.twgsecurity.net (no path).")
+    sender = body.sender.strip()
+    if sender and "@" not in parseaddr(sender)[1]:
+        raise HTTPException(400, "The From address needs an email, e.g. TWG Alarm Portal <alerts@twgsecurity.com>.")
+    if body.enabled and not (body.host.strip() and sender):
+        raise HTTPException(400, "Enter the SMTP server and the From address before switching email on.")
+    row = await platform_settings.get_row(db)
+    changed = []
+    for k, col, v in (("enabled", "smtp_enabled", body.enabled), ("host", "smtp_host", body.host.strip()),
+                      ("port", "smtp_port", body.port), ("tls", "smtp_tls", body.tls), ("user", "smtp_user", body.user.strip()),
+                      ("sender", "smtp_from", sender), ("portal_url", "portal_url", url)):
+        if getattr(row, col) != v:
+            setattr(row, col, v)
+            changed.append(k)
+    if body.password is not None:
+        row.smtp_password_enc = encrypt(body.password) if body.password else ""
+        changed.append("password")
+    if {"host", "port", "tls", "user", "password"} & set(changed):
+        row.smtp_last_ok_at, row.smtp_last_error, row.smtp_last_error_at = None, "", None
+    return await _saved(db, request, user, row, "email", changed)
+
+
+class TestEmailIn(BaseModel):
+    to: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
+
+
+@router.post("/api/platform/email/test")
+async def test_email(body: TestEmailIn, request: Request, user: User = Depends(MANAGE)):
+    from app import mail
+    if await mail.config() is None:
+        return {"outcome": "disabled", "error": "Email is switched off or not set up yet."}
+    subject, html, text = mail.test_message(user.label)
+    outcome, error = await mail.send_now(body.to.strip(), subject, html, text, purpose="test", retry=False)
+    return {"outcome": outcome, "error": error}
+
+
+@router.get("/api/platform/email-log")
+async def email_log(limit: int = 100, user: User = Depends(VIEW), db: AsyncSession = Depends(get_db)):
+    from app.models import EmailLog
+    rows = (await db.scalars(select(EmailLog).order_by(EmailLog.ts.desc(), EmailLog.id.desc()).limit(max(1, min(limit, 500))))).all()
+    names = {t.id: t.label for t in (await db.scalars(select(Tenant))).all()}
+    return [{"ts": _iso(e.ts), "to": e.to, "subject": e.subject, "purpose": e.purpose, "outcome": e.outcome,
+             "error": e.error, "attempts": e.attempts, "company": names.get(e.tenant_id, "")} for e in rows]
+
+
+class GoogleIn(BaseModel):
+    enabled: bool
+    client_id: str = Field(default="", max_length=300)
+    client_secret: str | None = Field(default=None, max_length=300)    # None = keep, "" = remove
+    domains: str = Field(default="", max_length=500)
+
+
+@router.put("/api/platform/settings/google")
+async def put_google(body: GoogleIn, request: Request, user: User = Depends(MANAGE), db: AsyncSession = Depends(get_db)):
+    client_id = body.client_id.strip()
+    if client_id and not client_id.endswith(".apps.googleusercontent.com"):
+        raise HTTPException(400, "A Google client ID ends in .apps.googleusercontent.com.")
+    domains = []
+    for d in body.domains.replace(" ", ",").split(","):
+        d = d.strip().lower().lstrip("@")
+        if d and not re.fullmatch(r"[a-z0-9.\-]+\.[a-z]{2,}", d):
+            raise HTTPException(400, f"'{d}' isn't a domain like twgsecurity.com.")
+        if d:
+            domains.append(d)
+    row = await platform_settings.get_row(db)
+    has_secret = bool(body.client_secret) if body.client_secret is not None else bool(row.google_client_secret_enc)
+    if body.enabled and not (client_id and has_secret):
+        raise HTTPException(400, "Enter the client ID and client secret before switching Google sign-in on.")
+    changed = []
+    for k, col, v in (("enabled", "google_enabled", body.enabled), ("client_id", "google_client_id", client_id),
+                      ("domains", "google_domains", ", ".join(domains))):
+        if getattr(row, col) != v:
+            setattr(row, col, v)
+            changed.append(k)
+    if body.client_secret is not None:
+        row.google_client_secret_enc = encrypt(body.client_secret.strip()) if body.client_secret.strip() else ""
+        changed.append("client_secret")
+    return await _saved(db, request, user, row, "google", changed)
 
 
 @router.post("/api/platform/cloudflare/test")

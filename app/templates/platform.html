@@ -10,6 +10,9 @@
     <button type="button" data-tab="cloudflare">Cloudflare</button>
     <button type="button" data-tab="twofactor">Two-step sign-in</button>
     <button type="button" data-tab="sessions">Sessions</button>
+    <button type="button" data-tab="passwords">Passwords</button>
+    <button type="button" data-tab="email">Email</button>
+    <button type="button" data-tab="google">Google sign-in</button>
   </div>
 
   <!-- ============================================================ sign-in protection -->
@@ -184,6 +187,99 @@
       <div id="sess-error"></div>
       <button class="btn btn-primary manage-only" type="submit">Save</button>
     </form>
+  </section>
+  <!-- ============================================================ passwords -->
+  <section data-panel="passwords" hidden>
+    <form class="card" id="pw-form">
+      <h2>Password rules</h2>
+      <p class="muted" style="margin-top:0">Checked whenever a password is set: new accounts, invites, changes, resets and the server command line.
+        Existing passwords keep working until they're changed.</p>
+      <div class="rules-grid">
+        <div class="field"><label for="pw-len">At least (characters)</label><input id="pw-len" type="number" min="8" max="128" required></div>
+        <div class="field"><label for="pw-exp">Expire passwords after (days)</label><input id="pw-exp" type="number" min="0" max="3650" required>
+          <small>0 = never. An expired password must be changed right after signing in (passkeys included).</small></div>
+      </div>
+      <label class="check"><input type="checkbox" id="pw-upper"> An uppercase letter</label>
+      <label class="check"><input type="checkbox" id="pw-lower"> A lowercase letter</label>
+      <label class="check"><input type="checkbox" id="pw-number"> A number</label>
+      <label class="check"><input type="checkbox" id="pw-symbol"> A symbol</label>
+      <div id="pw-error"></div>
+      <button class="btn btn-primary manage-only" type="submit">Save</button>
+    </form>
+  </section>
+
+  <!-- ============================================================ email -->
+  <section data-panel="email" hidden>
+    <form class="card" id="mail-form">
+      <h2>Email (invites and password resets)</h2>
+      <p class="muted" style="margin-top:0">While email is off, nothing is sent: inviting someone or resetting a password shows the link to pass on yourself.</p>
+      <div id="mail-status"></div>
+      <label class="check"><input type="checkbox" id="m-enabled"> Send email</label>
+      <div class="rules-grid">
+        <div class="field"><label for="m-host">SMTP server</label><input id="m-host" type="text" maxlength="200" placeholder="smtp.gmail.com"></div>
+        <div class="field"><label for="m-port">Port</label><input id="m-port" type="number" min="1" max="65535"></div>
+        <div class="field"><label for="m-tls">Security</label><select id="m-tls">
+          <option value="starttls">STARTTLS (port 587)</option><option value="ssl">SSL/TLS (port 465)</option><option value="none">None (LAN relay only)</option></select></div>
+        <div class="field"><label for="m-user">Username</label><input id="m-user" type="text" maxlength="320" autocomplete="off" placeholder="alerts@twgsecurity.com"></div>
+        <div class="field"><label for="m-pass">Password</label><input id="m-pass" type="password" maxlength="500" autocomplete="new-password"><small id="m-pass-hint"></small></div>
+        <div class="field"><label for="m-from">From</label><input id="m-from" type="text" maxlength="320" placeholder="TWG Alarm Portal &lt;alerts@twgsecurity.com&gt;"></div>
+      </div>
+      <label class="check" id="m-clear-row" hidden><input type="checkbox" id="m-clear"> Remove the saved password</label>
+      <div class="field" style="max-width:420px"><label for="m-url">Portal address used in links</label><input id="m-url" type="text" maxlength="300">
+        <small>Links in emails point here.</small></div>
+      <div id="mail-error"></div>
+      <div class="row manage-only" style="align-items:flex-end">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto;margin-bottom:14px">Save</button>
+        <div class="field" style="flex:0 1 280px"><label for="m-test-to">Send a test to</label><input id="m-test-to" type="email" maxlength="320"></div>
+        <button class="btn" type="button" id="m-test" style="flex:0 0 auto;margin-bottom:14px">Send test email</button>
+      </div>
+      <details class="muted small-print"><summary>Using a Google Workspace mailbox</summary>
+        <ol class="steps">
+          <li>Sign in to the mailbox that should send (for example <b>alerts@twgsecurity.com</b>) at <b>myaccount.google.com</b>.</li>
+          <li><b>Security</b> → turn on <b>2-Step Verification</b> if it's off (app passwords need it).</li>
+          <li>Search the settings for <b>App passwords</b>, create one named <b>Alarm portal</b>, and copy the 16 letters.</li>
+          <li>Here: server <b>smtp.gmail.com</b>, port <b>587</b>, STARTTLS, username = the mailbox, password = the 16 letters,
+            From = <b>TWG Alarm Portal &lt;alerts@twgsecurity.com&gt;</b>. Tick <b>Send email</b>, <b>Save</b>, then <b>Send test email</b>.</li>
+        </ol></details>
+    </form>
+    <div class="card">
+      <div class="card-head"><h2>Recent emails</h2><button class="btn btn-sm" type="button" id="mail-log-refresh">Refresh</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>When</th><th>To</th><th>What</th><th>Result</th><th>Company</th></tr></thead>
+        <tbody id="mail-log"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+    </div>
+  </section>
+  <!-- ============================================================ google -->
+  <section data-panel="google" hidden>
+    <form class="card" id="g-form">
+      <h2>Sign in with Google</h2>
+      <p class="muted" style="margin-top:0">Adds a <b>Sign in with Google</b> button to the sign-in page. It only signs in people who already have
+        a portal account with that (Google-verified) email; nobody is created. Google's own sign-in, including its 2-Step Verification,
+        replaces the portal's authenticator-app step. Password expiry still applies.</p>
+      <label class="check"><input type="checkbox" id="g-enabled"> Show "Sign in with Google"</label>
+      <div class="row">
+        <div class="field"><label for="g-id">Client ID</label><input id="g-id" type="text" maxlength="300" class="mono" placeholder="….apps.googleusercontent.com"></div>
+        <div class="field"><label for="g-secret">Client secret</label><input id="g-secret" type="password" maxlength="300" autocomplete="new-password"><small id="g-secret-hint"></small></div>
+      </div>
+      <label class="check" id="g-clear-row" hidden><input type="checkbox" id="g-clear"> Remove the saved secret</label>
+      <div class="field" style="max-width:520px"><label for="g-domains">Only these email domains (optional)</label><input id="g-domains" type="text" maxlength="500" placeholder="twgsecurity.com, acme.com">
+        <small>Leave empty to allow any Google account that matches a portal user. Customers' users can use their own Google accounts too.</small></div>
+      <div id="g-error"></div>
+      <button class="btn btn-primary manage-only" type="submit">Save</button>
+    </form>
+    <div class="card">
+      <h2>Getting the client ID and secret</h2>
+      <ol class="steps">
+        <li>Go to <b>console.cloud.google.com</b>, signed in with a TWG Google Workspace admin account. Pick (or create) a project, e.g. <b>Alarm Portal</b>.</li>
+        <li>Left menu → <b>APIs &amp; Services</b> → <b>OAuth consent screen</b> (or <b>Google Auth Platform</b>): user type <b>External</b> (so customers' Google accounts work; <b>Internal</b> limits it to TWG), app name <b>TWG Alarm Portal</b>, support email, then save. Under <b>Data access</b>/<b>Scopes</b> nothing extra is needed (email and profile are basic).</li>
+        <li><b>APIs &amp; Services</b> → <b>Credentials</b> → <b>Create credentials</b> → <b>OAuth client ID</b> → type <b>Web application</b>, name <b>Alarm portal</b>.</li>
+        <li><b>Authorized JavaScript origins</b> → <b>Add URI</b>: <code id="g-origin"></code></li>
+        <li><b>Authorized redirect URIs</b> → <b>Add URI</b>: <code id="g-redirect"></code></li>
+        <li>Click <b>Create</b>, copy the <b>Client ID</b> and <b>Client secret</b> into the boxes above, tick the box and <b>Save</b>.</li>
+        <li>For External apps, publish the consent screen (<b>Publish app</b>) so people outside the test-user list can sign in.</li>
+      </ol>
+    </div>
   </section>
 </div>
 {% endblock %}

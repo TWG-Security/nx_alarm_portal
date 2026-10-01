@@ -11,6 +11,7 @@
   </div>
   <p class="muted" style="margin-top:-6px">Each company sees only its own sites, alarms, users and settings. Open a company to support it;
     what you change there is recorded in its audit log under your name. Other companies' alarms never sound on your screen.</p>
+  <div id="c-link"></div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Company</th><th>Sites</th><th>Open alarms</th><th>Users</th><th>Last alarm</th><th>Sign-in</th><th></th></tr></thead>
@@ -28,8 +29,14 @@
       <div class="field"><label for="c-email">Email</label><input id="c-email" type="email" required maxlength="320"></div>
       <div class="field"><label for="c-admin">Name</label><input id="c-admin" type="text" maxlength="200"></div>
     </div>
-    <div class="field"><label for="c-pass">Temporary password</label><input id="c-pass" type="password" minlength="12" required autocomplete="new-password">
-      <small>At least 12 characters. Send it to them separately; they should change it after signing in.</small></div>
+    <div class="field">
+      <label class="radio"><input type="radio" name="c-how" value="invite" checked><span><b>Invite them by email</b>
+        <small>They get a link to choose their own password (valid 7 days). You also get the link to pass on yourself.</small></span></label>
+      <label class="radio"><input type="radio" name="c-how" value="password"><span><b>Set a temporary password</b>
+        <small>Send it to them separately; they should change it on their Account page.</small></span></label>
+    </div>
+    <div class="field" id="c-pass-row" hidden><label for="c-pass">Temporary password</label><input id="c-pass" type="password" autocomplete="new-password">
+      <small>At least 12 characters, with upper and lower case, a number and a symbol.</small></div>
     <div id="c-error"></div>
     <div class="dialog-actions"><button class="btn" type="button" id="c-cancel">Cancel</button><button class="btn btn-primary" type="submit">Create company</button></div>
   </form>

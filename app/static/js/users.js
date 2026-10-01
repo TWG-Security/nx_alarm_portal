@@ -14,15 +14,32 @@ function twoStep(u) {
   return parts.join(" ") || '<span class="chip">Off</span>';
 }
 
+const MAILED = { sent: "email sent", failed: "email failed", disabled: "email off" };
+function inviteNote(u) {
+  const m = u.invite_email;
+  return m ? `<div class="muted small-print" title="${esc(m.error || "")}">${esc(MAILED[m.outcome] || m.outcome)} ${esc(relTime(m.ts))}</div>` : "";
+}
+
+// The setup link, shown once so the admin can pass it on (also when email is off or failed).
+export function linkBox(r) {
+  const note = r.email === "sending" ? "An invite email is on its way." : "Email is off, so nothing was sent: pass this link on yourself.";
+  return `<div class="alert alert-ok"><b>Setup link</b> (valid until ${esc(fmtTime(r.expires_at))}). ${note}
+    <div class="row" style="margin-top:8px;align-items:center"><input type="text" readonly value="${esc(r.setup_link)}" class="mono" onfocus="this.select()">
+    <button class="btn btn-sm" type="button" data-copy="${esc(r.setup_link)}" style="flex:0 0 auto">Copy</button></div></div>`;
+}
+document.addEventListener("click", (e) => {
+  if (e.target.dataset.copy) navigator.clipboard.writeText(e.target.dataset.copy).then(() => toast("Link copied"));
+});
+
 function render() {
   tbody.innerHTML = users.map((u) => `<tr>
     <td>${esc(u.email)}</td><td>${esc(u.display_name)}</td>
     <td><select data-role="${u.id}" aria-label="Role"><option value="operator" ${u.role === "operator" ? "selected" : ""}>Operator</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>Admin</option></select></td>
-    <td>${u.is_active ? '<span class="chip online">Active</span>' : '<span class="chip">Disabled</span>'}</td>
+    <td>${!u.is_active ? '<span class="chip">Disabled</span>' : u.invited ? `<span class="chip disarmed">Invited</span>${inviteNote(u)}` : '<span class="chip online">Active</span>'}</td>
     <td>${twoStep(u)}</td>
     <td>${relTime(u.last_login_at)}${u.sessions ? `<div class="muted small-print">${u.sessions} browser${u.sessions === 1 ? "" : "s"} signed in</div>` : ""}</td>
     <td style="white-space:nowrap"><button class="btn btn-sm" data-toggle="${u.id}">${u.is_active ? "Disable" : "Enable"}</button>
-      <button class="btn btn-sm" data-reset="${u.id}">Reset password</button>
+      ${u.invited ? `<button class="btn btn-sm" data-invite="${u.id}">New invite link</button>` : `<button class="btn btn-sm" data-reset="${u.id}">Reset password</button>`}
       <button class="btn btn-sm" data-security="${u.id}">Sign-in security</button></td></tr>`).join("")
     || '<tr><td colspan="7" class="empty">No users.</td></tr>';
 }
@@ -47,17 +64,31 @@ tbody.addEventListener("click", (e) => {
     const pw = prompt("New password. It must be at least 12 characters with upper and lower case, a number and a symbol. Their browsers are signed out.");
     if (pw) update(d.reset, { password: pw });
   }
+  if (d.invite) {
+    api(`/api/users/${d.invite}/invite`, { method: "POST" }).then((r) => {
+      $("u-link").innerHTML = linkBox(r); $("u-link").scrollIntoView({ behavior: "smooth" }); load();
+      if (r.email === "sending") setTimeout(() => load().catch(() => {}), 4000);
+    }).catch((err) => toast(esc(err.message), { kind: "error" }));
+  }
   if (d.security) openSecurity(users.find((u) => u.id === Number(d.security)));
 });
 
+const how = () => document.querySelector('input[name="u-how"]:checked').value;
+document.querySelectorAll('input[name="u-how"]').forEach((r) => r.addEventListener("change", () => {
+  $("u-pass-row").hidden = how() !== "password"; $("u-pass").required = how() === "password";
+}));
 $("user-form").addEventListener("submit", async (e) => {
   e.preventDefault();
+  $("u-link").innerHTML = "";
   try {
-    await api("/api/users", { method: "POST", body: {
-      email: $("u-email").value, display_name: $("u-name").value, password: $("u-pass").value, role: $("u-role").value } });
-    e.target.reset(); toast("User created");
+    const r = await api("/api/users", { method: "POST", body: { email: $("u-email").value, display_name: $("u-name").value,
+      password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value } });
+    e.target.reset(); $("u-pass-row").hidden = true;
+    if (r.setup_link) $("u-link").innerHTML = linkBox(r);
+    toast(r.setup_link ? "User invited" : "User created");
     await load();
-  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+    if (r.email === "sending") setTimeout(() => load().catch(() => {}), 4000);     // show whether the email went
+  } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }
 });
 
 // ---------------------------------------------------------------- one user's sign-in security

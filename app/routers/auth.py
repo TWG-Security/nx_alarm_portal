@@ -6,10 +6,14 @@ Stages (ported from MCP-Control-Platform apps/api/src/routes/auth.ts):
     - /login/2fa             authenticator code, or /login/recovery (a recovery code), or a passkey
     - /login/enroll          2FA is required but not set up: scan the QR, confirm a code, get recovery codes
   POST /login/passkey/*      "Sign in with a passkey" (no password, no code), or the passkey as second factor
+  /login/password-expired    after any of the above, when the password is older than the expiry rule
+  /setup?token=              an invite: choose a password (then 2FA set-up if required)
+  /forgot, /reset?token=     forgot password (same answer whether or not the account exists)
 Between stages the signed session cookie holds only `pending` (user id, stage, expiry), never `uid`, so a
 half-signed-in browser can't call anything else. Every attempt goes to auth_events (bans, locks).
 """
 
+import asyncio
 import secrets
 import time
 
@@ -18,12 +22,13 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import mfa, sessions
+from app import mail, mfa, passwords, sessions, tokens
 from app import security_guard as guard
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, render
-from app.models import Tenant, User, UserSession, WebAuthnCredential
+from app.db import sessionmaker
+from app.models import AuthEvent, Tenant, User, UserSession, UserToken, WebAuthnCredential
 from app.security import hash_password, verify_password
 
 router = APIRouter()
@@ -56,7 +61,9 @@ def _safe_next(value: str | None) -> str:
 
 
 def _login_page(request: Request, **ctx):
-    return render(request, "login.html", passkeys=mfa.passkeys_enabled(), rp_id=mfa.rp_id(), **ctx)
+    from app import platform_settings
+    return render(request, "login.html", passkeys=mfa.passkeys_enabled(), rp_id=mfa.rp_id(),
+                  google=platform_settings.current().google_ready, **ctx)
 
 
 # ---------------------------------------------------------------- pending (between stages)
@@ -82,9 +89,17 @@ async def _pending_user(request: Request, db: AsyncSession, stage: str) -> User 
 
 
 async def _finish(request: Request, db: AsyncSession, user: User, method: str, *, kind: str = "login") -> str:
-    """Fully signed in: start the session, record it; returns where the user was headed."""
+    """Fully signed in: start the session, record it; returns where the user was headed.
+    An expired password gets a forced change first (a `pending` stage, no session yet)."""
     nxt = _safe_next((request.session.get("pending") or {}).get("next") or request.session.get("next"))
     ip = client_ip(request)
+    if passwords.expired(user):
+        request.session["next"] = nxt
+        _set_pending(request, user, "expired", ENROLL_TTL_S)
+        request.session["pending"] = {**request.session["pending"], "method": method}
+        await guard.record(db, ip, kind, "success", email=user.email, user=user, reason="password expired: change required")
+        await db.commit()
+        return "/login/password-expired"
     await sessions.start(request, db, user, method)
     await guard.record(db, ip, kind, "success", email=user.email, user=user, reason=f"signed in ({method})")
     audit(db, user.tenant_id, "login", user_id=user.id, ip=ip, method=method)
@@ -113,7 +128,9 @@ async def login_page(request: Request, next: str = "", reason: str = ""):
     if next:
         request.session["next"] = _safe_next(next)
     notice = {"signed_out": "You were signed out. Sign in again to keep receiving alarms on this screen.",
-              "idle": "You were signed out after a period of inactivity."}.get(reason)
+              "idle": "You were signed out after a period of inactivity.",
+              "reset": "Your password was changed. Sign in with the new one.",
+              "setup": "Your password is set. Sign in to continue."}.get(reason)
     return _login_page(request, notice=notice)
 
 
@@ -291,6 +308,168 @@ async def passkey_verify(request: Request, body: dict = Body(...), db: AsyncSess
         await db.commit()
         return JSONResponse({"detail": "This account can't sign in. Contact your administrator."}, status_code=403)
     return {"redirect": await _finish(request, db, user, "passkey", kind="passkey")}
+
+
+# ---------------------------------------------------------------- expired password
+@router.get("/login/password-expired")
+async def expired_page(request: Request, db: AsyncSession = Depends(get_db)):
+    user = await _pending_user(request, db, "expired")
+    if user is None:
+        return RedirectResponse("/login", 303)
+    return render(request, "password_form.html", mode="expired", email=user.email, hint=passwords.hint())
+
+
+@router.post("/login/password-expired", dependencies=[Depends(csrf_protect)])
+async def expired_submit(request: Request, password: str = Form(...), password2: str = Form(...),
+                         db: AsyncSession = Depends(get_db)):
+    user = await _pending_user(request, db, "expired")
+    if user is None:
+        return _restart(request)
+    problem = _new_password_problem(password, password2) or (
+        "The new password must be different." if verify_password(user.password_hash, password) else None)
+    if problem:
+        return render(request, "password_form.html", mode="expired", email=user.email, hint=passwords.hint(), error=problem)
+    method = request.session["pending"].get("method", "password")
+    user.password_hash, user.password_changed_at = hash_password(password), sessions.utcnow()
+    await sessions.revoke_all(db, user, "password changed (expired)")
+    request.session["pending"] = {**request.session["pending"], "tv": user.token_version}
+    audit(db, user.tenant_id, "password.changed", user_id=user.id, ip=client_ip(request), reason="expired")
+    return RedirectResponse(await _finish(request, db, user, method), 303)
+
+
+def _new_password_problem(password: str, password2: str) -> str | None:
+    if password != password2:
+        return "The two passwords don't match."
+    return passwords.check(password)
+
+
+# ---------------------------------------------------------------- invite: set up the account
+@router.get("/setup")
+async def setup_page(request: Request, token: str = "", db: AsyncSession = Depends(get_db)):
+    state, row, user = await tokens.look_up(db, "setup", token)
+    tenant = await db.get(Tenant, user.tenant_id) if user else None
+    return render(request, "password_form.html", mode="setup", state=state, token=token,
+                  email=user.email if user else "", company=tenant.label if tenant else "", hint=passwords.hint())
+
+
+@router.post("/setup", dependencies=[Depends(csrf_protect)])
+async def setup_submit(request: Request, token: str = Form(...), password: str = Form(...), password2: str = Form(...),
+                       db: AsyncSession = Depends(get_db)):
+    state, row, user = await tokens.look_up(db, "setup", token)
+    if state != "ok":
+        ban = await _failed(request, db, user, "setup", f"setup link {state}") if state == "invalid" else None
+        return banned_page(request, ban) if ban else render(request, "password_form.html", mode="setup", state=state)
+    tenant = await db.get(Tenant, user.tenant_id)
+    problem = _new_password_problem(password, password2)
+    if problem:
+        return render(request, "password_form.html", mode="setup", state=state, token=token, email=user.email,
+                      company=tenant.label, hint=passwords.hint(), error=problem)
+    user.password_hash, user.password_changed_at = hash_password(password), sessions.utcnow()
+    await tokens.consume(db, row)
+    audit(db, user.tenant_id, "user.setup_done", user_id=user.id, ip=client_ip(request))
+    if tenant is None or not tenant.is_active:
+        await db.commit()
+        return _login_page(request, error="Your company's portal access is disabled. Contact TWG Security.")
+    request.session.pop("next", None)
+    if mfa.required_for(tenant):
+        await guard.record(db, client_ip(request), "setup", "success", email=user.email, user=user,
+                           reason="password set, must set up 2FA")
+        _set_pending(request, user, "enroll", ENROLL_TTL_S)
+        await db.commit()
+        return RedirectResponse("/login/enroll", 303)
+    return RedirectResponse(await _finish(request, db, user, "password", kind="setup"), 303)
+
+
+# ---------------------------------------------------------------- forgot / reset
+RESETS_PER_HOUR = 3
+FORGOT_PER_IP_15MIN = 10
+
+
+@router.get("/forgot")
+async def forgot_page(request: Request):
+    return render(request, "forgot.html")
+
+
+@router.post("/forgot", dependencies=[Depends(csrf_protect)])
+async def forgot_submit(request: Request, email: str = Form(...)):
+    # The answer (and its timing) is the same whether or not the account exists: the work runs in the background.
+    guard.spawn(_forgot(email.strip().lower()[:320], client_ip(request)))
+    return render(request, "forgot.html", sent=True, email=email.strip())
+
+
+_forgot_locks: dict = {}           # one per event loop: the per-hour limit must hold when requests arrive together
+
+
+def _forgot_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    if loop not in _forgot_locks:
+        _forgot_locks.clear()
+        _forgot_locks[loop] = asyncio.Lock()
+    return _forgot_locks[loop]
+
+
+async def _forgot(addr: str, ip: str) -> None:
+    from datetime import timedelta
+    try:
+        async with _forgot_lock(), sessionmaker()() as db:
+            recent_ip = await db.scalar(select(func.count()).select_from(AuthEvent).where(
+                AuthEvent.ip == ip, AuthEvent.kind == "reset", AuthEvent.outcome == "requested",
+                AuthEvent.ts >= sessions.utcnow() - timedelta(minutes=15)))
+            user = await db.scalar(select(User).where(func.lower(User.email) == addr))
+            reason = "unknown email" if user is None else ""
+            if user is not None and not user.is_active:
+                reason = "account deactivated"
+            elif user is not None:
+                recent = await db.scalar(select(func.count()).select_from(UserToken).where(
+                    UserToken.user_id == user.id, UserToken.created_at >= sessions.utcnow() - timedelta(hours=1)))
+                if recent >= RESETS_PER_HOUR or recent_ip >= FORGOT_PER_IP_15MIN:
+                    reason = "too many requests: not sent"
+            await guard.record(db, ip, "reset", "requested", email=addr, user=user, reason=reason or "link emailed")
+            if reason:
+                await db.commit()
+                return
+            tenant = await db.get(Tenant, user.tenant_id)
+            if user.is_invited:      # never finished setting up: send a fresh invite instead
+                token, _ = await tokens.mint(db, user, "setup")
+                subject, html, text = mail.invite(user.email, tenant.label, tokens.link("setup", token), "TWG Security")
+                purpose = "invite"
+            else:
+                token, _ = await tokens.mint(db, user, "reset")
+                subject, html, text = mail.reset(tokens.link("reset", token))
+                purpose = "reset"
+            await db.commit()
+        await mail.send_now(user.email, subject, html, text, purpose=purpose, tenant_id=user.tenant_id, user_id=user.id)
+    except Exception as e:  # noqa: BLE001 - background: log and move on
+        import logging
+        logging.getLogger(__name__).error("forgot password for %s failed: %s", addr, e)
+
+
+@router.get("/reset")
+async def reset_page(request: Request, token: str = "", db: AsyncSession = Depends(get_db)):
+    state, _, user = await tokens.look_up(db, "reset", token)
+    return render(request, "password_form.html", mode="reset", state=state, token=token,
+                  email=user.email if user else "", hint=passwords.hint())
+
+
+@router.post("/reset", dependencies=[Depends(csrf_protect)])
+async def reset_submit(request: Request, token: str = Form(...), password: str = Form(...), password2: str = Form(...),
+                       db: AsyncSession = Depends(get_db)):
+    state, row, user = await tokens.look_up(db, "reset", token)
+    if state != "ok":
+        ban = await _failed(request, db, user, "reset", f"reset link {state}") if state == "invalid" else None
+        return banned_page(request, ban) if ban else render(request, "password_form.html", mode="reset", state=state)
+    problem = _new_password_problem(password, password2)
+    if problem:
+        return render(request, "password_form.html", mode="reset", state=state, token=token, email=user.email,
+                      hint=passwords.hint(), error=problem)
+    user.password_hash, user.password_changed_at = hash_password(password), sessions.utcnow()
+    await tokens.consume(db, row)
+    n = await sessions.revoke_all(db, user, "password reset")
+    await guard.record(db, client_ip(request), "reset", "success", email=user.email, user=user, reason="password reset")
+    audit(db, user.tenant_id, "password.reset", user_id=user.id, ip=client_ip(request), sessions_ended=n)
+    await db.commit()
+    request.session.clear()
+    return RedirectResponse("/login?reason=reset", 303)
 
 
 @router.post("/logout", dependencies=[Depends(csrf_protect)])

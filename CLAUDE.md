@@ -84,6 +84,9 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Two-step sign-in (TOTP, recovery codes, passkeys) | `app/mfa.py`; login stages in `app/routers/auth.py` (`pending` in the session between stages); templates `login*.html`, `recovery_codes.html`; `js/login.js`, `js/webauthn.js`; tests `tests/test_two_factor.py` (+ `tests/soft_passkey.py`, a software authenticator), e2e `tools/e2e/twofactor.py` (Chrome virtual authenticator) |
 | Sessions (one row per browser) | `app/sessions.py` (`check` in `deps.current_user`, adopts old cookies), `user_sessions` (migration 0009); revoked streams get `event: signedout` → `common.js signedOut()` |
 | Account page, admin user security, company 2FA switch | `app/routers/account.py`, `templates/account.html`, `js/account.js`; password rules `app/passwords.py` |
+| Email (SMTP, branded template, send log) | `app/mail.py` (`send_now` / `send_later`, 3 attempts), `templates/email/layout.html`, `email_log` (migration 0010) |
+| Invites, setup and reset links | `app/invites.py`, `app/tokens.py` (`user_tokens`: SHA-256 only, setup 7 d, reset 30 min); pages `/setup`, `/forgot`, `/reset`, `/login/password-expired` in `app/routers/auth.py`; `password_form.html`, `forgot.html`; tests `tests/test_email_invites.py` (aiosmtpd sink), e2e `tools/e2e/email.py` |
+| Google sign-in (OIDC + PKCE) | `app/routers/sso.py` (`/auth/google`, `/auth/google/callback`), settings on `platform_settings.google_*` (migration 0011); tests `tests/test_google_sso.py` |
 | Companies / tenancy | `app/scope.py` (`Scope`, `get_scope`), `app/routers/tenants.py` (`/api/scope`, `/api/tenants`, logo, `/branding/{id}/logo`), `templates/companies.html` + `js/companies.js`; tests `tests/test_tenancy.py`, e2e `tools/e2e/tenancy.py` |
 | Verdicts (real / false), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`) |
 | Groups & permissions | `app/permissions.py` (catalog, `require()`), `user_groups` / `user_group_members` (migration 0005), `/api/groups`; `deps.current_user` loads `user._perms`, pages get `CFG.perms` |
@@ -138,6 +141,11 @@ JS modules:
 - Passkeys: RP ID `WEBAUTHN_RP_ID` (default `alarmportal.twgsecurity.net`), origins `WEBAUTHN_ORIGINS`. The page hides passkey buttons on other hosts (the LAN IP). Dev uses `localhost` (set in `tools/dev_up.sh`).
 - **A revoked or expired session must never look live:** the page keeps showing, with the SIGNED OUT banner and tone. Keep `signedOut()` in `common.js` as the only reaction to a 401.
 - Session limits (Platform page): `session_closed_h` (12) counts from the last request, so an open screen never expires; `session_max_h` and `idle_timeout_min` default to 0 (off).
+
+### Passwords, invites, email
+- **Every place a password is set calls `passwords.check()`** (rules on the Platform page): user create/reset, company create, setup, reset, Account page, expired change, CLI. Keep it that way for new paths.
+- Invited users have `password_hash = ""` (`User.is_invited`), so a password sign-in can't succeed until they use the setup link.
+- Emails never block a request and never decide anything: with email off or failing, the admin still gets the link. The forgot-password page answers the same for any email.
 
 ### How an alarm's level is decided (first match wins)
 1. A `#critical` / `#alarm` / `#warning` / `#ignore` tag in the NX rule's Title/Comment. Rules are re-read every 60 s, and still-open alarms are re-levelled.
@@ -224,7 +232,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 113 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 136 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -233,12 +241,13 @@ tools/dev_up.sh && .venv/bin/python -m tools.e2e.export /tmp      # export ZIP f
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.verdicts /tmp    # live beside recorded, verdict buttons, groups, operator bulk edit
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.signin /tmp      # 5 bad sign-ins -> blocked page, operator's alarms unaffected, unblock on Platform page
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.twofactor /tmp   # authenticator app, passkey (virtual authenticator), forced enrolment, remote sign-out -> SIGNED OUT banner + tone
+tools/dev_up.sh && .venv/bin/python -m tools.e2e.email /tmp       # SMTP sink on :8125: test email, invite -> setup link, forgot -> reset link
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
 ```
-- Setup: dependencies install with `~/.local/bin/uv pip install -p .venv -r requirements-dev.txt`, followed by `.venv/bin/playwright install chromium`. The system dependencies for Chromium are already installed.
-- `.env.dev` holds dev secrets and `COOKIE_SECURE=false`. The dev login is `admin@twgsecurity.com` / `smoke-test-password-123`.
+- Setup: dependencies install with `~/.local/bin/uv pip install -p .venv -r requirements-dev.txt` (Phase 2-3 added pyotp, qrcode, webauthn; aiosmtpd for tests), followed by `.venv/bin/playwright install chromium`. The system dependencies for Chromium are already installed.
+- `.env.dev` holds dev secrets and `COOKIE_SECURE=false`. The dev login is `admin@twgsecurity.com` / `Smoke-test-password-123!`.
 - `tools/fake_nx.py` imitates NX: login, events, JSON-RPC push, synthetic MPEG-4 clips with the start-time tag, and moving object tracks. Fire events with `curl -X POST localhost:8199/_inject/{panic|line|dock|panic24}`. Each kind has a fixed rule id served at `/rest/v4/events/rules`; panic24's rule is tagged `#24h`.
 - To probe real NX from inside the app container (it already holds the site credentials), write a script and run it with
   `docker compose cp x.py app:/tmp/x.py && docker compose exec -T -w /app -e PYTHONPATH=/app app python /tmp/x.py`.
@@ -263,7 +272,7 @@ tools/dev_down.sh
    - optional: the user can set Cloudflare *Browser Cache TTL* to "Respect Existing Headers" (the portal no longer depends on it)
 2. **First customer company**: nothing to build. Check with the user when they onboard one (Companies → New company); also check Cloudflare Access (item 1).
 3. **Off-server backup copy**: encrypted, e.g. to Google Drive via the TWG gateway, or another host.
-4. **Flaky test to watch**: `tools/e2e/export` failed once in 7 runs on 2026-10-01. Which check failed wasn't captured, and it didn't reproduce. Mid-export alarm latency was always 88–119 ms.
+4. ~~Flaky export e2e~~: found on 2026-10-01: it read the audit page while it still said "Loading…". Fixed (also in `tenancy`).
 5. **Level rules list**: ordered rules matching analytics subtype, site, camera and caption keywords. Arming now covers the "after hours" case; shared schedules across sites aren't built (schedules are per site).
 6. **Warning visibility** (the user said "nothing happened" for a Warning): options offered were a toast on the overview, a louder or longer tone, or flashing the pin amber. No decision yet.
 7. **Site 1 over the LAN** (`https://10.1.29.162:7001`) instead of the relay, to avoid the relay 503s. This is only a suggestion.

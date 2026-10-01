@@ -3,7 +3,7 @@ import urllib.request
 
 PORTAL = "http://localhost:8099"
 FAKE_NX = "http://127.0.0.1:8199"
-LOGIN = ("admin@twgsecurity.com", "smoke-test-password-123")
+LOGIN = ("admin@twgsecurity.com", "Smoke-test-password-123!")
 # Counts Web Audio oscillators so tests can tell that alarm sounds actually played.
 COUNT_TONES = """(() => { const o = AudioContext.prototype.createOscillator; window.__osc = 0;
     AudioContext.prototype.createOscillator = function () { window.__osc++; return o.apply(this, arguments); }; })()"""

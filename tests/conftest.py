@@ -19,7 +19,7 @@ from app.models import Site, Tenant, User  # noqa: E402
 from app.security import encrypt, hash_password  # noqa: E402
 
 NX = "https://nx.test"
-PASSWORD = "correct-horse-battery"
+PASSWORD = "Correct-horse-battery-1!"
 
 
 @pytest.fixture(autouse=True)

@@ -34,8 +34,10 @@ async def create_admin(email: str, name: str, password: str, tenant_name: str) -
             db.add(tenant)
             await db.flush()
         existing = await db.scalar(select(User).where(User.email == email.lower()))
+        from app.models import utcnow
         if existing:
             existing.password_hash, existing.role, existing.is_active = hash_password(password), "admin", True
+            existing.password_changed_at = utcnow()
             print(f"Updated existing user {email} -> admin, password reset")
         else:
             db.add(User(tenant_id=tenant.id, email=email.lower(), display_name=name,
@@ -126,6 +128,18 @@ async def reset_mfa(email: str, passkeys: bool) -> None:
     print(f"Two-step sign-in reset for {user.email}" + (" (passkeys removed too)" if passkeys else ""))
 
 
+def _check(password: str) -> None:
+    """The portal's password rules (Platform page; the defaults when the database can't be read)."""
+    from app import passwords, platform_settings
+    try:
+        asyncio.run(platform_settings.refresh())
+    except Exception:  # noqa: BLE001
+        pass
+    problem = passwords.check(password)
+    if problem:
+        sys.exit(f"{problem} ({passwords.hint()})")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="app.cli")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -172,8 +186,7 @@ def main() -> None:
 
     if args.cmd == "create-tenant":
         password = sys.stdin.readline().rstrip("\n") if args.password_stdin else getpass.getpass("Admin password: ")
-        if len(password) < 12:
-            sys.exit("Password must be at least 12 characters")
+        _check(password)
         asyncio.run(create_tenant(args.name, args.admin_email, args.admin_name, password))
         return
     if args.cmd == "create-admin":
@@ -183,8 +196,7 @@ def main() -> None:
             password = getpass.getpass("Password: ")
             if password != getpass.getpass("Confirm:  "):
                 sys.exit("Passwords do not match")
-        if len(password) < 12:
-            sys.exit("Password must be at least 12 characters")
+        _check(password)
         asyncio.run(create_admin(args.email, args.name, password, args.tenant))
 
 

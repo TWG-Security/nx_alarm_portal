@@ -153,6 +153,89 @@ $("sess-form").addEventListener("submit", async (e) => {
   catch (err) { errBox("sess-error", err); }
 });
 
+// ---------------------------------------------------------------- passwords, email
+function paintPasswords() {
+  const p = settings.passwords;
+  $("pw-len").value = p.min_length; $("pw-exp").value = p.expiry_days;
+  for (const k of ["upper", "lower", "number", "symbol"]) $(`pw-${k}`).checked = p[k];
+}
+$("pw-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errBox("pw-error");
+  try {
+    settings = await api("/api/platform/settings/passwords", { method: "PUT", body: { min_length: Number($("pw-len").value),
+      expiry_days: Number($("pw-exp").value), upper: $("pw-upper").checked, lower: $("pw-lower").checked,
+      number: $("pw-number").checked, symbol: $("pw-symbol").checked } });
+    paintPasswords(); toast("Password rules saved");
+  } catch (err) { errBox("pw-error", err); }
+});
+
+const PURPOSE = { invite: "Invite", reset: "Password reset", test: "Test" };
+const MAIL_OUT = { sent: ["Sent", "online"], failed: ["Failed", "offline"], disabled: ["Not sent: email off", ""] };
+function paintEmail() {
+  const m = settings.email;
+  $("m-enabled").checked = m.enabled; $("m-host").value = m.host; $("m-port").value = m.port; $("m-tls").value = m.tls;
+  $("m-user").value = m.user; $("m-from").value = m.sender; $("m-url").value = m.portal_url; $("m-pass").value = "";
+  $("m-pass").placeholder = m.password_set ? "Saved. Leave blank to keep it." : "";
+  $("m-pass-hint").textContent = m.password_set ? "Stored encrypted; never shown again." : "Stored encrypted.";
+  $("m-clear-row").hidden = !m.password_set || !MANAGE; $("m-clear").checked = false;
+  const parts = [];
+  if (!m.enabled) parts.push('<div class="alert alert-warn">Email is off. Invites and resets show a link to pass on by hand.</div>');
+  if (m.last_error) parts.push(`<div class="alert alert-error"><b>Last error</b> ${esc(relTime(m.last_error_at))}: ${esc(m.last_error)}</div>`);
+  if (m.last_ok_at) parts.push(`<div class="alert alert-ok">Last email sent ${esc(relTime(m.last_ok_at))}.</div>`);
+  $("mail-status").innerHTML = parts.join("");
+}
+$("m-tls").addEventListener("change", () => { $("m-port").value = { starttls: 587, ssl: 465, none: 25 }[$("m-tls").value]; });
+$("mail-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errBox("mail-error");
+  const body = { enabled: $("m-enabled").checked, host: $("m-host").value, port: Number($("m-port").value) || 587,
+    tls: $("m-tls").value, user: $("m-user").value, sender: $("m-from").value, portal_url: $("m-url").value };
+  if ($("m-clear").checked) body.password = "";
+  else if ($("m-pass").value) body.password = $("m-pass").value;
+  try { settings = await api("/api/platform/settings/email", { method: "PUT", body }); paintEmail(); toast("Email settings saved"); }
+  catch (err) { errBox("mail-error", err); }
+});
+$("m-test").addEventListener("click", async () => {
+  errBox("mail-error");
+  const to = $("m-test-to").value.trim();
+  if (!to) { $("m-test-to").focus(); return; }
+  $("m-test").disabled = true;
+  try {
+    const r = await api("/api/platform/email/test", { method: "POST", body: { to } });
+    if (r.outcome === "sent") toast(`Test email sent to ${esc(to)}`); else errBox("mail-error", r.error || r.outcome);
+    settings = await api("/api/platform/settings"); paintEmail(); await loadMailLog();
+  } catch (err) { errBox("mail-error", err); } finally { $("m-test").disabled = false; }
+});
+async function loadMailLog() {
+  const rows = await api("/api/platform/email-log");
+  $("mail-log").innerHTML = rows.map((m) => {
+    const [label, cls] = MAIL_OUT[m.outcome] || [m.outcome, ""];
+    return `<tr><td title="${esc(fmtTime(m.ts))}">${esc(relTime(m.ts))}</td><td>${esc(m.to)}</td><td>${esc(PURPOSE[m.purpose] || m.purpose)}</td>
+      <td><span class="chip ${cls}">${esc(label)}</span>${m.error ? `<div class="muted small-print">${esc(m.error)}</div>` : ""}</td><td>${esc(m.company)}</td></tr>`;
+  }).join("") || '<tr><td colspan="5" class="empty">Nothing sent yet.</td></tr>';
+}
+$("mail-log-refresh").addEventListener("click", () => loadMailLog().catch((e) => toast(esc(e.message), { kind: "error" })));
+
+// ---------------------------------------------------------------- google
+function paintGoogle() {
+  const g = settings.google;
+  $("g-enabled").checked = g.enabled; $("g-id").value = g.client_id; $("g-domains").value = g.domains; $("g-secret").value = "";
+  $("g-secret").placeholder = g.secret_set ? "Saved. Leave blank to keep it." : "";
+  $("g-secret-hint").textContent = g.secret_set ? "Stored encrypted; never shown again." : "Stored encrypted.";
+  $("g-clear-row").hidden = !g.secret_set || !MANAGE; $("g-clear").checked = false;
+  $("g-origin").textContent = g.origin; $("g-redirect").textContent = g.redirect_uri;
+}
+$("g-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errBox("g-error");
+  const body = { enabled: $("g-enabled").checked, client_id: $("g-id").value, domains: $("g-domains").value };
+  if ($("g-clear").checked) body.client_secret = "";
+  else if ($("g-secret").value) body.client_secret = $("g-secret").value;
+  try { settings = await api("/api/platform/settings/google", { method: "PUT", body }); paintGoogle(); toast("Google sign-in saved"); }
+  catch (err) { errBox("g-error", err); }
+});
+
 // ---------------------------------------------------------------- security overview
 function paintSecurity() {
   const s = security;
@@ -243,7 +326,8 @@ async function refresh() { await Promise.all([loadSecurity(), loadEvents()]); }
 
 try {
   settings = await api("/api/platform/settings");
-  paintRules(); paintProxies(); paintCloudflare(); paintTwoFactor(); paintSessions();
+  paintRules(); paintProxies(); paintCloudflare(); paintTwoFactor(); paintSessions(); paintPasswords(); paintEmail(); paintGoogle();
+  loadMailLog().catch(() => {});
   await refresh();
 } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }
 setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 15000);

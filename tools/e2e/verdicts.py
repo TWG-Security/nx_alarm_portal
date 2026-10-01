@@ -96,13 +96,13 @@ with sync_playwright() as p:
 
     # --- 6. groups: an operator gets bulk edit only through a group
     r = call(pg, "POST", "/api/users", {"email": "op@twgsecurity.com", "display_name": "Night Operator",
-                                        "password": "operator-pass-1234", "role": "operator"})
+                                        "password": "Operator-pass-1234!", "role": "operator"})
     op_id = r["body"]["id"]
     for kind in ("line", "line", "line"):
         inject(kind)
     pg.wait_for_timeout(1500)
     ctx2 = b.new_context(viewport={"width": 1400, "height": 900})
-    op = sign_in(ctx2, "op@twgsecurity.com", "operator-pass-1234")
+    op = sign_in(ctx2, "op@twgsecurity.com", "Operator-pass-1234!")
     op.goto(f"{PORTAL}/alarms?state=all")
     op.wait_for_selector(".alarm", timeout=5000)
     check(op.locator("#bulk-bar:not([hidden])").count() == 0 and op.locator(".alarm .sel").count() == 0,

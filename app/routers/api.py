@@ -505,7 +505,7 @@ async def put_alarm_levels(body: AlarmPolicyIn, request: Request, user: User = D
 class UserIn(BaseModel):
     email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
     display_name: str = Field(default="", max_length=200)
-    password: str = Field(min_length=12, max_length=200)
+    password: str = Field(default="", max_length=200)          # "" = invite by email (a setup link)
     role: str = Field(default="operator", pattern="^(admin|operator)$")
 
 
@@ -513,13 +513,22 @@ class UserUpdate(BaseModel):
     display_name: str | None = Field(default=None, max_length=200)
     role: str | None = Field(default=None, pattern="^(admin|operator)$")
     is_active: bool | None = None
-    password: str | None = Field(default=None, min_length=12, max_length=200)
+    password: str | None = Field(default=None, min_length=1, max_length=200)
 
 
-def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0) -> dict:
+def _check_password(pw: str) -> None:
+    from app import passwords
+    problem = passwords.check(pw)
+    if problem:
+        raise HTTPException(400, problem)
+
+
+def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | None = None) -> dict:
     return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
-            "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in}
+            "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
+            "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
+            "invite_email": invite}
 
 
 @router.get("/users")
@@ -535,24 +544,57 @@ async def list_users(user: User = Depends(require_admin), scope: Scope = Depends
     live: dict[int, int] = {}
     for r in await sessions.active(db, ids):
         live[r.user_id] = live.get(r.user_id, 0) + 1
-    return [_user_dict(u, keys.get(u.id, 0), live.get(u.id, 0)) for u in rows]
+    from app.models import EmailLog
+    mails: dict[int, dict] = {}
+    invited = [u.id for u in rows if u.is_invited]
+    if invited:
+        for e in (await db.scalars(select(EmailLog).where(EmailLog.user_id.in_(invited), EmailLog.purpose == "invite")
+                                   .order_by(EmailLog.ts))).all():
+            mails[e.user_id] = {"outcome": e.outcome, "ts": e.ts.isoformat(), "error": e.error}
+    return [_user_dict(u, keys.get(u.id, 0), live.get(u.id, 0), mails.get(u.id)) for u in rows]
 
 
 @router.post("/users")
 async def create_user(body: UserIn, request: Request, user: User = Depends(require_admin),
                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    from app import invites, sessions
     tid = scope.write_tenant()
+    if body.password:
+        _check_password(body.password)
+    now = sessions.utcnow()
     new = User(tenant_id=tid, email=body.email.strip().lower(), display_name=body.display_name.strip(),
-               password_hash=hash_password(body.password), role=body.role)
+               password_hash=hash_password(body.password) if body.password else "", role=body.role,
+               password_changed_at=now if body.password else None, invited_at=None if body.password else now)
     db.add(new)
     try:
         await db.flush()
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(409, "A user with that email already exists") from exc
-    audit(db, tid, "user.created", user_id=user.id, ip=client_ip(request), email=new.email, role=new.role)
+    out = {}
+    if not body.password:
+        out = await invites.invite(db, new, await db.get(Tenant, tid), user)
+    audit(db, tid, "user.created", user_id=user.id, ip=client_ip(request), email=new.email, role=new.role,
+          invited=not body.password)
     await db.commit()
-    return _user_dict(new)
+    return {**_user_dict(new), **out}
+
+
+@router.post("/users/{user_id}/invite")
+async def reinvite_user(user_id: int, request: Request, user: User = Depends(require_admin),
+                        scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """A fresh setup link for someone who hasn't set up their account (the old link stops working)."""
+    from app import invites
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    if target is None:
+        raise HTTPException(404)
+    scope.require_write(target.tenant_id)
+    if not target.is_invited:
+        raise HTTPException(400, "They've already set up their account. Use Reset password, or they can use Forgot password.")
+    out = await invites.invite(db, target, await db.get(Tenant, target.tenant_id), user)
+    audit(db, target.tenant_id, "user.invited", user_id=user.id, ip=client_ip(request), target=target.email)
+    await db.commit()
+    return out
 
 
 @router.put("/users/{user_id}")
@@ -572,6 +614,7 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
             fields.append(name)
     if body.password:
         from app import sessions
+        _check_password(body.password)
         target.password_hash, target.password_changed_at = hash_password(body.password), sessions.utcnow()
         # A reset ends their sessions (yours stays if you reset your own).
         await sessions.revoke_all(db, target, "password reset by an admin",

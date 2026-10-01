@@ -1,5 +1,5 @@
 // TWG's Companies page: every company's health, open it (support mode), create and edit companies.
-import { api, esc, relTime, toast, can } from "./common.js";
+import { api, esc, fmtTime, relTime, toast, can } from "./common.js";
 
 const tbody = document.getElementById("company-rows");
 const MANAGE = can("platform.manage");
@@ -42,13 +42,27 @@ document.getElementById("view-all").addEventListener("click", () => open("all"))
 const cDlg = document.getElementById("company-dialog");
 document.getElementById("new-company")?.addEventListener("click", () => { document.getElementById("company-form").reset(); document.getElementById("c-error").innerHTML = ""; cDlg.showModal(); });
 document.getElementById("c-cancel").addEventListener("click", () => cDlg.close());
+const cHow = () => document.querySelector('input[name="c-how"]:checked').value;
+document.querySelectorAll('input[name="c-how"]').forEach((r) => r.addEventListener("change", () => {
+  document.getElementById("c-pass-row").hidden = cHow() !== "password";
+  document.getElementById("c-pass").required = cHow() === "password";
+}));
 document.getElementById("company-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const $ = (id) => document.getElementById(id).value;
   try {
-    await api("/api/tenants", { method: "POST", body: { name: $("c-name"), display_name: $("c-display"),
-      admin_email: $("c-email"), admin_name: $("c-admin"), admin_password: $("c-pass") } });
-    cDlg.close(); toast(`Company <b>${esc($("c-name"))}</b> created. Its admin can sign in now.`); await load();
+    const r = await api("/api/tenants", { method: "POST", body: { name: $("c-name"), display_name: $("c-display"),
+      admin_email: $("c-email"), admin_name: $("c-admin"), admin_password: cHow() === "password" ? $("c-pass") : "" } });
+    cDlg.close();
+    if (r.setup_link) {
+      const note = r.email === "sending" ? "An invite email is on its way to them." : "Email is off, so nothing was sent: pass this link on yourself.";
+      document.getElementById("c-link").innerHTML = `<div class="alert alert-ok"><b>${esc($("c-name"))}</b> created. Setup link for its first admin
+        (valid until ${esc(fmtTime(r.expires_at))}). ${note}<div class="row" style="margin-top:8px;align-items:center">
+        <input type="text" readonly class="mono" value="${esc(r.setup_link)}" onfocus="this.select()">
+        <button class="btn btn-sm" type="button" id="c-copy" style="flex:0 0 auto">Copy</button></div></div>`;
+      document.getElementById("c-copy").addEventListener("click", () => navigator.clipboard.writeText(r.setup_link).then(() => toast("Link copied")));
+    } else toast(`Company <b>${esc($("c-name"))}</b> created. Its admin can sign in now.`);
+    await load();
   } catch (err) { document.getElementById("c-error").innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`; }
 });
 

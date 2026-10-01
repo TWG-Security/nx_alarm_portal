@@ -59,6 +59,12 @@ class User(Base):
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a code's step can't be reused
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
+    invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    @property
+    def is_invited(self) -> bool:
+        """Invited by email and hasn't set a password yet (password_hash is "")."""
+        return not self.password_hash
 
     @property
     def is_admin(self) -> bool:
@@ -90,6 +96,39 @@ class MfaRecoveryCode(Base):
     code_hash: Mapped[str] = mapped_column(String(64))
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserToken(Base):
+    """A one-time link: "setup" (invite, 7 days) or "reset" (forgot password, 30 min). Only the SHA-256 is stored."""
+
+    __tablename__ = "user_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    purpose: Mapped[str] = mapped_column(String(10))
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class EmailLog(Base):
+    """Every email the portal tried to send (never the body)."""
+
+    __tablename__ = "email_log"
+    __table_args__ = (Index("ix_email_log_ts", "ts"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    to: Mapped[str] = mapped_column(String(320))
+    subject: Mapped[str] = mapped_column(String(300))
+    purpose: Mapped[str] = mapped_column(String(20))          # invite | reset | test
+    outcome: Mapped[str] = mapped_column(String(20))          # sent | failed | disabled
+    error: Mapped[str] = mapped_column(String(500), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
 
 class WebAuthnCredential(Base):
@@ -308,6 +347,30 @@ class PlatformSettings(Base):
     session_closed_h: Mapped[int] = mapped_column(Integer, default=12)         # signed out after this long with no requests
     session_max_h: Mapped[int] = mapped_column(Integer, default=0)             # absolute limit; 0 = none
     idle_timeout_min: Mapped[int] = mapped_column(Integer, default=0)          # no keyboard/mouse; 0 = off
+    # Passwords (app/passwords.py)
+    pw_min_length: Mapped[int] = mapped_column(Integer, default=12)
+    pw_upper: Mapped[bool] = mapped_column(Boolean, default=True)
+    pw_lower: Mapped[bool] = mapped_column(Boolean, default=True)
+    pw_number: Mapped[bool] = mapped_column(Boolean, default=True)
+    pw_symbol: Mapped[bool] = mapped_column(Boolean, default=True)
+    pw_expiry_days: Mapped[int] = mapped_column(Integer, default=0)            # 0 = never
+    # Email (app/mail.py)
+    portal_url: Mapped[str] = mapped_column(String(300), default="https://alarmportal.twgsecurity.net")
+    smtp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    smtp_host: Mapped[str] = mapped_column(String(200), default="")
+    smtp_port: Mapped[int] = mapped_column(Integer, default=587)
+    smtp_tls: Mapped[str] = mapped_column(String(10), default="starttls")      # starttls | ssl | none
+    smtp_user: Mapped[str] = mapped_column(String(320), default="")
+    smtp_password_enc: Mapped[str] = mapped_column(Text, default="")
+    smtp_from: Mapped[str] = mapped_column(String(320), default="")
+    smtp_last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    smtp_last_error: Mapped[str] = mapped_column(Text, default="")
+    smtp_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Google sign-in (app/routers/sso.py)
+    google_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    google_client_id: Mapped[str] = mapped_column(String(300), default="")
+    google_client_secret_enc: Mapped[str] = mapped_column(Text, default="")
+    google_domains: Mapped[str] = mapped_column(String(500), default="")       # "" = any domain
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 

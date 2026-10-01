@@ -15,7 +15,7 @@ from app import platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, pages, platform, stream, tenants, tiles
+from app.routers import account, api, auth, pages, platform, sso, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -111,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(tenants.router)
     app.include_router(platform.router)
     app.include_router(account.router)
+    app.include_router(sso.router)
     app.include_router(tiles.router)
     return app
 

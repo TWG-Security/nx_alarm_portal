@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Sign in with Google** (Platform page → Google sign-in; migration 0011): signs in **existing** accounts by their Google-verified email (nobody is created), optionally limited to email domains. Google's sign-in replaces the authenticator-app step; anyone required to have two-step sign-in with none set up is still walked through it, and password expiry still applies. Checks the state, PKCE and the ID token's issuer, audience, expiry and nonce. The page has click-level steps for the Google Cloud console and shows the exact redirect URI.
+- **Email, invites and password resets** (migration 0010):
+  - **Platform page → Email:** SMTP server, port, security (STARTTLS/SSL/none), username, password (encrypted, never shown again), From, and the portal address used in links. **Send test email**, the last success/error, and a list of recent emails (to, subject, result; never the content). Sends run in the background with 3 attempts. Click-level steps for a Google Workspace mailbox are on the page.
+  - **Invite by email** is now the default when adding a user (Users page) or a company's first admin (Companies page). They get a TWG-branded email with a 7-day, single-use link to choose their own password, then two-step set-up if required. The admin always sees the link with a **Copy** button, so it works with email off too. Invited users show "Invited · email sent/failed" and get a **New invite link** button. The temporary-password option stays.
+  - **Forgot password?** on the sign-in page: the answer is the same whether or not the account exists. The emailed link lasts 30 minutes, works once, and resetting signs the account out everywhere. At most 3 a hour per account; someone who never finished their invite gets a fresh invite instead.
+  - **Password rules** (Platform page → Passwords): 12+ characters with upper and lower case, a number and a symbol by default, checked everywhere a password is set (users, companies, invites, resets, Account page, CLI). The error lists exactly what's missing. Optional **password expiry** (off by default): an expired password must be changed right after signing in, passkeys included.
 - **Two-step sign-in** (migration 0009):
   - **Authenticator app** (Google/Microsoft Authenticator, 1Password…): set up on the new **Account** page (click your name, top right) with a QR code, confirmed with a code. 10 single-use **recovery codes** are shown once. Codes can't be replayed.
   - **Passkeys** (fingerprint, face, device PIN): add, test and remove them on the Account page. **"Sign in with a passkey"** needs no email, password or code. A passkey also works as the second step. They work at `https://alarmportal.twgsecurity.net` only (browsers refuse them on an IP address), so the LAN address keeps using the code.
@@ -25,6 +31,7 @@
 ### Fixed
 - **Users page:** an earlier edit had pasted the groups code inside the role/disable handler, so every role change or disable re-registered the group form's handlers (one Save could then submit several times). Rewritten. "+ New group" now waits until the user list and permissions have loaded (it could open an empty form).
 - A signed-out page redirect now returns you to the page you were on after signing in.
+- e2e `export` and `tenancy` read the audit page while it still said "Loading…" (the export flake noted on 2026-10-01). They now wait for the rows.
 - **Backups**: `tools/backup.sh` saves the database dump, `.env` and checksums. Each run is verified by restoring into a scratch database and comparing row counts, and rotation keeps 14. Cron runs it nightly at 03:15 UTC.
 - **Multiple companies:**
   - Other security companies get their own portal at the same address. They see only their own sites, alarms, users, groups, settings and audit log, with their name and logo ("Powered by TWG Security").

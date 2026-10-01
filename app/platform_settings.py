@@ -46,6 +46,10 @@ class Snapshot:
     session_closed_h: int = 12
     session_max_h: int = 0
     idle_timeout_min: int = 0
+    password_policy: object = None               # app.passwords.Policy (None = defaults)
+    pw_expiry_days: int = 0
+    portal_url: str = "https://alarmportal.twgsecurity.net"
+    google_ready: bool = False                   # switched on with a client ID and secret
 
 
 def parse_networks(text: str) -> list[Network]:
@@ -102,6 +106,7 @@ async def refresh() -> Snapshot:
     """Reload from the database. Never raises: on failure the previous snapshot stays in force."""
     global _snap, _loaded_at
     from app.models import IpAllow, PlatformSettings
+    from app.passwords import Policy
     from app.security import decrypt
     try:
         async with sessionmaker()() as db:
@@ -137,7 +142,11 @@ async def refresh() -> Snapshot:
             cf_enabled=row.cf_enabled, cf_zone_id=row.cf_zone_id or "", cf_token=token,
             mfa_require_twg=row.mfa_require_twg, mfa_customers=row.mfa_customers or "company",
             passkeys_enabled=row.passkeys_enabled, session_closed_h=row.session_closed_h,
-            session_max_h=row.session_max_h, idle_timeout_min=row.idle_timeout_min)
+            session_max_h=row.session_max_h, idle_timeout_min=row.idle_timeout_min,
+            password_policy=Policy(min_length=row.pw_min_length, upper=row.pw_upper, lower=row.pw_lower,
+                                   number=row.pw_number, symbol=row.pw_symbol),
+            pw_expiry_days=row.pw_expiry_days, portal_url=(row.portal_url or "").rstrip("/"),
+            google_ready=bool(row.google_enabled and row.google_client_id and row.google_client_secret_enc))
     _snap, _loaded_at = snap, time.monotonic()
     return snap
 

@@ -45,3 +45,15 @@ def check(password: str, p: Policy | None = None) -> str | None:
     if not missing:
         return None
     return "The password needs " + (", ".join(missing[:-1]) + " and " + missing[-1] if len(missing) > 1 else missing[0]) + "."
+
+
+def expired(user) -> bool:
+    """Older than the expiry rule (Platform page; 0 = never). No password yet = not expired."""
+    from datetime import datetime, timedelta, timezone
+    from app import platform_settings
+    days = platform_settings.current().pw_expiry_days
+    changed = user.password_changed_at
+    if days <= 0 or changed is None or not user.password_hash:
+        return False
+    changed = changed if changed.tzinfo else changed.replace(tzinfo=timezone.utc)
+    return datetime.now(timezone.utc) - changed > timedelta(days=days)

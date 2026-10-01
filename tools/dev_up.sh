@@ -1,6 +1,6 @@
 #!/bin/bash
 # Local test stack: fake NX on :8199 + portal (SQLite) on :8099, fresh database.
-# Dev login: admin@twgsecurity.com / smoke-test-password-123  (dev DB only)
+# Dev login: admin@twgsecurity.com / Smoke-test-password-123!  (dev DB only)
 # Needs .env.dev (SECRET_KEY, FERNET_KEY, DATABASE_URL=sqlite+aiosqlite:///./dev.db, COOKIE_SECURE=false).
 # Env overrides: POLL_INTERVAL_S (default 5; set 60 to prove push), CLIP_PRE_S / CLIP_POST_S (default 5 / 6).
 set -e
@@ -9,7 +9,7 @@ cd "$(dirname "$0")/.."
 set -a; . ./.env.dev; set +a
 rm -rf dev.db media-cache tile-cache
 .venv/bin/alembic upgrade head >/dev/null
-echo 'smoke-test-password-123' | .venv/bin/python -m app.cli create-admin --email admin@twgsecurity.com --name "Dev Admin" --password-stdin >/dev/null
+echo 'Smoke-test-password-123!' | .venv/bin/python -m app.cli create-admin --email admin@twgsecurity.com --name "Dev Admin" --password-stdin >/dev/null
 mkdir -p .dev-logs
 nohup .venv/bin/uvicorn tools.fake_nx:app --port 8199 > .dev-logs/fake_nx.log 2>&1 &
 POLL_INTERVAL_S=${POLL_INTERVAL_S:-5} CLIP_PRE_S=${CLIP_PRE_S:-5} CLIP_POST_S=${CLIP_POST_S:-6} \

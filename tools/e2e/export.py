@@ -64,7 +64,7 @@ with sync_playwright() as p:
     open(f"{out}/export.zip", "wb").write(data)
     open(f"{out}/report.pdf", "wb").write(files["incident-report.pdf"])
     pg.goto(f"{PORTAL}/audit?alarm_id={aid}")
-    pg.wait_for_selector("td", timeout=5000)
+    pg.wait_for_function("!document.getElementById('audit-rows').textContent.includes('Loading')", timeout=5000)          # not just the "Loading…" row
     check("Alarm exported" in pg.inner_text("tbody"), "export is in the audit log")
     check(not errors, f"no JavaScript errors {errors[:2]}")
     b.close()

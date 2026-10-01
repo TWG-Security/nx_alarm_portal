@@ -62,7 +62,7 @@ try:
         twg.on("pageerror", lambda e: errors.append(f"twg: {e}"))
         login_and_add_site(twg)                                                 # TWG's own site (fake NX :8199)
         r = call(twg, "POST", "/api/tenants", {"name": "Acme Security", "display_name": "Acme",
-                                               "admin_email": "admin@acme.test", "admin_password": "acme-password-123"})
+                                               "admin_email": "admin@acme.test", "admin_password": "Acme-password-123!"})
         acme_id = r["body"]["id"]
         call(twg, "POST", "/api/scope", {"scope": str(acme_id)})
         r = call(twg, "POST", "/api/sites", {"name": "Acme Warehouse", "host": ACME_NX, "nx_user": "portal", "nx_pass": "x",
@@ -81,7 +81,7 @@ try:
 
         # --- 1. Acme's own portal: only Acme, Acme branding, its alarms sound
         acme_ctx = b.new_context(viewport={"width": 1400, "height": 900}); acme_ctx.add_init_script(COUNT_TONES)
-        acme = sign_in(acme_ctx, "admin@acme.test", "acme-password-123")
+        acme = sign_in(acme_ctx, "admin@acme.test", "Acme-password-123!")
         acme.on("pageerror", lambda e: errors.append(f"acme: {e}"))
         acme.wait_for_selector(".site-item"); acme.mouse.click(700, 500)
         check([x.inner_text() for x in acme.locator(".site-item .name").all()] == ["Acme Warehouse"], "Acme sees only its own site")
@@ -136,7 +136,7 @@ try:
         check(r["status"] == 200, "TWG support acknowledged Acme's alarm")
 
         # --- 4. Acme sees TWG's support in its own audit log
-        acme.goto(f"{PORTAL}/audit"); acme.wait_for_selector("tbody tr")
+        acme.goto(f"{PORTAL}/audit"); acme.wait_for_function("!document.getElementById('audit-rows').textContent.includes('Loading')", timeout=5000)
         audit_text = acme.inner_text("tbody")
         check("TWG support" in audit_text and "TWG support opened this company" in audit_text,
               "Acme's audit log shows TWG's visit and actions, marked TWG support")
@@ -149,7 +149,7 @@ try:
         r = call(twg, "PUT", f"/api/tenants/{acme_id}", {"is_active": False})
         acme.goto(f"{PORTAL}/")
         check("/login" in acme.url, "Acme's sign-in turned off: their session is cut off")
-        acme.fill("#email", "admin@acme.test"); acme.fill("#password", "acme-password-123"); acme.click("button[type=submit]")
+        acme.fill("#email", "admin@acme.test"); acme.fill("#password", "Acme-password-123!"); acme.click("button[type=submit]")
         acme.wait_for_selector(".alert-error")
         check("disabled" in acme.inner_text(".alert-error"), "…and signing in again explains why")
         call(twg, "PUT", f"/api/tenants/{acme_id}", {"is_active": True})

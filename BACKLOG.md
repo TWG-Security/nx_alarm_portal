@@ -133,7 +133,12 @@ sessions from before are adopted (no sign-out on deploy); the live stream is wok
   - A session expiring or being revoked must **send the user to sign-in loudly**, not leave the page looking live. Today the 401 handling in `common.js api()` redirects, and the SSE reconnect gets 401. Verify the "LIVE UPDATES LOST" banner and tone fire before the redirect.
 - **Tests:** TOTP enable and verify; replay rejected; recovery codes single-use; the enroll-ticket scope (it can't call other APIs); a passkey e2e with the virtual authenticator; session revoke kills access within one request; sign out everywhere.
 
-## Phase 3: email, invites, forgot password, password rules
+## Phase 3: email, invites, forgot password, password rules: **DONE** (not deployed yet)
+Built as specified, using stdlib `smtplib` in a thread (no aiosmtplib). Also: an `email_log` table shown on the
+Platform page; the forgot-password work runs in the background (same answer and timing either way) with a
+3-per-hour cap per account (serialised with a lock) and 10 per IP per 15 min; invited users who use "Forgot
+password" get a fresh invite. Dev/e2e passwords changed to meet the rules (dev admin: `Smoke-test-password-123!`).
+**Needs from the user:** an SMTP mailbox (open question 3); until then invites show a copyable link.
 - **Email:** SMTP via `aiosmtplib` (or stdlib `smtplib` in `asyncio.to_thread`); 3 attempts with backoff; every send logged (to, subject, outcome; never the body).
   - Settings live in `platform_settings`, with the password encrypted. "Send test" button.
   - When sending is disabled: skip and log, and the UI shows the copyable link instead.
@@ -151,7 +156,12 @@ sessions from before are adopted (no sign-out on deploy); the live stream is wok
 - **Password expiry** (optional, 0 = never): an expired password forces a change right after sign-in, passkey and SSO included (port `password-expiry.ts`).
 - **Tests:** a local SMTP sink (`aiosmtpd`) catches the mails; follow the links. Tokens are single-use, expired tokens fail, no enumeration (same response and timing), policy messages.
 
-## Phase 4: Google sign-in (OIDC)
+## Phase 4: Google sign-in (OIDC): **DONE** (not deployed yet)
+Built as specified, except: no URL-fragment completion ticket (that was for the source's SPA; the callback
+starts the session itself from the signed session state); the ID token from the token endpoint is checked
+(iss, aud, exp, nonce, email_verified) without a signature check, as OIDC allows for a direct TLS response;
+starting on another host (the LAN IP) first moves to the portal address. **Needs from the user:** the Google
+OAuth client (open question 7); they enter it on the Platform page.
 Port `sso.ts`:
 - authorization-code flow with `state` and PKCE, plus `iss` validation (the source has this as an open hardening item)
 - **match existing accounts only** by Google-**verified** email; never auto-create accounts

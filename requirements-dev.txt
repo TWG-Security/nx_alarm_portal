@@ -5,3 +5,4 @@ pytest-asyncio>=0.23
 respx>=0.21
 playwright>=1.45
 pypdf>=4.0
+aiosmtpd>=1.4             # test SMTP sink (invites, resets)

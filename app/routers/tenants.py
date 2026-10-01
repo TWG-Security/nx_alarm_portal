@@ -85,12 +85,16 @@ class TenantIn(BaseModel):
     display_name: str = Field(default="", max_length=200)
     admin_email: str = Field(min_length=3, max_length=320, pattern=r"^[^@\s]+@[^@\s]+$")
     admin_name: str = Field(default="", max_length=200)
-    admin_password: str = Field(min_length=12, max_length=200)
+    admin_password: str = Field(default="", max_length=200)      # "" = invite them by email (a setup link)
 
 
 @router.post("/api/tenants")
 async def create_tenant(body: TenantIn, request: Request, user: User = Depends(require("platform.manage")),
                         db: AsyncSession = Depends(get_db)):
+    from app import invites, passwords
+    from app.models import utcnow
+    if body.admin_password and (problem := passwords.check(body.admin_password)):
+        raise HTTPException(400, problem)
     tenant = Tenant(name=body.name.strip(), display_name=body.display_name.strip(), kind="customer")
     db.add(tenant)
     try:
@@ -98,8 +102,11 @@ async def create_tenant(body: TenantIn, request: Request, user: User = Depends(r
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(409, f"A company named '{body.name}' already exists") from exc
+    now = utcnow()
     admin = User(tenant_id=tenant.id, email=body.admin_email.strip().lower(), display_name=body.admin_name.strip(),
-                 password_hash=hash_password(body.admin_password), role="admin")
+                 password_hash=hash_password(body.admin_password) if body.admin_password else "", role="admin",
+                 password_changed_at=now if body.admin_password else None,
+                 invited_at=None if body.admin_password else now)
     db.add(admin)
     try:
         await db.flush()
@@ -110,8 +117,9 @@ async def create_tenant(body: TenantIn, request: Request, user: User = Depends(r
     audit(db, user.tenant_id, "tenant.created", user_id=user.id, ip=ip, tenant=tenant.name, company_id=tenant.id,
           admin=admin.email)
     audit(db, tenant.id, "tenant.created", user_id=user.id, ip=ip, admin=admin.email)
+    out = await invites.invite(db, admin, tenant, user) if not body.admin_password else {}
     await db.commit()
-    return {"id": tenant.id, "name": tenant.name, "admin_id": admin.id}
+    return {"id": tenant.id, "name": tenant.name, "admin_id": admin.id, **out}
 
 
 class TenantUpdate(BaseModel):

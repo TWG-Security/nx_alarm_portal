@@ -553,3 +553,4 @@ body.signed-out main { opacity: .45; pointer-events: none; }
 #signedout-banner .btn { margin-left: 8px; background: #fff; color: #1A1A1A; border-color: #fff; }
 a.user-label { color: var(--text-muted); text-decoration: none; }
 a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: underline; }
+.btn-google { display: inline-flex; align-items: center; justify-content: center; gap: 10px; margin-top: 8px; text-decoration: none; }

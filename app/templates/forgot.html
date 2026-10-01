@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% block title %}Forgot password{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <div class="card login-card">
+    <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
+    <h1 style="text-align:center">Forgot password</h1>
+    {% if sent %}
+      <div class="alert alert-ok" id="forgot-sent">If <b>{{ email }}</b> has an account, we've emailed it a link to choose a new password. It expires in 30 minutes.</div>
+      <p class="muted">Nothing after a few minutes? Check the spam folder, or ask your administrator: they can send you a link from the Users page.</p>
+      <p class="login-links"><a href="/login">Back to sign in</a></p>
+    {% else %}
+      <p class="muted" style="margin-top:0">Enter your email and we'll send you a link to choose a new password.</p>
+      <form method="post" action="/forgot">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <div class="field"><label for="email">Email</label><input id="email" name="email" type="email" autocomplete="username" required autofocus></div>
+        <button class="btn btn-primary" style="width:100%" type="submit">Email me a link</button>
+      </form>
+      <p class="login-links"><a href="/login">Back to sign in</a></p>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

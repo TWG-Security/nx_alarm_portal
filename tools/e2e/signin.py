@@ -52,7 +52,7 @@ with sync_playwright() as p:
     atk.screenshot(path=f"{out}/signin-blocked.png")
     atk.goto(f"{PORTAL}/login")
     check(atk.locator("#email").count() == 0, "a reload of the sign-in page stays blocked")
-    try_login(atk, "admin@twgsecurity.com", "smoke-test-password-123")
+    try_login(atk, "admin@twgsecurity.com", "Smoke-test-password-123!")
     check(atk.locator("#email").count() == 0 and "/login" in atk.url, "the right password from the banned address is refused too")
 
     # The operator's screen is unaffected: a critical alarm still pops up straight away.
