@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Blocked{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <div class="card login-card">
+    <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
+    <h1 style="text-align:center">Temporarily blocked</h1>
+    <div class="alert alert-error">{{ message }}</div>
+    <p class="muted">Your address: <span class="mono">{{ ip }}</span>{% if until %}<br>Blocked until <span class="mono" id="ban-until" data-until="{{ until }}">{{ until }}</span>{% endif %}</p>
+    <p class="muted" style="margin-bottom:0">If this is a mistake, contact TWG Security. An administrator can unblock this address on the Platform page.</p>
+  </div>
+</div>
+<script>
+  // Show the time in the viewer's own zone.
+  var el = document.getElementById("ban-until");
+  if (el) el.textContent = new Date(el.dataset.until).toLocaleString();
+</script>
+{% endblock %}

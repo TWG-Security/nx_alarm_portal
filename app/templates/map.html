@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="map-layout">
+  <aside class="map-side">
+    <div class="map-side-section">
+      <div class="stat-row">
+        <div class="stat stat--critical"><b id="stat-critical">–</b><span>Critical</span></div>
+        <div class="stat stat--alarm"><b id="stat-alarm">–</b><span>Alarms</span></div>
+        <div class="stat stat--warn"><b id="stat-warn">–</b><span>Warnings</span></div>
+        <div class="stat"><b id="stat-offline">–</b><span>Offline</span></div>
+      </div>
+    </div>
+    <div class="map-side-section" id="site-detail" hidden></div>
+    <div class="map-side-section" style="padding-bottom:6px"><h3>Sites</h3></div>
+    <ul class="site-list" id="site-list"><li class="empty">Loading…</li></ul>
+  </aside>
+  <section class="map-canvas"><div id="map"></div></section>
+  <aside class="feed" aria-label="Live alarms">
+    <div class="feed-head">
+      <h2>Live alarms</h2>
+      <div class="seg feed-tabs" id="feed-tabs" role="group" aria-label="Filter by level">
+        <button type="button" data-p="" class="active">All <span></span></button>
+        <button type="button" data-p="1">Critical <span></span></button>
+        <button type="button" data-p="2">Alarm <span></span></button>
+        <button type="button" data-p="3">Warning <span></span></button>
+      </div>
+      <div class="feed-filter" id="feed-site-filter" hidden></div>
+    </div>
+    <ul class="feed-list" id="feed-list"><li class="empty">Loading…</li></ul>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/map.js') }}"></script>{% endblock %}

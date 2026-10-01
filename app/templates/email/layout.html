@@ -1,0 +1,34 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>{{ subject }}</title></head>
+<body style="margin:0;padding:0;background:#FFFFFF;">
+<span style="display:none;max-height:0;overflow:hidden;opacity:0;">{{ preview }}</span>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#FFFFFF;padding:24px 12px;">
+  <tr><td align="center">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#FFFFFF;">
+      <tr><td align="center" style="border:5px solid #1A1A1A;background:#FFFFFF;padding:22px 16px;">
+        <img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" width="260" height="80" alt="TWG Security" style="display:block;border:0;width:260px;height:80px;">
+      </td></tr>
+      <tr><td style="height:4px;background:#C0392B;font-size:0;line-height:0;">&nbsp;</td></tr>
+      <tr><td style="padding:28px 8px 8px;font-family:Arial,Helvetica,sans-serif;color:#1A1A1A;">
+        <h1 style="margin:0 0 14px;font-family:Arial,Helvetica,sans-serif;font-size:21px;font-weight:bold;color:#1A1A1A;border-left:4px solid #C0392B;padding-left:10px;">{{ heading }}</h1>
+        <div style="font-size:15px;line-height:1.6;color:#1A1A1A;">{{ body }}</div>
+        {% if button %}
+        <table role="presentation" cellpadding="0" cellspacing="0" style="margin:24px 0;">
+          <tr><td style="border-radius:6px;background:#E08A30;">
+            <a href="{{ button.url }}" style="display:inline-block;padding:13px 24px;font-family:Arial,Helvetica,sans-serif;font-weight:bold;font-size:15px;color:#1A1A1A;text-decoration:none;border-radius:6px;">{{ button.label }}</a>
+          </td></tr>
+        </table>
+        <p style="margin:0 0 6px;font-size:12px;color:#5C5C5C;">If the button doesn't work, copy this link into your browser:</p>
+        <p style="margin:0;font-size:12px;word-break:break-all;"><a href="{{ button.url }}" style="color:#1A1A1A;">{{ button.url }}</a></p>
+        {% endif %}
+        {% if footnote %}<p style="margin:20px 0 0;font-size:13px;color:#5C5C5C;line-height:1.5;">{{ footnote }}</p>{% endif %}
+      </td></tr>
+      <tr><td style="padding:18px 8px 0;"><div style="border-top:2px solid #C0392B;font-size:0;line-height:0;">&nbsp;</div></td></tr>
+      <tr><td style="padding:10px 8px 0;font-family:Arial,Helvetica,sans-serif;font-size:11px;color:#5C5C5C;line-height:1.5;">
+        Sent by the TWG Security Alarm Portal · <a href="https://www.twgsecurity.com" style="color:#5C5C5C;">TWGsecurity.com</a><br>
+        If you weren't expecting this email, you can ignore it.
+      </td></tr>
+    </table>
+  </td></tr>
+</table>
+</body></html>

@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}{{ "Edit site" if site else "Add site" }}{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1>{{ "Edit " ~ site.name if site else "Add site" }}</h1><a class="btn" href="/sites">Cancel</a></div>
+  <form id="site-form" class="form-grid" autocomplete="off">
+    <div class="card">
+      <h2>Deployment</h2>
+      <div class="field"><label for="name">Site name</label><input id="name" type="text" required maxlength="200" placeholder="e.g. Bethel Church — Main Campus"></div>
+      <div class="field">
+        <label for="host">Nx Cloud ID or server URL</label>
+        <input id="host" type="text" required maxlength="500" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx">
+        <small>Paste the site's Nx Cloud ID to connect through the vmsproxy relay (https://&lt;id&gt;.relay.vmsproxy.com), or a full https:// address for LAN/VPN sites.</small>
+      </div>
+      <div class="row">
+        <div class="field"><label for="nx_user">NX username</label><input id="nx_user" type="text" required maxlength="200" autocomplete="off"></div>
+        <div class="field"><label for="nx_pass">NX password</label><input id="nx_pass" type="password" maxlength="500" autocomplete="new-password" {{ "" if site else "required" }} placeholder="{{ 'Leave blank to keep current' if site else '' }}"></div>
+      </div>
+      <small class="muted">Use a dedicated NX account for the portal with Viewer + event log + bookmark rights. It must be a target user on rules that force acknowledgement for NX-side acks to succeed.</small>
+      <div class="field" style="margin-top:14px"><label for="notes">Notes</label><textarea id="notes" maxlength="5000" placeholder="Contacts, gate codes, response instructions…"></textarea></div>
+      <div class="row" style="align-items:center">
+        <button type="button" class="btn" id="test-btn">Test connection</button>
+        <button type="submit" class="btn btn-primary" id="save-btn">{{ "Save changes" if site else "Save & connect" }}</button>
+      </div>
+      <div id="conn-result" class="conn-result"></div>
+    </div>
+    <div class="card">
+      <h2>Location</h2>
+      <div class="field">
+        <label for="address">Address</label>
+        <div class="row" style="flex-wrap:nowrap">
+          <input id="address" type="text" maxlength="500" placeholder="Street, city, state">
+          <button type="button" class="btn" id="geocode-btn" style="flex:0 0 auto">Find</button>
+        </div>
+      </div>
+      <div class="pick-map" id="pick-map"></div>
+      <small class="muted">Click the map or drag the pin to set the exact location. Address search by OpenStreetMap Nominatim.</small>
+      <div class="row" style="margin-top:12px">
+        <div class="field"><label for="lat">Latitude</label><input id="lat" type="number" step="any" min="-90" max="90"></div>
+        <div class="field"><label for="lng">Longitude</label><input id="lng" type="number" step="any" min="-180" max="180"></div>
+      </div>
+    </div>
+    <div class="card form-wide">
+      <h2>Arming schedule</h2>
+      <p class="muted" style="margin-top:0">Arm and disarm this site automatically every week. While disarmed, security events are recorded but not raised.
+        System alarms and NX rules tagged <b>#24h</b> always raise. A manual arm or disarm (map or Sites page) holds until the next scheduled time.
+        Saving a schedule never arms or disarms on the spot: it takes over at the next scheduled time.</p>
+      <div id="arm-now" class="arm-line" style="margin-bottom:12px"></div>
+      <div class="field" style="max-width:340px"><label for="timezone">Site time zone</label><select id="timezone"></select>
+        <small>Schedule times are in this zone and follow daylight saving.</small></div>
+      <div class="sched-list" id="sched-rows"></div>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px">
+        <button type="button" class="btn btn-sm" id="sched-add" style="flex:0 0 auto">+ Add time</button>
+        <button type="button" class="btn btn-sm" id="sched-preset" style="flex:0 0 auto">Business hours: disarm 07:00, arm 18:00, Mon–Fri</button>
+      </div>
+      <small class="muted">Changes apply when you click <b>Save changes</b> above.</small>
+    </div>
+  </form>
+</div>
+<script>window.SITE = {{ site | tojson }};</script>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/site_form.js') }}"></script>{% endblock %}

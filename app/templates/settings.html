@@ -1,0 +1,49 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="card branding-card" id="branding-card" hidden>
+    <h2>Company branding</h2>
+    <p class="muted" style="margin-top:0">Shown in your portal's top bar and on your incident reports.</p>
+    <div class="row" style="align-items:flex-end">
+      <div class="field" style="flex:1 1 260px"><label for="b-display">Company name in the portal</label><input id="b-display" type="text" maxlength="200"></div>
+      <button class="btn" id="b-save" type="button" style="flex:0 0 auto;margin-bottom:14px">Save name</button>
+    </div>
+    <div class="field"><label>Logo</label>
+      <div class="logo-edit"><span class="logo-chip"><img id="b-logo" alt="" hidden></span>
+        <input type="file" id="b-file" accept="image/png,image/jpeg,image/webp">
+        <button class="btn btn-sm" type="button" id="b-remove" hidden>Remove logo</button></div>
+      <small>PNG, JPEG or WebP, up to 2 MB, resized to fit 600×160. A wide logo on a white or transparent background works best.</small></div>
+  </div>
+  <div class="card" id="security-card" style="margin-bottom:16px" hidden>
+    <h2>Sign-in security</h2>
+    <label class="check"><input type="checkbox" id="sec-2fa"> Require two-step sign-in for everyone in <span id="sec-company"></span></label>
+    <p class="muted small-print" id="sec-note">Everyone then needs a code from an authenticator app on their phone (or a passkey) when signing in.
+      Anyone who hasn't set it up is walked through it at their next sign-in; nobody already signed in is signed out.</p>
+  </div>
+  <div class="page-head"><h1>Alarm levels</h1><button class="btn btn-primary" id="save-levels" disabled>Save changes</button></div>
+  <div class="level-legend">
+    <div class="card"><span class="chip p1">Critical</span><p>A pop-up on every page and a siren repeating every 4 seconds, until acknowledged or silenced.</p><button class="btn btn-sm" data-test="critical">▶ Test sound</button></div>
+    <div class="card"><span class="chip p2">Alarm</span><p>A red card in the live feed and a chime repeating every 30 seconds, until acknowledged or silenced.</p><button class="btn btn-sm" data-test="alarm">▶ Test sound</button></div>
+    <div class="card"><span class="chip p3">Warning</span><p>An amber card in the live feed and one soft tone when it arrives.</p><button class="btn btn-sm" data-test="warning">▶ Test sound</button></div>
+    <div class="card"><span class="chip">Ignore</span><p>Not stored or shown. The event still appears in NX.</p></div>
+  </div>
+  <div class="card" style="margin-bottom:16px">
+    <h2>Set the level per NX rule</h2>
+    <p>In the NX rule editor, type a tag in <b>Add Title or Comment</b>. The tag overrides everything on this page, for that rule only:
+      <code>#critical</code> · <code>#alarm</code> · <code>#warning</code> · <code>#ignore</code><br>
+      <span class="muted">Example: "Front gate panic button #critical", or "Truss 8 soft trigger test #warning". The portal picks up rule edits within a minute.
+      When several rules fire for the same event, the loudest level wins.</span></p>
+    <p class="muted" style="margin-bottom:0">Priority order: rule tag → Force acknowledgement (below) → event type (table below).</p>
+  </div>
+  <label class="check"><input type="checkbox" id="force-ack"> NX rules with <b>Force acknowledgement</b> are always Critical, whatever their event type</label>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>NX event type</th><th>Kind</th><th style="width:200px">Level</th></tr></thead>
+      <tbody id="level-rows"><tr><td colspan="3" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <p class="muted">Saving also re-levels alarms that are still open. NX only reports events that some NX rule fires on, so an event must be covered by at least one rule (a "Write to log" action is enough) to reach the portal.</p>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/settings.js') }}"></script>{% endblock %}

@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Two-step sign-in{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <div class="card login-card">
+    <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
+    <h1 style="text-align:center">Two-step sign-in</h1>
+    <p class="muted" style="text-align:center;margin-top:0">{{ email }}</p>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    <div id="pk-error"></div>
+    {% if totp %}
+    <form method="post" action="/login/2fa">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <div class="field"><label for="code">Code from your authenticator app</label>
+        <input id="code" name="code" type="text" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9 ]{6,7}" maxlength="7" required autofocus class="code-input"></div>
+      <button class="btn btn-primary" style="width:100%" type="submit">Verify</button>
+    </form>
+    {% endif %}
+    {% if passkeys %}
+    {% if totp %}<div class="login-or" data-passkey-only hidden><span>or</span></div>{% endif %}
+    <button class="btn{{ '' if totp else ' btn-primary' }}" style="width:100%" type="button" id="passkey-login" data-passkey-only hidden>Use a passkey</button>
+    {% if not totp %}<p class="muted" data-passkey-off hidden>Passkeys only work at <b>https://{{ rp_id }}</b>. Open the portal there to sign in.</p>{% endif %}
+    {% endif %}
+    <p class="login-links">{% if totp %}<a href="/login/recovery">Use a recovery code</a> · {% endif %}<a href="/login">Start over</a></p>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}{% if passkeys %}<script type="module" src="{{ asset('js/login.js') }}" data-rp-id="{{ rp_id }}" id="login-js"></script>{% endif %}{% endblock %}

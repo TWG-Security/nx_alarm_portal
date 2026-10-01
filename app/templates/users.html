@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block title %}Users{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1>Users</h1></div>
+  <div class="table-wrap" style="margin-bottom:20px">
+    <table>
+      <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Two-step</th><th>Last sign-in</th><th></th></tr></thead>
+      <tbody id="user-rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+  <div class="card groups-card" style="margin-bottom:20px">
+    <h2>Groups &amp; permissions</h2>
+    <p class="muted" style="margin-top:0">Admins can do everything. Give operators extra rights by putting them in a group.</p>
+    <div id="group-list" class="group-list"><div class="empty muted">Loading…</div></div>
+    <form id="group-form" class="group-form" hidden>
+      <h3 id="group-form-title">New group</h3>
+      <div class="field" style="max-width:360px"><label for="g-name">Group name</label><input id="g-name" type="text" maxlength="100" required placeholder="e.g. Supervisors"></div>
+      <div class="field"><label>Permissions</label><div id="g-perms"></div></div>
+      <div class="field"><label>Members</label><div id="g-members" class="member-grid"></div>
+        <small>Admins already have every permission, so they aren't listed.</small></div>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto">Save group</button>
+        <button class="btn" type="button" id="g-cancel" style="flex:0 0 auto">Cancel</button>
+        <button class="btn btn-danger" type="button" id="g-delete" style="flex:0 0 auto;margin-left:auto" hidden>Delete group</button>
+      </div>
+    </form>
+    <button class="btn" id="g-new" type="button" disabled>+ New group</button>
+  </div>
+  <form class="card" id="user-form" style="max-width:640px">
+    <h2>Add user</h2>
+    <div class="row">
+      <div class="field"><label for="u-email">Email</label><input id="u-email" type="email" required></div>
+      <div class="field"><label for="u-name">Name</label><input id="u-name" type="text"></div>
+    </div>
+    <div class="row">
+      <div class="field"><label for="u-role">Role</label><select id="u-role"><option value="operator">Operator</option><option value="admin">Admin</option></select></div>
+    </div>
+    <div class="field">
+      <label class="radio"><input type="radio" name="u-how" value="invite" checked><span><b>Invite by email</b>
+        <small>They get a link to choose their own password (valid 7 days). You also get the link to pass on yourself.</small></span></label>
+      <label class="radio"><input type="radio" name="u-how" value="password"><span><b>Set a temporary password</b>
+        <small>Give it to them separately; they should change it on their Account page.</small></span></label>
+    </div>
+    <div class="field" id="u-pass-row" hidden><label for="u-pass">Temporary password</label><input id="u-pass" type="password" autocomplete="new-password">
+      <small>At least 12 characters, with upper and lower case, a number and a symbol.</small></div>
+    <div id="u-link"></div>
+    <button class="btn btn-primary" type="submit">Create user</button>
+  </form>
+</div>
+<dialog id="sec-dialog">
+  <div style="width:min(620px, calc(100vw - 48px))">
+    <h2 id="sec-title">Sign-in security</h2>
+    <div id="sec-body"><span class="muted">Loading…</span></div>
+    <div class="dialog-actions"><button class="btn" type="button" id="sec-close">Close</button></div>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/users.js') }}"></script>{% endblock %}

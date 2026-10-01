@@ -1,0 +1,21 @@
+# Serves the portal over HTTPS. "tls internal" uses Caddy's own CA, which is fine on the LAN.
+# With a real DNS name pointing here, drop "tls internal" and Caddy fetches a public certificate.
+{
+	# Browsers send no SNI when connecting by IP address; tell Caddy which certificate to use then.
+	default_sni {$PORTAL_HOST}
+}
+
+# PUBLIC_HOST: the name the Cloudflare Tunnel forwards (it connects to :443 with the tunnel hostname as Host).
+# Caddy answers an unknown Host with an empty 200, which shows as a blank white page.
+{$PORTAL_HOST}, localhost, {$PUBLIC_HOST:alarmportal.twgsecurity.net} {
+	tls internal
+	encode gzip
+	reverse_proxy app:8080 {
+		# Server-Sent Events must not be buffered.
+		flush_interval -1
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+}

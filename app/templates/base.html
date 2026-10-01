@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{ csrf_token }}">
+  <title>{% block title %}Alarm Portal{% endblock %} · TWG Security</title>
+  <script>try { var t = localStorage.getItem("twg-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
+  <link rel="stylesheet" href="{{ asset('vendor/leaflet/leaflet.css') }}">
+  <link rel="stylesheet" href="{{ asset('css/theme.css') }}">
+</head>
+<body>
+{% if user %}
+<header class="topbar">
+  <a class="brand" href="/">
+    {% if brand.logo %}<span class="logo-chip"><img src="{{ brand.logo }}" alt="{{ brand.name }}" height="34"></span>
+    {% elif not brand.powered_by %}<span class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="110" height="34"></span>
+    {% else %}<span class="brand-name">{{ brand.name }}</span>{% endif %}
+    <span class="brand-title">Alarm Portal{% if brand.powered_by %}<small class="powered-by">Powered by TWG Security</small>{% endif %}</span>
+  </a>
+  <nav class="nav">
+    <a href="/" class="{{ 'active' if page == 'map' }}">Map</a>
+    <a href="/alarms" class="{{ 'active' if page == 'alarms' }}">Alarms <span id="nav-alarm-count" class="badge" hidden>0</span></a>
+    <a href="/sites" class="{{ 'active' if page == 'sites' }}">Sites</a>
+    <a href="/audit" class="{{ 'active' if page == 'audit' }}">Audit log</a>
+    {% if user.is_admin and not (scope and scope.mode == 'all') %}<a href="/settings" class="{{ 'active' if page == 'settings' }}">Settings</a>
+    <a href="/users" class="{{ 'active' if page == 'users' }}">Users</a>{% endif %}
+    {% if user.can('platform.view') %}<a href="/companies" class="{{ 'active' if page == 'companies' }}">Companies</a>
+    <a href="/platform" class="{{ 'active' if page == 'platform' }}">Platform</a>{% endif %}
+  </nav>
+  <div class="topbar-actions">
+    {% if user.can('platform.view') %}
+    <select id="scope-switch" class="scope-switch" aria-label="Which company to view" title="Which company you're looking at">
+      <option value="{{ 'own' if scope.mode == 'own' else (scope.tenant_id if scope.tenant else 'all') }}" selected>
+        {{ 'All companies' if scope.mode == 'all' else scope.tenant.label }}</option>
+    </select>{% endif %}
+    <span id="live-status" class="live-status" role="status" title="Connecting to live updates…">Connecting…</span>
+    <button id="silence-btn" class="btn btn-sm btn-silence" type="button" hidden title="Stop repeating alarm sounds for 2 minutes">Silence 2 min</button>
+    <button id="mute-toggle" class="btn icon-btn" type="button" title="Mute alarm sound" aria-label="Mute alarm sound">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path class="sound-on" d="M15.5 8.5a5 5 0 0 1 0 7M18.5 5.5a9 9 0 0 1 0 13"/><path class="sound-off" d="m16 9 6 6m0-6-6 6" hidden/></svg>
+    </button>
+    <button id="theme-toggle" class="btn icon-btn" type="button" title="Toggle light/dark" aria-label="Toggle light or dark theme">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+    <a class="user-label{{ ' active' if page == 'account' }}" href="/account" title="Your account: password, two-step sign-in, passkeys, sessions">{{ user.label }}</a>
+    <form method="post" action="/logout">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <button class="btn btn-sm" type="submit">Sign out</button>
+    </form>
+  </div>
+</header>
+{% if scope and scope.mode != 'own' %}
+<div class="support-banner" role="status">
+  {% if scope.mode == 'all' %}<b>All companies.</b> An overview of every company. Their alarms don't sound or pop up here; {{ user._tenant.label }}'s own still do.
+  {% else %}<b>Support mode: {{ scope.tenant.label }}.</b>
+    {% if user.can('platform.support') %}Anything you change here is recorded in their audit log under your name.{% else %}View only.{% endif %}
+    Their alarms don't sound or pop up here; {{ user._tenant.label }}'s own still do.{% endif %}
+  <button class="btn btn-sm" id="scope-exit" type="button">Back to {{ user._tenant.label }}</button>
+</div>
+{% endif %}
+<div id="signedout-banner" class="conn-banner" role="alert" hidden>
+  <b>SIGNED OUT.</b> This screen is no longer receiving alarms. <a class="btn btn-sm" href="/login?reason=signed_out">Sign in again</a>
+</div>
+<div id="conn-banner" class="conn-banner" role="alert" hidden>
+  <b>LIVE UPDATES LOST.</b> Reconnecting… The portal is checking for alarms every 2 seconds meanwhile. If this stays, reload the page or check the network.
+</div>
+<div id="sound-banner" class="sound-banner" role="button" tabindex="0" hidden>
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5z"/><path d="m16 9 6 6m0-6-6 6"/></svg>
+  <span><b>Alarm sound is off.</b> Your browser blocks sound until you interact with the page. Click anywhere to turn it on.</span>
+</div>
+{% endif %}
+<main>{% block content %}{% endblock %}</main>
+
+<div id="toast-root" aria-live="polite"></div>
+<dialog id="ack-dialog">
+  <form method="dialog" id="ack-form">
+    <h2>Acknowledge alarm</h2>
+    <p id="ack-summary" class="muted"></p>
+    <div class="field">
+      <label for="ack-note">Disposition note</label>
+      <textarea id="ack-note" maxlength="4000" placeholder="What did you see / do? (e.g. verified on camera, false alarm — wildlife)"></textarea>
+    </div>
+    <div class="dialog-actions">
+      <span class="muted ack-as">Acknowledge as</span>
+      <button class="btn" value="cancel" type="button" id="ack-cancel">Cancel</button>
+      <button class="btn btn-verdict-false" value="false" type="submit" id="ack-false">False alarm</button>
+      <button class="btn btn-verdict-real" value="real" type="submit" id="ack-real">Real event</button>
+    </div>
+  </form>
+</dialog>
+
+{% if user %}
+<dialog id="arm-dialog">
+  <form method="dialog" id="arm-form">
+    <h2 id="arm-title">Disarm site</h2>
+    <p id="arm-summary" class="muted"></p>
+    <div class="field">
+      <label for="arm-duration">Re-arm</label>
+      <select id="arm-duration"></select>
+      <small>While disarmed, security events from this site are recorded but not raised. System alarms (site offline, storage, server failure) and NX rules tagged <b>#24h</b> still raise.</small>
+    </div>
+    <div class="field">
+      <label for="arm-note">Note</label>
+      <input id="arm-note" type="text" maxlength="500" placeholder="Who asked and why (e.g. customer on site, cleaning crew)">
+    </div>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" type="button" id="arm-cancel">Cancel</button>
+      <button class="btn btn-primary" value="ok" type="submit" id="arm-submit">Disarm</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="export-dialog">
+  <form method="dialog" id="export-form">
+    <h2>Export incident</h2>
+    <p id="export-summary" class="muted"></p>
+    <div class="field">
+      <label class="radio"><input type="radio" name="export-format" value="pdf" checked>
+        <span><b>Incident report (PDF)</b><small>Summary, timestamps, screenshots with analytics boxes, timeline, operator notes, clip checksum.</small></span></label>
+      <label class="radio"><input type="radio" name="export-format" value="zip">
+        <span><b>Evidence package (ZIP)</b><small>The PDF, the video clip (MP4), full-size stills (original and annotated) and a SHA-256 manifest.</small></span></label>
+    </div>
+    <div class="row">
+      <div class="field"><label for="export-window">Clip window</label><select id="export-window"></select></div>
+      <div class="field"><label for="export-quality">Video</label><select id="export-quality">
+        <option value="sd">Standard (fast)</option><option value="hd">HD 720p (NX converts it, slower)</option></select></div>
+    </div>
+    <div class="field"><label for="export-note">Note for the report (optional)</label>
+      <textarea id="export-note" maxlength="2000" placeholder="e.g. police case number, who asked for it"></textarea></div>
+    <div id="export-status"></div>
+    <div class="dialog-actions">
+      <button class="btn" value="cancel" type="button" id="export-cancel">Close</button>
+      <button class="btn btn-primary" type="submit" id="export-submit">Export</button>
+    </div>
+  </form>
+</dialog>
+<dialog id="critical-dialog" class="critical-dialog" aria-labelledby="crit-title"></dialog>
+<div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
+<aside class="drawer" id="drawer" hidden aria-label="Alarm detail"></aside>
+<script>window.PORTAL = {{ {"user": user.label, "isAdmin": user.is_admin, "perms": user.permissions | sort | list,
+  "tenantId": user.tenant_id, "tenantName": user._tenant.label,
+  "scope": {"mode": scope.mode if scope else "own", "tenantId": scope.tenant_id if scope else user.tenant_id,
+            "tenantIds": (scope.tenant_ids | list) if scope and scope.tenant_ids is not none else none}, "map": map_config, "clip": clip_config, "idleMin": session_config.idleMin} | tojson }};</script>
+<script src="{{ asset('vendor/leaflet/leaflet.js') }}"></script>
+<script type="module" src="{{ asset('js/console.js') }}"></script>
+{% endif %}
+{% block scripts %}{% endblock %}
+</body>
+</html>

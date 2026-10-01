@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Recovery codes{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <div class="card login-card enroll-card">
+    <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
+    <h1 style="text-align:center">Save your recovery codes</h1>
+    <div class="alert alert-ok">Two-step sign-in is on.</div>
+    <p>If you lose your phone, each of these codes signs you in once instead of the app. <b>They're shown only now.</b>
+      Print them or keep them in a password manager.</p>
+    <ul class="recovery-codes mono" id="recovery-codes">{% for c in codes %}<li>{{ c }}</li>{% endfor %}</ul>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <button class="btn btn-sm" type="button" id="copy-codes">Copy</button>
+      <button class="btn btn-sm" type="button" onclick="window.print()">Print</button>
+    </div>
+    <a class="btn btn-primary" style="width:100%" href="{{ next }}">I've saved them, continue</a>
+  </div>
+</div>
+<script>
+  document.getElementById("copy-codes").addEventListener("click", function () {
+    var text = [].map.call(document.querySelectorAll("#recovery-codes li"), function (li) { return li.textContent; }).join("\n");
+    navigator.clipboard.writeText(text).then(function () { document.getElementById("copy-codes").textContent = "Copied"; });
+  });
+</script>
+{% endblock %}

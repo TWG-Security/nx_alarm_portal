@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Alarms{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1>Alarms</h1><span class="muted" id="alarm-count"></span></div>
+  <div class="filters">
+    <div class="seg" id="state-seg" role="group" aria-label="State">
+      <button type="button" data-state="open" class="active">Open</button>
+      <button type="button" data-state="acknowledged">Acknowledged</button>
+      <button type="button" data-state="disarmed" title="Security events received while the site was disarmed (not raised)">While disarmed</button>
+      <button type="button" data-state="all">All</button>
+    </div>
+    <select id="f-site" aria-label="Site"><option value="">All sites</option></select>
+    <select id="f-priority" aria-label="Level">
+      <option value="">All levels</option><option value="1">Critical</option><option value="2">Alarm</option><option value="3">Warning</option>
+    </select>
+    <select id="f-verdict" aria-label="Verdict">
+      <option value="">All verdicts</option><option value="real">Real events</option><option value="false">False alarms</option><option value="none">Not marked</option>
+    </select>
+    <input type="search" id="f-q" placeholder="Search caption, camera, description" aria-label="Search">
+  </div>
+  <div class="bulk-bar" id="bulk-bar" hidden>
+    <label class="bulk-all"><input type="checkbox" id="bulk-all"> Select all shown</label>
+    <span id="bulk-count" class="muted"></span>
+    <span class="bulk-actions">
+      <span class="muted">Mark selected as</span>
+      <button class="btn btn-sm btn-verdict-real" data-bulk="real" disabled>Real event</button>
+      <button class="btn btn-sm btn-verdict-false" data-bulk="false" disabled>False alarm</button>
+      <button class="btn btn-sm" data-bulk="clear" disabled>Clear selection</button>
+    </span>
+  </div>
+  <dialog id="bulk-dialog">
+    <form method="dialog">
+      <h2 id="bulk-title">Bulk edit</h2>
+      <p id="bulk-summary"></p>
+      <div class="field"><label for="bulk-note">Note (recorded on every alarm's audit trail; used as the disposition note on ones it acknowledges)</label>
+        <textarea id="bulk-note" maxlength="4000" placeholder="e.g. Wind storm 14:00-15:30, reviewed on camera"></textarea></div>
+      <div class="dialog-actions">
+        <button class="btn" value="cancel" type="button" id="bulk-cancel">Cancel</button>
+        <button class="btn btn-primary" value="ok" type="submit" id="bulk-apply">Apply</button>
+      </div>
+    </form>
+  </dialog>
+  <ul class="alarm-list" id="alarm-list"><li class="empty">Loading…</li></ul>
+  <div class="list-footer"><button class="btn" id="load-more" hidden>Load more</button></div>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/alarms.js') }}"></script>{% endblock %}
