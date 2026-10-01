@@ -25,16 +25,27 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Delayed or silently missed alarms are unacceptable. Their words: "NEVER, this is going to be critical".** Every change must keep sub-second delivery and loud failure modes. **Test failure paths end to end and measure the latency** before saying something works. Never claim timing you haven't measured.
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
-## Current production state (2026-09-30)
-- **Production runs the latest `feature/base-portal`** (last deploy 2026-10-01, migration 0007):
-  - site arming
+## Current production state (2026-10-01)
+- **Production runs `feature/base-portal` at `4ec5b96`** (deployed 2026-10-01 17:20 UTC, migration 0007; later commits are docs and the backup script only). It includes:
+  - site arming and schedules
   - NX rule health (effective delays)
   - versioned assets
-  - incident export
+  - incident export (PDF/ZIP)
   - verdicts, groups and bulk edit
   - live video beside the recorded clip
   - follow-up notes
-  - multiple companies (TWG is the platform; no customer companies created yet) **Arming was verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
+  - **multiple companies**
+- **Companies:** only **TWG Security** exists (id 1, `kind=platform`). **No customer companies have been created yet.**
+- **Users** (all in TWG):
+  - `msupczenski@twgsecurity.com`: admin, the user
+  - `mike@twgsecurity.com`: admin, Michael Miller, who asked for verdicts, bulk edit and live beside recorded
+  - `e2e-probe@twgsecurity.com`: operator, **deactivated**
+  Both admins hold every `platform.*` permission.
+- **Arming was verified on production:** a Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
+- **Backups:** `tools/backup.sh` runs nightly at **03:15 UTC** (the user's crontab) into `~/backups/nx_alarm_portal/<timestamp>/`, keeping 14. Each run restores the dump into a scratch database to prove it.
+  - First verified backup: `20261001-183149Z` (alarms=230, audit_log=510, sites=2, users=3).
+  - Log: `~/backups/nx_alarm_portal/backup.log`.
+  - **Everything is on this one server**, so an off-server copy (encrypted, since it holds `.env`) is still to do.
 - **NX rule health:** `poller.rule_delays` flags enabled alarm-level rules with `action.intervalS > 0` (NX merges repeats inside the interval and writes them when it ends). The map site panel and Sites page show it, along with "can't read rules".
 - **The Truss 8 rule's "Interval of action" was 60 s** (repeat presses measured 35 s and 60.6 s late). The user OK'd turning it off, and it has been `intervalS: 0` since 2026-09-30. Verified at 18:00 UTC: two presses 1 s apart arrived 15 ms and 23 ms after their timestamps.
 - Sites:
@@ -44,7 +55,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - Admin login: `msupczenski@twgsecurity.com`. The temporary password is in `~/portal-admin-temp-password.txt` (mode 600). The user should change it and delete the file.
 - The user **turned off the camera ONVIF analytics rules** on site 1; only soft triggers remain there.
   The Truss 8 soft trigger rule (id `79239a08-fb91-4b89-a6ca-6562ee72639f`, trigger `256dacab-d698-4a32-b9ec-135ba73ba127`,
-  device `3c78795b-9824-22c1-88ad-cdb477f27197`) is tagged `#warning` and its action is "Write to Log". It's the quiet one to fire for tests.
+  device `3c78795b-9824-22c1-88ad-cdb477f27197`) is tagged **`#alarm`** (the user changed it from `#warning`). Its action is "Write to Log", with "Interval of action" off. It's the one to fire for tests; it chimes as an Alarm in the portal.
 - Measured on production:
   - soft trigger → portal: **87–219 ms**, by push
   - video playing **6.9 s** after the event
@@ -59,7 +70,8 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Area | Files |
 |---|---|
 | Settings (all env/.env) | `app/config.py` |
-| Models: tenants, users, sites, alarms, audit_log | `app/models.py` (every table has `tenant_id`); migrations in `migrations/versions/0001-0003` |
+| Models: tenants, users, groups, sites, alarms, alarm_notes, audit_log | `app/models.py` (every table has `tenant_id`); migrations `migrations/versions/0001-0007` |
+| Backups | `tools/backup.sh` (pg_dump + .env + checksums, restore-verified, rotation) |
 | Alarm levels (critical 1 / alarm 2 / warning 3 / ignore) | `app/services/alarm_filter.py` |
 | NX row → portal fields, captions | `app/services/nx_events.py` |
 | Pollers, ingest, rule `#tags`, rule health (`rule_delays`), site status, "site connection lost" alarm | `app/services/poller.py` |
@@ -86,7 +98,9 @@ JS modules:
 - `drawer.js`: alarm details
 - `player.js`: clip player, timeline and boxes
 - `map.js`: overview with sites, map and live feed
-- `alarms.js`, `sites.js`, `site_form.js`, `settings.js`, `audit.js`, `users.js`
+- `live.js`: live WebM view (drawer side pane, critical pop-up's Live button)
+- `companies.js`: TWG's Companies page
+- `alarms.js` (incl. bulk edit), `sites.js`, `site_form.js` (arming schedule), `settings.js` (incl. company branding), `audit.js`, `users.js` (incl. groups)
 
 ### Multiple companies (tenants)
 - **Platform company:** exactly one tenant has `kind="platform"`: TWG Security (migration 0007 set it to the first tenant). Every other company is `kind="customer"`.
@@ -211,18 +225,23 @@ tools/dev_down.sh
 
 ## Open items / backlog (roughly in priority order)
 1. **Cloudflare Tunnel follow-ups:**
-   - put **Cloudflare Access** (Google Workspace SSO) in front, since the portal is on the internet behind a password only
+   - put **Cloudflare Access** in front, since the portal is on the internet behind a password only. Click-level steps (one-time PIN, policy, 1-week session) were given to the user on 2026-09-30; they haven't confirmed it's done.
+     **A policy limited to `@twgsecurity.com` would lock out customer companies**: add their domains, or allow one-time PIN for any email.
    - audit IPs show the connector's LAN IP: trust it in Caddy and read `CF-Connecting-IP`
-   - item 9 below (a real certificate) is moot for the tunnel path
-2. **Level rules list**: ordered rules matching analytics subtype, site, camera and caption keywords. Arming now covers the "after hours" case; shared schedules across sites aren't built (schedules are per site).
-3. **Warning visibility** (the user said "nothing happened" for a Warning): options offered were a toast on the overview, a louder or longer tone, or flashing the pin amber. No decision yet.
-4. **Site 1 over the LAN** (`https://10.1.29.162:7001`) instead of the relay, to avoid the relay 503s. This is only a suggestion.
-5. **Site 2 NX account**: grant rule-read rights so `#tags` and `#24h` work there.
-6. Zero-downtime deploys. Handle `IntegrityError` on a duplicate `event_key` gracefully first, so two instances could overlap.
-7. Security cleanup:
+   - item 11 below (a real certificate) is moot for the tunnel path
+   - optional: the user can set Cloudflare *Browser Cache TTL* to "Respect Existing Headers" (the portal no longer depends on it)
+2. **First customer company**: nothing to build. Check with the user when they onboard one (Companies → New company); also check Cloudflare Access (item 1).
+3. **Off-server backup copy**: encrypted, e.g. to Google Drive via the TWG gateway, or another host.
+4. **Flaky test to watch**: `tools/e2e/export` failed once in 7 runs on 2026-10-01. Which check failed wasn't captured, and it didn't reproduce. Mid-export alarm latency was always 88–119 ms.
+5. **Level rules list**: ordered rules matching analytics subtype, site, camera and caption keywords. Arming now covers the "after hours" case; shared schedules across sites aren't built (schedules are per site).
+6. **Warning visibility** (the user said "nothing happened" for a Warning): options offered were a toast on the overview, a louder or longer tone, or flashing the pin amber. No decision yet.
+7. **Site 1 over the LAN** (`https://10.1.29.162:7001`) instead of the relay, to avoid the relay 503s. This is only a suggestion.
+8. **Site 2 NX account**: grant rule-read rights so `#tags` and `#24h` work there.
+9. Zero-downtime deploys. Handle `IntegrityError` on a duplicate `event_key` gracefully first, so two instances could overlap.
+10. Security cleanup:
    - replace the classic PAT with the deploy key `~/.ssh/nx_alarm_portal_deploy` (the `Host github-nx-portal` alias is in `~/.ssh/config`; the key isn't added on GitHub yet) or a fine-grained token
    - remove `/etc/sudoers.d/90-twg-claude` when setup is done
    - the user changes the admin password and deletes the temp file
-8. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
-9. Roadmap from the original plan: multi-tenant admin UI, Google Workspace SSO, a claim/escalation workflow and SOPs per site, reports and CSV export, live video (not just snapshot refresh), Postgres backups, a UI for per-site level overrides.
-10. Merge PR #1 once the user is happy.
+11. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
+12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
+13. Merge PR #1 once the user is happy. It's large: base portal plus everything since. The user hasn't asked to merge yet.

@@ -25,13 +25,26 @@ One place where TWG Security operators see alarms from every NX Witness deployme
 - **Alarm video**:
   - Every alarm opens with a looping clip from 10 s before to 20 s after, in the details drawer and in the critical pop-up.
   - The timeline shows an alarm marker and marks where analytics objects were present.
-  - Controls: play/pause, 0.1 s frame steps (← →), 0.25×–4× speed, jump to the alarm, widening the window 15 s earlier or later (up to 5 min), HD, live view and download.
+  - Controls: play/pause, 0.1 s frame steps (← →), 0.25×–4× speed, jump to the alarm, widening the window 15 s earlier or later (up to 5 min), HD and download.
+  - **Live video beside the recorded clip** in the alarm drawer (NX's WebM stream relayed by the portal, ~0.8 Mbit/s, first frame in about 1 s). It falls back to stills if the stream fails.
   - **Analytics bounding boxes** are drawn over the video in sync, labeled with the object type and its first attribute. The event's own object is red; other objects in the clip are orange.
   - Clips for Critical and Alarm events are pre-built as soon as the footage exists, so they open instantly.
-- **Acknowledge + log**: the operator writes a disposition note and clicks Acknowledge. The portal writes the ack back to NX (either clearing a forced-acknowledgement notification or adding a bookmark), and every step goes into an append-only audit log.
+- **Acknowledge as Real event or False alarm**, with a disposition note.
+  - The portal writes the ack back to NX, either clearing a forced-acknowledgement notification or adding a bookmark.
+  - **Follow-up notes** can be added to any alarm afterwards. They're append-only and shown live to other operators.
+  - Everything goes into an append-only audit log.
+- **Bulk edit (admin override)**: mark many alarms real or false at once. Admins can do this, and so can any user group granted it on the Users page (**groups & permissions**).
+- **Incident export**: a TWG-branded **PDF report** (summary, site-time and UTC timestamps, screenshots with analytics boxes, timeline, operator notes, clip checksum). An **evidence package (ZIP)** adds the MP4 clip, stills and a SHA-256 manifest.
+- **Arm / disarm per site**, by hand (with an optional auto re-arm) or on a **weekly schedule** in the site's time zone.
+  - While a site is disarmed, security events are recorded but not raised. System alarms and NX rules tagged `#24h` still raise.
+  - The armed state is computed when each alarm arrives, so a scheduled arm can't be missed.
+- **NX rule health**: flags NX rules whose "Interval of action" delays repeat alarms, and sites whose portal account can't read rules.
 - **Add sites through the vmsproxy relay**: enter the site's Nx Cloud ID, the credentials and a map pin, then click **Connect**.
 - Dark mode is the default; a light theme is available.
-- Every table is tenant-scoped, so the portal is ready to go multi-tenant later.
+- **Multiple companies**: other security companies get their own portal at the same address, with their own name and logo ("Powered by TWG Security"). They see only their own data.
+  - TWG staff switch between their own company, **All companies** (overview) and one company (**support mode**, logged in that company's audit trail).
+  - Other companies' alarms never sound on TWG's screens; TWG's own always do.
+  - The **Companies** page creates companies and their first admin, shows each one's health, and turns sign-in on or off.
 
 ## How it works
 
@@ -129,6 +142,12 @@ Open `https://<PORTAL_HOST>`. Caddy serves it with its own internal certificate,
 
 **Run a single app worker.** The pollers and the live-update bus run inside the process.
 
+**Backups**: `tools/backup.sh` saves the database (`pg_dump`), `.env` (its `FERNET_KEY` decrypts the stored NX passwords) and checksums to `~/backups/nx_alarm_portal/<timestamp>/`.
+- Each run proves the dump by restoring it into a scratch database and comparing row counts.
+- It keeps the newest 14 (`KEEP`), and cron runs it nightly.
+- To restore: `docker compose stop app`, then `docker compose exec -T db pg_restore -U portal -d portal --clean --if-exists < portal.dump`, then put `env.backup` back as `.env`.
+- The backups hold secrets (mode 700/600). Keep any off-server copy encrypted.
+
 ## Develop
 
 ```bash
@@ -145,4 +164,4 @@ For browser testing without a real NX site, run the fake NX server in `tools/fak
 
 ## Roadmap (not in this base)
 
-Tenant admin UI and tenant switching · Google Workspace SSO · recorded clip playback and live video · claim/escalation workflow and SOPs per site · reports and CSV export · NX "HTTP request" webhooks to cut latency below the poll interval · multi-worker bus (Postgres LISTEN/NOTIFY)
+Cloudflare Access / Google Workspace SSO · per-company subdomains · claim/escalation workflow and SOPs per site · reports and CSV export · level rules by camera/keyword · multi-worker bus (Postgres LISTEN/NOTIFY) for zero-downtime deploys

@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Backups**: `tools/backup.sh` saves the database dump, `.env` and checksums. Each run is verified by restoring into a scratch database and comparing row counts, and rotation keeps 14. Cron runs it nightly at 03:15 UTC.
 - **Multiple companies:**
   - Other security companies get their own portal at the same address. They see only their own sites, alarms, users, groups, settings and audit log, with their name and logo ("Powered by TWG Security").
   - **TWG's views:** a top-bar company switcher with your own company, **All companies** (overview of every company's sites and alarms, labelled by company) or one company (**support mode**, with a banner).
