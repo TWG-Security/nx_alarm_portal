@@ -256,7 +256,12 @@ tools/dev_down.sh
 - Commits end with the attribution lines from the session's system reminder. Branch `feature/base-portal`.
 
 ## Open items / backlog (roughly in priority order)
-0. **NEXT UP: [`BACKLOG.md`](BACKLOG.md).** The user decided on 2026-10-01 to port account security from `TWG-Security/MCP-Control-Platform` @ `b17a07a` (local copy in `~/src/MCP-Control-Platform`):
+0. **READY TO DEPLOY (not deployed): `a9b9537`**, i.e. all 4 phases of BACKLOG.md (sign-in protection + Cloudflare, 2FA/passkeys/sessions, email/invites/resets/password rules, Google sign-in; migrations 0008-0011). Tell the user first. Existing sessions are adopted (screens stay signed in). After `docker compose up -d --build app`:
+   - `docker compose exec -T app python -m app.cli trust-proxy --ip 10.0.2.58` (the tunnel connector, verified 2026-10-01)
+   - `docker compose exec -T app python -m app.cli allow-ip --ip 204.186.88.58 --label "TWG office"` once the user confirms that's the office's public IP (it's this server's)
+   - check the Platform page "Your address" through the tunnel shows a public IP, not 10.0.2.58
+   - still open from the user: SNMP (q1), 2FA scope (q2, defaults: off, each company decides), SMTP mailbox (q3), Cloudflare token + Zone ID (q4), Google OAuth client (q7)
+   Earlier plan, for reference: [`BACKLOG.md`](BACKLOG.md). The user decided on 2026-10-01 to port account security from `TWG-Security/MCP-Control-Platform` @ `b17a07a` (local copy in `~/src/MCP-Control-Platform`):
    - sign-in attack protection and Cloudflare edge bans
    - 2FA (TOTP, passkeys, recovery codes, mandatory 2FA)
    - sessions
