@@ -26,10 +26,11 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import inch
+from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas as rl_canvas
 from reportlab.platypus import Image as RLImage
 from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from xml.sax.saxutils import escape
 
@@ -307,9 +308,10 @@ class _NumberedCanvas(rl_canvas.Canvas):
     def _decorate(self, total: int) -> None:
         h = self.header
         w, ht = letter
-        if LOGO.exists():
-            self.drawImage(str(LOGO), 0.6 * inch, ht - 0.85 * inch, width=1.5 * inch, height=0.46 * inch,
-                           mask="auto", preserveAspectRatio=True)
+        logo = ImageReader(io.BytesIO(h["logo"])) if h.get("logo") else (str(LOGO) if LOGO.exists() else None)
+        if logo:
+            self.drawImage(logo, 0.6 * inch, ht - 0.85 * inch, width=1.5 * inch, height=0.46 * inch,
+                           mask="auto", preserveAspectRatio=True, anchor="w")
         self.setFillColor(INK)
         self.setFont("Helvetica-Bold", 11)
         self.drawRightString(w - 0.6 * inch, ht - 0.58 * inch, "INCIDENT REPORT")
@@ -324,7 +326,7 @@ class _NumberedCanvas(rl_canvas.Canvas):
         self.line(0.6 * inch, 0.62 * inch, w - 0.6 * inch, 0.62 * inch)
         self.setFont("Helvetica", 7.5)
         self.setFillColor(MUTED)
-        self.drawString(0.6 * inch, 0.47 * inch, "TWG Security · Confidential: contains security video evidence")
+        self.drawString(0.6 * inch, 0.47 * inch, f"{h.get('company', 'TWG Security')} · Confidential: contains security video evidence")
         self.drawString(0.6 * inch, 0.33 * inch, h.get("generated", ""))
         self.drawRightString(w - 0.6 * inch, 0.47 * inch, f"Page {self._pageNumber} of {total}")
 
@@ -441,7 +443,11 @@ def build_pdf(alarm: Alarm, ev: Evidence, events: list[dict], user: User, note: 
         story += [_h2("Notes on this export", st)] + [_p("• " + p, st["base"]) for p in ev.problems]
 
     buf = io.BytesIO()
-    _NumberedCanvas.header = {"ref": ref, "generated": f"Generated {_fmt(now_ms, tz)} by {user.label}"}
+    tenant = site.tenant if site is not None and "tenant" not in inspect(site).unloaded else None
+    company = tenant.label if tenant else "TWG Security"
+    powered = "" if tenant is None or tenant.is_platform else " · TWG Alarm Portal"
+    _NumberedCanvas.header = {"ref": ref, "generated": f"Generated {_fmt(now_ms, tz)} by {user.label}{powered}",
+                              "company": company, "logo": tenant.logo if tenant is not None and tenant.logo else None}
     doc = SimpleDocTemplate(buf, pagesize=letter, leftMargin=0.6 * inch, rightMargin=0.6 * inch,
                             topMargin=1.15 * inch, bottomMargin=0.85 * inch,
                             title=f"Incident report: alarm {alarm.id}", author="TWG Security", subject=alarm.caption)

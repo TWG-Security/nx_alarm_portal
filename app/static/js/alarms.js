@@ -1,4 +1,4 @@
-import { api, esc, fmtTime, relTime, timerHtml, on, openAck, toast, PRIORITY, VERDICT, verdictChip, can } from "./common.js";
+import { api, esc, fmtTime, relTime, timerHtml, on, openAck, toast, PRIORITY, VERDICT, verdictChip, can, inView, tenantTag } from "./common.js";
 import { openDrawer } from "./drawer.js";
 
 const params = new URLSearchParams(location.search);
@@ -22,6 +22,7 @@ function syncUrl() {
 }
 
 function matches(a) {
+  if (!inView(a)) return false;              // the store also carries your own company's alarms
   if (filt.state === "open" && a.state !== "new") return false;
   if ((filt.state === "acknowledged" || filt.state === "disarmed") && a.state !== filt.state) return false;
   if (filt.site_id && String(a.site_id) !== filt.site_id) return false;
@@ -42,7 +43,7 @@ function rowHtml(a) {
     <span class="stripe"></span>${box}
     <div>
       <div class="title">${esc(a.caption)}</div>
-      <div class="meta"><span><b>${esc(a.site_name)}</b></span>${a.source_name ? `<span>${esc(a.source_name)}</span>` : ""}<span>${fmtTime(a.event_ts_ms)}</span></div>
+      <div class="meta">${tenantTag(a)}<span><b>${esc(a.site_name)}</b></span>${a.source_name ? `<span>${esc(a.source_name)}</span>` : ""}<span>${fmtTime(a.event_ts_ms)}</span></div>
     </div>
     <div class="right">${verdictChip(a)}<span class="chip p${a.priority}">${PRIORITY[a.priority]}</span><span class="chip disarmed" title="Received while the site was disarmed, so it was recorded but not raised">Site disarmed</span></div>
   </li>`;
@@ -52,7 +53,7 @@ function rowHtml(a) {
     <div>
       <div class="title">${esc(a.caption)}</div>
       <div class="meta">
-        <span><b>${esc(a.site_name)}</b></span>
+        ${tenantTag(a)}<span><b>${esc(a.site_name)}</b></span>
         ${a.source_name ? `<span>${esc(a.source_name)}</span>` : ""}
         <span>${fmtTime(a.event_ts_ms)}</span>
         ${acked ? `<span>Acknowledged by ${esc(a.acked_by || "—")} · ${relTime(a.acked_at)}</span>` : ""}

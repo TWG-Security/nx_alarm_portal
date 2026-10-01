@@ -10,16 +10,21 @@ from dataclasses import dataclass, field
 
 @dataclass(eq=False)
 class Subscriber:
-    tenant_id: int
+    tenant_ids: frozenset[int] | None          # None = every company (TWG's All companies view)
     queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=500))
+
+    def wants(self, tenant_id: int) -> bool:
+        return self.tenant_ids is None or tenant_id in self.tenant_ids
 
 
 class Bus:
     def __init__(self) -> None:
         self._subs: set[Subscriber] = set()
 
-    def subscribe(self, tenant_id: int) -> Subscriber:
-        sub = Subscriber(tenant_id)
+    def subscribe(self, tenant_ids) -> Subscriber:
+        """tenant_ids: one company id, a set of them, or None for all companies."""
+        ids = None if tenant_ids is None else frozenset({tenant_ids} if isinstance(tenant_ids, int) else tenant_ids)
+        sub = Subscriber(ids)
         self._subs.add(sub)
         return sub
 
@@ -28,7 +33,7 @@ class Bus:
 
     def publish(self, tenant_id: int, event: str, data: dict) -> None:
         for sub in list(self._subs):
-            if sub.tenant_id != tenant_id:
+            if not sub.wants(tenant_id):
                 continue
             try:
                 sub.queue.put_nowait((event, data))

@@ -3,6 +3,15 @@
 ## [Unreleased]
 
 ### Added
+- **Multiple companies:**
+  - Other security companies get their own portal at the same address. They see only their own sites, alarms, users, groups, settings and audit log, with their name and logo ("Powered by TWG Security").
+  - **TWG's views:** a top-bar company switcher with your own company, **All companies** (overview of every company's sites and alarms, labelled by company) or one company (**support mode**, with a banner).
+  - **Support actions** need `platform.support` and are recorded in that company's audit log, marked "TWG support".
+  - **Who hears what:** other companies' alarms never sound or pop up on TWG's screens, but TWG's own alarms keep sounding while TWG views another company.
+  - **Companies page:** every company's sites (offline/disarmed), open alarms, users and last alarm. Create a company with its first admin, upload its logo, and turn its sign-in on or off. Turning sign-in off ends sessions, but its sites stay monitored.
+  - Customer admins brand their own portal under Settings. Incident PDFs carry the company's logo.
+  - New permissions `platform.view`, `platform.support` and `platform.manage`, which exist only in TWG.
+  - `app.cli create-tenant` (migration 0007).
 - **Follow-up notes** on any alarm, open or closed: "Notes" in the alarm drawer, with author and time, and Ctrl+Enter to add.
   - Append-only (never edited or deleted), audit-logged, and pushed live to other operators' drawers.
   - Included in the PDF report (Operator notes and timeline) and the evidence package manifest (migration 0006).

@@ -60,6 +60,16 @@ setInterval(() => {
 
 export const PRIORITY = { 1: "Critical", 2: "Alarm", 3: "Warning" };
 export const can = (perm) => (CFG.perms || []).includes(perm);
+
+// ---------------------------------------------------------------- companies (app/scope.py)
+// The open-alarm store holds the companies in view plus your own; what's shown follows the view,
+// while sound and critical pop-ups follow only your own company's alarms.
+const SCOPE = CFG.scope || { mode: "own", tenantIds: null };
+export const isMine = (a) => a.tenant_id === undefined || a.tenant_id === CFG.tenantId;
+export const inView = (a) => SCOPE.mode === "all" || !SCOPE.tenantIds || a.tenant_id === undefined || SCOPE.tenantIds.includes(a.tenant_id);
+export const multiCompany = SCOPE.mode === "all";
+// A small company label, shown wherever several companies can appear at once.
+export const tenantTag = (x) => (multiCompany && x?.tenant_name ? `<span class="chip tenant-chip" title="Company">${esc(x.tenant_name)}</span>` : "");
 // The operator's call on an event (app/services/ack.py VERDICTS).
 export const VERDICT = { real: "Real event", false: "False alarm" };
 export const verdictChip = (a) => a.verdict ? `<span class="chip verdict-${a.verdict}" title="${a.verdict_by ? `Marked by ${esc(a.verdict_by)}` : ""}">${VERDICT[a.verdict]}</span>` : "";
@@ -87,7 +97,7 @@ export const openAlarms = new Map();
 let storeLoaded = false;
 const CATCH_UP_MS = 15 * 60 * 1000;   // alarms newer than this found by a resync are raised like live ones
 export async function loadOpenAlarms() {
-  const rows = await api("/api/alarms?state=open&limit=500");
+  const rows = await api("/api/alarms?state=open&limit=500&alerting=1");
   const known = new Set(openAlarms.keys());
   openAlarms.clear();
   rows.forEach((a) => openAlarms.set(a.id, a));
@@ -100,9 +110,16 @@ export async function loadOpenAlarms() {
   }
   storeLoaded = true;
 }
+// Open alarms in view (optionally for one site).
 export function openCounts(siteId) {
   const c = { 1: 0, 2: 0, 3: 0 };
-  for (const a of openAlarms.values()) if (siteId === undefined || a.site_id === siteId) c[a.priority]++;
+  for (const a of openAlarms.values()) if (inView(a) && (siteId === undefined || a.site_id === siteId)) c[a.priority]++;
+  return c;
+}
+// Open alarms of your own company: these drive the siren and chime.
+export function mineCounts() {
+  const c = { 1: 0, 2: 0, 3: 0 };
+  for (const a of openAlarms.values()) if (isMine(a)) c[a.priority]++;
   return c;
 }
 
@@ -270,6 +287,23 @@ export async function acknowledge(id, note, button, verdict = "") {
     if (button) button.disabled = false;
   }
 }
+
+// ---------------------------------------------------------------- company switcher (TWG staff)
+async function setScope(value) {
+  try { await api("/api/scope", { method: "POST", body: { scope: String(value) } }); location.href = location.pathname === "/companies" ? "/companies" : "/"; }
+  catch (e) { toast(esc(e.message), { kind: "error" }); }
+}
+const switcher = document.getElementById("scope-switch");
+if (switcher) {
+  const current = switcher.value;
+  api("/api/tenants").then((rows) => {
+    switcher.innerHTML = rows.map((t) => `<option value="${t.own ? "own" : t.id}">${esc(t.label)}${t.own ? " (yours)" : t.is_active ? "" : " (sign-in off)"}</option>`).join("")
+      + '<option value="all">All companies</option>';
+    switcher.value = current;
+  }).catch(() => {});
+  switcher.addEventListener("change", () => setScope(switcher.value));
+}
+document.getElementById("scope-exit")?.addEventListener("click", () => setScope("own"));
 
 // ---------------------------------------------------------------- theme
 export const currentTheme = () => document.documentElement.dataset.theme === "light" ? "light" : "dark";

@@ -26,14 +26,15 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
 ## Current production state (2026-09-30)
-- **Production runs the latest `feature/base-portal`** (last deploy 2026-10-01, migration 0006):
+- **Production runs the latest `feature/base-portal`** (last deploy 2026-10-01, migration 0007):
   - site arming
   - NX rule health (effective delays)
   - versioned assets
   - incident export
   - verdicts, groups and bulk edit
   - live video beside the recorded clip
-  - follow-up notes **Arming was verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
+  - follow-up notes
+  - multiple companies (TWG is the platform; no customer companies created yet) **Arming was verified on production.** A Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
 - **NX rule health:** `poller.rule_delays` flags enabled alarm-level rules with `action.intervalS > 0` (NX merges repeats inside the interval and writes them when it ends). The map site panel and Sites page show it, along with "can't read rules".
 - **The Truss 8 rule's "Interval of action" was 60 s** (repeat presses measured 35 s and 60.6 s late). The user OK'd turning it off, and it has been `intervalS: 0` since 2026-09-30. Verified at 18:00 UTC: two presses 1 s apart arrived 15 ms and 23 ms after their timestamps.
 - Sites:
@@ -65,6 +66,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | NX push (JSON-RPC websocket) | `app/services/push.py` |
 | Acknowledge + NX write-back (forced-ack clear or bookmark) | `app/services/ack.py` |
 | Follow-up notes (append-only) | `alarm_notes` (migration 0006), `GET/POST /api/alarms/{id}/notes`, bus event `alarm.note`; drawer "Notes"; in PDF/ZIP |
+| Companies / tenancy | `app/scope.py` (`Scope`, `get_scope`), `app/routers/tenants.py` (`/api/scope`, `/api/tenants`, logo, `/branding/{id}/logo`), `templates/companies.html` + `js/companies.js`; tests `tests/test_tenancy.py`, e2e `tools/e2e/tenancy.py` |
 | Verdicts (real / false), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`) |
 | Groups & permissions | `app/permissions.py` (catalog, `require()`), `user_groups` / `user_group_members` (migration 0005), `/api/groups`; `deps.current_user` loads `user._perms`, pages get `CFG.perms` |
 | Live video | `GET /media/alarms/{id}/live.webm`: relays NX `/media/<dev>.webm?resolution=640x360` (≤6 per site, 20 min cap, commits the DB session first so no connection is pinned); `static/js/live.js` |
@@ -85,6 +87,22 @@ JS modules:
 - `player.js`: clip player, timeline and boxes
 - `map.js`: overview with sites, map and live feed
 - `alarms.js`, `sites.js`, `site_form.js`, `settings.js`, `audit.js`, `users.js`
+
+### Multiple companies (tenants)
+- **Platform company:** exactly one tenant has `kind="platform"`: TWG Security (migration 0007 set it to the first tenant). Every other company is `kind="customer"`.
+- **Same address for everyone:** the login decides the company. The user chose this over per-company subdomains.
+- **Customers** see only their own data. TWG staff with **`platform.view`** pick a view from the top-bar switcher (`POST /api/scope`, stored in the session):
+  - their own company (the default)
+  - **All companies**: read-only overview; per-company pages (settings, users, groups) and creates need a single company
+  - **one company** (support mode)
+- **Writing into another company** needs **`platform.support`** and is audit-logged in **that company's** log under the TWG user's name, shown there with a "TWG support" chip. Opening a company logs `support.viewed`.
+- **`platform.manage`** creates companies (with their first admin), sets branding, and turns sign-in on or off.
+- **Platform permissions are TWG-only:** `platform.*` only exist in the platform tenant. A customer's admins don't get them and its groups can't grant them (`permissions.applicable`).
+- **The isolation rule for all new code:** every query filters with `Scope.where(Model.tenant_id)` (`app/scope.py`), and every write calls `scope.require_write(obj.tenant_id)` or `scope.write_tenant()`. Never use `user.tenant_id` for data access. `tests/test_tenancy.py` hits every endpoint across companies and expects 404; **add new endpoints to it**.
+- **Alerting (the user's decision):** other companies' alarms are shown but **never sound or pop up**. The open-alarm store (`/api/alarms?alerting=1`) and the SSE subscription always include the user's own company, so **TWG's own alarms keep sounding while TWG views another company**. In the browser this is `isMine` (sound, critical pop-up) versus `inView` (display) in `common.js`.
+- **Disabling a company** blocks its sign-in and ends open sessions, but **its sites keep being monitored** (pollers are untouched).
+- **Branding:** `tenants.display_name` and `logo` (uploads re-encoded to PNG ≤600×160, never served as uploaded). They're used in the top bar ("Powered by TWG Security" for customers) and on incident PDFs. A customer's own admin edits them under Settings → Company branding.
+- `python -m app.cli create-tenant --name … --admin-email …` creates a company from the shell.
 
 ### How an alarm's level is decided (first match wins)
 1. A `#critical` / `#alarm` / `#warning` / `#ignore` tag in the NX rule's Title/Comment. Rules are re-read every 60 s, and still-open alarms are re-levelled.
@@ -171,13 +189,14 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 68 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 76 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.arming   # ~3 min: disarm/arm UI, suppression, #24h, timer, schedule
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.export /tmp      # export ZIP from the drawer, checksums, alarm latency mid-export
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.verdicts /tmp    # live beside recorded, verdict buttons, groups, operator bulk edit
+tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
 ```

@@ -11,6 +11,8 @@ const alarmId = params.get("alarm_id");
 const LABELS = {
   "alarm.received": "Alarm received", "alarm.acknowledged": "Alarm acknowledged",
   "site.created": "Site added", "site.updated": "Site edited", "site.enabled": "Site enabled", "site.disabled": "Site disabled",
+  "support.viewed": "TWG support opened this company", "tenant.created": "Company created", "tenant.updated": "Company edited", "tenant.logo": "Logo changed",
+  "group.created": "Group created", "group.updated": "Group edited", "group.deleted": "Group deleted",
   "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
   login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited",
 };
@@ -43,7 +45,7 @@ function render() {
   tbody.innerHTML = rows.length ? rows.map((r) => `<tr>
       <td style="white-space:nowrap">${fmtTime(r.ts)}</td>
       <td>${esc(LABELS[r.action] || r.action)}</td>
-      <td>${esc(r.user)}</td>
+      <td>${esc(r.user)}${r.support ? ' <span class="chip support-chip" title="Done by TWG Security staff supporting this company">TWG support</span>' : ""}</td>
       <td>${esc(r.site_name || "")}</td>
       <td>${details(r)}</td></tr>`).join("")
     : '<tr><td colspan="5" class="empty">No audit entries match.</td></tr>';

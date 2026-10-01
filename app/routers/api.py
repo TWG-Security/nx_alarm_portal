@@ -16,7 +16,8 @@ from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, current_user, require_admin
 from app.models import Alarm, AlarmNote, AuditLog, Site, Tenant, User, UserGroup, UserGroupMember
-from app.permissions import PERMISSIONS, require
+from app.permissions import applicable, require
+from app.scope import Scope, get_scope
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
@@ -58,11 +59,11 @@ class ConnTest(BaseModel):
     site_id: int | None = None
 
 
-async def _open_counts(db: AsyncSession, tenant_id: int) -> dict[int, dict[int, int]]:
-    """{site_id: {priority: open_count}}"""
+async def _open_counts(db: AsyncSession, scope: Scope) -> dict[int, dict[int, int]]:
+    """{site_id: {priority: open_count}} for the companies in view."""
     rows = await db.execute(
         select(Alarm.site_id, Alarm.priority, func.count())
-        .where(Alarm.tenant_id == tenant_id, Alarm.state == "new")
+        .where(scope.where(Alarm.tenant_id), Alarm.state == "new")
         .group_by(Alarm.site_id, Alarm.priority)
     )
     out: dict[int, dict[int, int]] = {}
@@ -71,11 +72,17 @@ async def _open_counts(db: AsyncSession, tenant_id: int) -> dict[int, dict[int, 
     return out
 
 
-async def _get_site(db: AsyncSession, user: User, site_id: int) -> Site:
-    site = await db.scalar(select(Site).where(Site.id == site_id, Site.tenant_id == user.tenant_id))
+async def _get_site(db: AsyncSession, scope: Scope, site_id: int, write: bool = False) -> Site:
+    site = await db.scalar(select(Site).where(Site.id == site_id, scope.where(Site.tenant_id)))
     if site is None:
         raise HTTPException(404, "Site not found")
+    if write:
+        scope.require_write(site.tenant_id)
     return site
+
+
+def _site_out(site: Site, counts: dict) -> dict:
+    return {**site_dict(site, counts.get(site.id)), "push": manager.push_state(site.id), **manager.rule_info(site.id)}
 
 
 def _apply_arming_settings(site: Site, body: SiteIn, user: User) -> list[str]:
@@ -114,23 +121,24 @@ async def _probe(host: str, nx_user: str, nx_pass: str) -> dict:
 
 
 @router.get("/sites")
-async def list_sites(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+async def list_sites(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     sites = (await db.scalars(
-        select(Site).where(Site.tenant_id == user.tenant_id, Site.archived_at.is_(None)).order_by(Site.name)
+        select(Site).where(scope.where(Site.tenant_id), Site.archived_at.is_(None)).order_by(Site.name)
     )).all()
-    counts = await _open_counts(db, user.tenant_id)
-    return [{**site_dict(s, counts.get(s.id)), "push": manager.push_state(s.id), **manager.rule_info(s.id)} for s in sites]
+    counts = await _open_counts(db, scope)
+    return [_site_out(s, counts) for s in sites]
 
 
 @router.post("/sites/test")
-async def test_connection(body: ConnTest, user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+async def test_connection(body: ConnTest, user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                          db: AsyncSession = Depends(get_db)):
     try:
         host, _ = resolve_host(body.host)
     except ValueError as exc:
         raise HTTPException(400, {"message": str(exc)}) from exc
     password = body.nx_pass
     if not password and body.site_id:
-        password = decrypt((await _get_site(db, user, body.site_id)).nx_pass_enc)
+        password = decrypt((await _get_site(db, scope, body.site_id, write=True)).nx_pass_enc)
     info = await _probe(host, body.nx_user, password)
     info.pop("devices", None)
     return {"host": host, **info}
@@ -138,14 +146,15 @@ async def test_connection(body: ConnTest, user: User = Depends(require_admin), d
 
 @router.post("/sites")
 async def create_site(body: SiteIn, request: Request, user: User = Depends(require_admin),
-                      db: AsyncSession = Depends(get_db)):
+                      scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    tenant_id = scope.write_tenant()
     try:
         host, cloud_id = resolve_host(body.host)
     except ValueError as exc:
         raise HTTPException(400, {"message": str(exc)}) from exc
     if not body.nx_pass:
         raise HTTPException(400, {"message": "NX password is required"})
-    site = Site(tenant_id=user.tenant_id, name=body.name, host=host, cloud_id=cloud_id, nx_user=body.nx_user,
+    site = Site(tenant_id=tenant_id, name=body.name, host=host, cloud_id=cloud_id, nx_user=body.nx_user,
                 nx_pass_enc=encrypt(body.nx_pass), address=body.address, lat=body.lat, lng=body.lng,
                 notes=body.notes)
     _apply_arming_settings(site, body, user)
@@ -163,19 +172,20 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(409, {"message": f"A site named '{body.name}' already exists"}) from exc
-    audit(db, user.tenant_id, "site.created", user_id=user.id, site_id=site.id, ip=client_ip(request),
+    audit(db, tenant_id, "site.created", user_id=user.id, site_id=site.id, ip=client_ip(request),
           name=site.name, host=host, connected=body.connect)
     await db.commit()
+    await db.refresh(site)
     manager.start(site)
     data = site_dict(site)
-    bus.publish(user.tenant_id, "site.updated", data)
+    bus.publish(tenant_id, "site.updated", data)
     return data
 
 
 @router.put("/sites/{site_id}")
 async def update_site(site_id: int, body: SiteIn, request: Request, user: User = Depends(require_admin),
-                      db: AsyncSession = Depends(get_db)):
-    site = await _get_site(db, user, site_id)
+                      scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    site = await _get_site(db, scope, site_id, write=True)
     try:
         host, cloud_id = resolve_host(body.host)
     except ValueError as exc:
@@ -195,7 +205,7 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
     site.name, site.host, site.cloud_id, site.nx_user = body.name, host, cloud_id, body.nx_user
     site.nx_pass_enc = encrypt(password)
     site.address, site.lat, site.lng, site.notes = body.address, body.lat, body.lng, body.notes
-    audit(db, user.tenant_id, "site.updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
+    audit(db, site.tenant_id, "site.updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -203,9 +213,8 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
         raise HTTPException(409, {"message": f"A site named '{body.name}' already exists"}) from exc
     if creds_changed:
         await manager.restart(site)
-    counts = await _open_counts(db, user.tenant_id)
-    data = site_dict(site, counts.get(site.id))
-    bus.publish(user.tenant_id, "site.updated", data)
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
     return data
 
 
@@ -216,10 +225,11 @@ class ArmIn(BaseModel):
 
 @router.post("/sites/{site_id}/arm")
 @router.post("/sites/{site_id}/disarm")
-async def arm_site(site_id: int, body: ArmIn, request: Request, user: User = Depends(current_user),
+async def arm_site(site_id: int, body: ArmIn, request: Request, scope: Scope = Depends(get_scope),
                    db: AsyncSession = Depends(get_db)):
     """Operators arm/disarm by hand. It holds until the next scheduled change (or the disarm timer)."""
-    site = await _get_site(db, user, site_id)
+    user = scope.user
+    site = await _get_site(db, scope, site_id, write=True)
     if site.archived_at is not None:
         raise HTTPException(400, "Site is archived")
     armed = request.url.path.endswith("/arm")
@@ -228,21 +238,20 @@ async def arm_site(site_id: int, body: ArmIn, request: Request, user: User = Dep
     site.arm_override = {"armed": armed, "at_ms": t, "until_ms": until, "by": user.label, "user_id": user.id,
                          "note": body.note.strip()}
     site.armed = armed
-    audit(db, user.tenant_id, "site.armed" if armed else "site.disarmed", user_id=user.id, site_id=site.id,
+    audit(db, site.tenant_id, "site.armed" if armed else "site.disarmed", user_id=user.id, site_id=site.id,
           ip=client_ip(request), source="manual", note=body.note.strip(), until_ms=until)
     await db.commit()
-    counts = await _open_counts(db, user.tenant_id)
-    data = {**site_dict(site, counts.get(site.id)), "push": manager.push_state(site.id), **manager.rule_info(site.id)}
-    bus.publish(user.tenant_id, "site.updated", data)
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
     return data
 
 
 @router.post("/sites/{site_id}/{op}")
 async def site_op(site_id: int, op: str, request: Request, user: User = Depends(require_admin),
-                  db: AsyncSession = Depends(get_db)):
+                  scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     if op not in ("enable", "disable", "archive"):
         raise HTTPException(404)
-    site = await _get_site(db, user, site_id)
+    site = await _get_site(db, scope, site_id, write=True)
     if op == "enable":
         site.enabled = True
     elif op == "disable":
@@ -250,12 +259,12 @@ async def site_op(site_id: int, op: str, request: Request, user: User = Depends(
     else:
         site.enabled = False
         site.archived_at = datetime.now(timezone.utc)
-    audit(db, user.tenant_id, f"site.{op}d" if op != "archive" else "site.archived",
+    audit(db, site.tenant_id, f"site.{op}d" if op != "archive" else "site.archived",
           user_id=user.id, site_id=site.id, ip=client_ip(request))
     await db.commit()
     await manager.restart(site)
     data = site_dict(site)
-    bus.publish(user.tenant_id, "site.removed" if op == "archive" else "site.updated", data)
+    bus.publish(site.tenant_id, "site.removed" if op == "archive" else "site.updated", data)
     return data
 
 
@@ -284,14 +293,20 @@ class BulkIn(BaseModel):
 
 
 @router.get("/alarms")
-async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db),
                       state: str = Query("open", pattern="^(open|acknowledged|disarmed|all)$"),
                       site_id: int | None = None, category: str | None = Query(None, pattern="^(security|system)$"),
                       priority: int | None = Query(None, ge=1, le=3),
                       q: str | None = Query(None, max_length=200),
                       verdict: str | None = Query(None, pattern="^(real|false|none)$"),
+                      tenant_id: int | None = None,
+                      alerting: bool = False,
                       before_id: int | None = None, limit: int = Query(100, ge=1, le=500)):
-    stmt = select(Alarm).where(Alarm.tenant_id == user.tenant_id)
+    """alerting=1 (the page's open-alarm store) also includes the user's own company while they view
+    another one, so their own alarms keep sounding."""
+    stmt = select(Alarm).where(scope.alerting_where(Alarm.tenant_id) if alerting else scope.where(Alarm.tenant_id))
+    if tenant_id:
+        stmt = stmt.where(Alarm.tenant_id == tenant_id)
     if state == "open":
         stmt = stmt.where(Alarm.state == "new")
     elif state in ("acknowledged", "disarmed"):
@@ -315,16 +330,16 @@ async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Dep
 
 @router.post("/alarms/bulk")
 async def bulk_edit(body: BulkIn, request: Request, user: User = Depends(require("alarms.bulk_edit")),
-                    db: AsyncSession = Depends(get_db)):
+                    scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     """Admin override: mark many alarms real/false. Open ones are acknowledged with that verdict
     (and the note); closed ones get their verdict changed. Every change is audit-logged."""
     ids = sorted(set(body.ids))
     ip, n = client_ip(request), len(ids)
     acked, changed, unchanged = [], [], []
     for aid in ids:
-        alarm = await db.scalar(select(Alarm).where(Alarm.id == aid, Alarm.tenant_id == user.tenant_id)
+        alarm = await db.scalar(select(Alarm).where(Alarm.id == aid, scope.where(Alarm.tenant_id))
                                 .execution_options(populate_existing=True))
-        if alarm is None:
+        if alarm is None or not scope.can_write(alarm.tenant_id):
             unchanged.append(aid)
             continue
         if alarm.state == "new":
@@ -337,63 +352,67 @@ async def bulk_edit(body: BulkIn, request: Request, user: User = Depends(require
         if await ack_service.set_verdict(db, alarm, user, body.verdict, body.note, ip=ip, bulk=n):
             await db.commit()
             await db.refresh(alarm)
-            bus.publish(user.tenant_id, "alarm.updated", alarm_dict(alarm))
+            bus.publish(alarm.tenant_id, "alarm.updated", alarm_dict(alarm))
             changed.append(aid)
         else:
             unchanged.append(aid)
     return {"acknowledged": acked, "changed": changed, "unchanged": unchanged}
 
 
-async def _get_alarm(db: AsyncSession, user: User, alarm_id: int) -> Alarm:
-    alarm = await db.scalar(select(Alarm).where(Alarm.id == alarm_id, Alarm.tenant_id == user.tenant_id))
+async def _get_alarm(db: AsyncSession, scope: Scope, alarm_id: int, write: bool = False) -> Alarm:
+    # alerting_where: your own company's alarms stay reachable (e.g. a critical pop-up) while viewing another.
+    alarm = await db.scalar(select(Alarm).where(Alarm.id == alarm_id, scope.alerting_where(Alarm.tenant_id)))
     if alarm is None:
         raise HTTPException(404, "Alarm not found")
+    if write:
+        scope.require_write(alarm.tenant_id)
     return alarm
 
 
 @router.get("/alarms/{alarm_id}")
-async def get_alarm(alarm_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    return alarm_dict(await _get_alarm(db, user, alarm_id))
+async def get_alarm(alarm_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    return alarm_dict(await _get_alarm(db, scope, alarm_id))
 
 
 @router.post("/alarms/{alarm_id}/ack")
-async def ack_alarm(alarm_id: int, body: AckIn, request: Request, user: User = Depends(current_user),
+async def ack_alarm(alarm_id: int, body: AckIn, request: Request, scope: Scope = Depends(get_scope),
                     db: AsyncSession = Depends(get_db)):
-    alarm = await _get_alarm(db, user, alarm_id)
+    alarm = await _get_alarm(db, scope, alarm_id, write=True)
     try:
-        alarm = await ack_service.acknowledge(db, alarm, user, body.note, ip=client_ip(request), verdict=body.verdict)
+        alarm = await ack_service.acknowledge(db, alarm, scope.user, body.note, ip=client_ip(request), verdict=body.verdict)
     except ack_service.AlreadyAcknowledged as exc:
         raise HTTPException(409, "Alarm was already acknowledged") from exc
     return alarm_dict(alarm)
 
 
 @router.get("/alarms/{alarm_id}/notes")
-async def list_notes(alarm_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    alarm = await _get_alarm(db, user, alarm_id)
+async def list_notes(alarm_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    alarm = await _get_alarm(db, scope, alarm_id)
     rows = (await db.scalars(select(AlarmNote).where(AlarmNote.alarm_id == alarm.id).order_by(AlarmNote.id))).all()
     return [note_dict(n) for n in rows]
 
 
 @router.post("/alarms/{alarm_id}/notes")
-async def add_note(alarm_id: int, body: NoteIn, request: Request, user: User = Depends(current_user),
+async def add_note(alarm_id: int, body: NoteIn, request: Request, scope: Scope = Depends(get_scope),
                    db: AsyncSession = Depends(get_db)):
     """Follow-up note on any alarm, open or closed. Append-only; broadcast so open drawers update."""
-    alarm = await _get_alarm(db, user, alarm_id)
-    note = AlarmNote(tenant_id=user.tenant_id, alarm_id=alarm.id, user_id=user.id, text=body.text)
+    user = scope.user
+    alarm = await _get_alarm(db, scope, alarm_id, write=True)
+    note = AlarmNote(tenant_id=alarm.tenant_id, alarm_id=alarm.id, user_id=user.id, text=body.text)
     note.user = user
     db.add(note)
     await db.flush()
-    audit(db, user.tenant_id, "alarm.note", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
+    audit(db, alarm.tenant_id, "alarm.note", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
           ip=client_ip(request), note_id=note.id, text=body.text)
     await db.commit()
     data = note_dict(note)
-    bus.publish(user.tenant_id, "alarm.note", data)
+    bus.publish(alarm.tenant_id, "alarm.note", data)
     return data
 
 
 @router.get("/summary")
-async def summary(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    counts = await _open_counts(db, user.tenant_id)
+async def summary(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    counts = await _open_counts(db, scope)
     total = lambda p: sum(c.get(p, 0) for c in counts.values())  # noqa: E731
     return {"open_critical": total(1), "open_alarm": total(2), "open_warning": total(3)}
 
@@ -401,11 +420,11 @@ async def summary(user: User = Depends(current_user), db: AsyncSession = Depends
 # --------------------------------------------------------------------------- audit
 
 @router.get("/audit")
-async def list_audit(user: User = Depends(current_user), db: AsyncSession = Depends(get_db),
+async def list_audit(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db),
                      action: str | None = Query(None, max_length=64), site_id: int | None = None,
                      alarm_id: int | None = None, before_id: int | None = None,
                      limit: int = Query(100, ge=1, le=500)):
-    stmt = select(AuditLog).where(AuditLog.tenant_id == user.tenant_id)
+    stmt = select(AuditLog).where(scope.where(AuditLog.tenant_id))
     if action:
         stmt = stmt.where(AuditLog.action.startswith(action))
     if site_id:
@@ -433,19 +452,27 @@ def _policy_payload(policy: Policy) -> dict:
     }
 
 
+def _one_company(scope: Scope) -> Tenant:
+    """Per-company pages (settings, users, groups) need a single company in view."""
+    if scope.tenant is None:
+        raise HTTPException(400, "Pick a company first: this can't be done in the All companies view.")
+    return scope.tenant
+
+
 @router.get("/settings/alarm-levels")
-async def get_alarm_levels(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    tenant = await db.get(Tenant, user.tenant_id)
+async def get_alarm_levels(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    tenant = await db.get(Tenant, _one_company(scope).id)
     return _policy_payload(Policy.from_settings(tenant.settings))
 
 
 @router.put("/settings/alarm-levels")
 async def put_alarm_levels(body: AlarmPolicyIn, request: Request, user: User = Depends(require_admin),
-                           db: AsyncSession = Depends(get_db)):
+                           scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    tid = scope.write_tenant()
     bad = {t: lv for t, lv in body.levels.items() if lv not in CHOICES or t not in EVENT_TYPES}
     if bad:
         raise HTTPException(400, f"Unknown event type or level: {bad}")
-    tenant = await db.get(Tenant, user.tenant_id)
+    tenant = await db.get(Tenant, tid)
     old = Policy.from_settings(tenant.settings)
     # Store only differences from the defaults so future default changes still apply.
     overrides = {t: lv for t, lv in body.levels.items() if lv != EVENT_TYPES[t][2]}
@@ -457,19 +484,19 @@ async def put_alarm_levels(body: AlarmPolicyIn, request: Request, user: User = D
         level = policy.level_for(t)
         if level == "ignore":
             continue
-        stmt = update(Alarm).where(Alarm.tenant_id == user.tenant_id, Alarm.state == "new", Alarm.event_type == t)
+        stmt = update(Alarm).where(Alarm.tenant_id == tid, Alarm.state == "new", Alarm.event_type == t)
         if policy.force_ack_critical:
             stmt = stmt.where(Alarm.nx_ack_required.is_(False))
         await db.execute(stmt.values(priority=LEVELS[level]))
     if policy.force_ack_critical:
-        await db.execute(update(Alarm).where(Alarm.tenant_id == user.tenant_id, Alarm.state == "new",
+        await db.execute(update(Alarm).where(Alarm.tenant_id == tid, Alarm.state == "new",
                                              Alarm.nx_ack_required.is_(True)).values(priority=1))
 
     changed = {t: [old.level_for(t), policy.level_for(t)] for t in EVENT_TYPES if old.level_for(t) != policy.level_for(t)}
-    audit(db, user.tenant_id, "settings.alarm_levels", user_id=user.id, ip=client_ip(request), changed=changed,
+    audit(db, tid, "settings.alarm_levels", user_id=user.id, ip=client_ip(request), changed=changed,
           force_ack_critical=policy.force_ack_critical)
     await db.commit()
-    bus.publish(user.tenant_id, "alarms.reload", {})
+    bus.publish(tid, "alarms.reload", {})
     return _policy_payload(policy)
 
 
@@ -495,15 +522,18 @@ def _user_dict(u: User) -> dict:
 
 
 @router.get("/users")
-async def list_users(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    rows = (await db.scalars(select(User).where(User.tenant_id == user.tenant_id).order_by(User.email))).all()
+async def list_users(user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                     db: AsyncSession = Depends(get_db)):
+    tid = _one_company(scope).id
+    rows = (await db.scalars(select(User).where(User.tenant_id == tid).order_by(User.email))).all()
     return [_user_dict(u) for u in rows]
 
 
 @router.post("/users")
 async def create_user(body: UserIn, request: Request, user: User = Depends(require_admin),
-                      db: AsyncSession = Depends(get_db)):
-    new = User(tenant_id=user.tenant_id, email=body.email.strip().lower(), display_name=body.display_name.strip(),
+                      scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    tid = scope.write_tenant()
+    new = User(tenant_id=tid, email=body.email.strip().lower(), display_name=body.display_name.strip(),
                password_hash=hash_password(body.password), role=body.role)
     db.add(new)
     try:
@@ -511,17 +541,18 @@ async def create_user(body: UserIn, request: Request, user: User = Depends(requi
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(409, "A user with that email already exists") from exc
-    audit(db, user.tenant_id, "user.created", user_id=user.id, ip=client_ip(request), email=new.email, role=new.role)
+    audit(db, tid, "user.created", user_id=user.id, ip=client_ip(request), email=new.email, role=new.role)
     await db.commit()
     return _user_dict(new)
 
 
 @router.put("/users/{user_id}")
 async def update_user(user_id: int, body: UserUpdate, request: Request, user: User = Depends(require_admin),
-                      db: AsyncSession = Depends(get_db)):
-    target = await db.scalar(select(User).where(User.id == user_id, User.tenant_id == user.tenant_id))
+                      scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
     if target is None:
         raise HTTPException(404)
+    scope.require_write(target.tenant_id)
     if target.id == user.id and (body.role == "operator" or body.is_active is False):
         raise HTTPException(400, "You can't demote or deactivate your own account")
     fields = []
@@ -533,7 +564,7 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
     if body.password:
         target.password_hash = hash_password(body.password)
         fields.append("password")
-    audit(db, user.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
+    audit(db, target.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
     await db.commit()
     return _user_dict(target)
 
@@ -546,30 +577,31 @@ class GroupIn(BaseModel):
     member_ids: list[int] = Field(default_factory=list, max_length=1000)
 
 
-async def _groups_payload(db: AsyncSession, tenant_id: int) -> dict:
-    groups = (await db.scalars(select(UserGroup).where(UserGroup.tenant_id == tenant_id).order_by(UserGroup.name))).all()
+async def _groups_payload(db: AsyncSession, tenant: Tenant) -> dict:
+    groups = (await db.scalars(select(UserGroup).where(UserGroup.tenant_id == tenant.id).order_by(UserGroup.name))).all()
     members = (await db.execute(select(UserGroupMember.group_id, UserGroupMember.user_id)
                                 .join(UserGroup, UserGroup.id == UserGroupMember.group_id)
-                                .where(UserGroup.tenant_id == tenant_id))).all()
+                                .where(UserGroup.tenant_id == tenant.id))).all()
     by_group: dict[int, list[int]] = {}
     for gid, uid in members:
         by_group.setdefault(gid, []).append(uid)
-    return {"permissions": PERMISSIONS,
+    return {"permissions": applicable(tenant),
             "groups": [{"id": g.id, "name": g.name, "permissions": g.permissions or [],
                         "member_ids": sorted(by_group.get(g.id, []))} for g in groups]}
 
 
-async def _save_group(db: AsyncSession, user: User, group: UserGroup, body: GroupIn) -> tuple[list[int], list[int]]:
-    bad = [p for p in body.permissions if p not in PERMISSIONS]
+async def _save_group(db: AsyncSession, tenant: Tenant, group: UserGroup, body: GroupIn) -> tuple[list[int], list[int]]:
+    allowed = applicable(tenant)       # platform.* can't be granted inside a customer company
+    bad = [p for p in body.permissions if p not in allowed]
     if bad:
-        raise HTTPException(400, f"Unknown permission(s): {', '.join(bad)}")
+        raise HTTPException(400, f"Unknown permission(s) for this company: {', '.join(bad)}")
     group.name, group.permissions = body.name.strip(), sorted(set(body.permissions))
     try:                       # first, so a duplicate name is a clean 409 (not an autoflush error below)
         await db.flush()
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(409, f"A group named '{body.name}' already exists") from exc
-    valid = set((await db.scalars(select(User.id).where(User.tenant_id == user.tenant_id,
+    valid = set((await db.scalars(select(User.id).where(User.tenant_id == tenant.id,
                                                         User.id.in_(body.member_ids or [0])))).all())
     old = set((await db.scalars(select(UserGroupMember.user_id).where(UserGroupMember.group_id == group.id))).all())
     for uid in old - valid:
@@ -579,49 +611,55 @@ async def _save_group(db: AsyncSession, user: User, group: UserGroup, body: Grou
     return sorted(valid - old), sorted(old - valid)
 
 
+async def _get_group(db: AsyncSession, scope: Scope, group_id: int) -> tuple[UserGroup, Tenant]:
+    tenant = _one_company(scope)
+    group = await db.scalar(select(UserGroup).where(UserGroup.id == group_id, UserGroup.tenant_id == tenant.id))
+    if group is None:
+        raise HTTPException(404)
+    scope.require_write(tenant.id)
+    return group, tenant
+
+
 @router.get("/groups")
-async def list_groups(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
-    return await _groups_payload(db, user.tenant_id)
+async def list_groups(user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                      db: AsyncSession = Depends(get_db)):
+    return await _groups_payload(db, _one_company(scope))
 
 
 @router.post("/groups")
 async def create_group(body: GroupIn, request: Request, user: User = Depends(require_admin),
-                       db: AsyncSession = Depends(get_db)):
-    group = UserGroup(tenant_id=user.tenant_id, name=body.name.strip(), permissions=[])
+                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    tenant = await db.get(Tenant, scope.write_tenant())
+    group = UserGroup(tenant_id=tenant.id, name=body.name.strip(), permissions=[])
     db.add(group)
-    added, _ = await _save_group(db, user, group, body)
-    audit(db, user.tenant_id, "group.created", user_id=user.id, ip=client_ip(request), name=group.name,
+    added, _ = await _save_group(db, tenant, group, body)
+    audit(db, tenant.id, "group.created", user_id=user.id, ip=client_ip(request), name=group.name,
           permissions=group.permissions, added=added)
     await db.commit()
-    return await _groups_payload(db, user.tenant_id)
+    return await _groups_payload(db, tenant)
 
 
 @router.put("/groups/{group_id}")
 async def update_group(group_id: int, body: GroupIn, request: Request, user: User = Depends(require_admin),
-                       db: AsyncSession = Depends(get_db)):
-    group = await db.scalar(select(UserGroup).where(UserGroup.id == group_id, UserGroup.tenant_id == user.tenant_id))
-    if group is None:
-        raise HTTPException(404)
+                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    group, tenant = await _get_group(db, scope, group_id)
     before = list(group.permissions or [])
-    added, removed = await _save_group(db, user, group, body)
-    audit(db, user.tenant_id, "group.updated", user_id=user.id, ip=client_ip(request), name=group.name,
+    added, removed = await _save_group(db, tenant, group, body)
+    audit(db, tenant.id, "group.updated", user_id=user.id, ip=client_ip(request), name=group.name,
           permissions=group.permissions, permissions_before=before, added=added, removed=removed)
     await db.commit()
-    return await _groups_payload(db, user.tenant_id)
+    return await _groups_payload(db, tenant)
 
 
 @router.delete("/groups/{group_id}")
 async def delete_group(group_id: int, request: Request, user: User = Depends(require_admin),
-                       db: AsyncSession = Depends(get_db)):
-    group = await db.scalar(select(UserGroup).where(UserGroup.id == group_id, UserGroup.tenant_id == user.tenant_id))
-    if group is None:
-        raise HTTPException(404)
+                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    group, tenant = await _get_group(db, scope, group_id)
     await db.execute(UserGroupMember.__table__.delete().where(UserGroupMember.group_id == group.id))
-    audit(db, user.tenant_id, "group.deleted", user_id=user.id, ip=client_ip(request), name=group.name)
+    audit(db, tenant.id, "group.deleted", user_id=user.id, ip=client_ip(request), name=group.name)
     await db.delete(group)
     await db.commit()
-    return await _groups_payload(db, user.tenant_id)
-
+    return await _groups_payload(db, tenant)
 
 # ------------------------------------------------------------------------- geocode
 

@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer,
+from sqlalchemy import (JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Index, Integer, LargeBinary,
                         String, Text, UniqueConstraint)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -17,12 +17,28 @@ def utcnow() -> datetime:
 
 
 class Tenant(Base):
+    """A security company using the portal. Exactly one is the platform (TWG Security): its staff can
+    view every company, and with the right permissions support or manage them (app/scope.py)."""
+
     __tablename__ = "tenants"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
+    kind: Mapped[str] = mapped_column(String(20), default="customer")        # platform | customer
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)           # False: its users can't sign in (sites stay monitored)
+    display_name: Mapped[str] = mapped_column(String(200), default="")       # shown in their portal; "" = name
+    logo: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)   # PNG/JPEG/WebP, re-encoded on upload
+    logo_type: Mapped[str] = mapped_column(String(50), default="")
     settings: Mapped[dict | None] = mapped_column(JSONType, nullable=True)  # e.g. {"alarm_policy": {...}}
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    @property
+    def label(self) -> str:
+        return self.display_name or self.name
+
+    @property
+    def is_platform(self) -> bool:
+        return self.kind == "platform"
 
 
 class User(Base):
@@ -48,9 +64,11 @@ class User(Base):
 
     @property
     def permissions(self) -> set[str]:
-        """Admins hold every permission; others get their groups' (loaded by deps.current_user)."""
-        from app.permissions import PERMISSIONS
-        return set(PERMISSIONS) if self.is_admin else set(getattr(self, "_perms", ()))
+        """Loaded per request by deps.current_user (admins: every permission their company can hold)."""
+        if hasattr(self, "_perms"):
+            return set(self._perms)
+        from app.permissions import PLATFORM_PERMISSIONS, PERMISSIONS
+        return set(PERMISSIONS) - PLATFORM_PERMISSIONS if self.is_admin else set()
 
     def can(self, perm: str) -> bool:
         return perm in self.permissions
@@ -115,6 +133,8 @@ class Site(Base):
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+    tenant: Mapped[Tenant] = relationship(lazy="joined")
 
 
 class Alarm(Base):

@@ -12,13 +12,13 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
-from app.routers import api, auth, pages, stream, tiles
+from app.routers import api, auth, pages, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
 
 # Paths that answer errors as JSON instead of an HTML page / login redirect.
-API_PREFIXES = ("/api/", "/media/", "/tiles/")
+API_PREFIXES = ("/api/", "/media/", "/tiles/", "/branding/")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -77,6 +77,7 @@ def create_app() -> FastAPI:
     app.include_router(pages.router)
     app.include_router(api.router)
     app.include_router(stream.router)
+    app.include_router(tenants.router)
     app.include_router(tiles.router)
     return app
 

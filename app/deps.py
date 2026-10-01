@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_db
-from app.models import User
+from app.models import Tenant, User
 from app.permissions import load_permissions
 from app.security import new_csrf_token
 from app.static_version import asset
@@ -51,7 +51,12 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
     if user is None or not user.is_active:
         request.session.clear()
         raise NotAuthenticated()
-    user._perms = await load_permissions(db, user)
+    tenant = await db.get(Tenant, user.tenant_id)
+    if tenant is None or not tenant.is_active:      # the company's sign-in is disabled
+        request.session.clear()
+        raise NotAuthenticated()
+    user._tenant = tenant
+    user._perms = await load_permissions(db, user, tenant)
     return user
 
 
@@ -61,14 +66,28 @@ async def require_admin(user: User = Depends(current_user)) -> User:
     return user
 
 
+def _brand(user, scope) -> dict:
+    """Top-bar branding: the company in view (the user's own company outside support mode)."""
+    tenant = (scope.tenant if scope else None) or getattr(user, "_tenant", None)
+    if scope is not None and scope.mode == "all":
+        tenant = getattr(user, "_tenant", None)
+    if tenant is None:
+        return {"name": "TWG Security", "logo": None, "powered_by": False}
+    return {"name": tenant.label, "logo": f"/branding/{tenant.id}/logo" if tenant.logo else None,
+            "powered_by": not tenant.is_platform}
+
+
 def client_ip(request: Request) -> str:
     return request.client.host if request.client else ""
 
 
-def render(request: Request, name: str, user: User | None = None, **ctx):
+def render(request: Request, name: str, user: User | None = None, scope=None, **ctx):
+    """scope: app.scope.Scope for the top bar's company branding and switcher (pages pass it)."""
     settings = get_settings()
     return templates.TemplateResponse(request, name, {
         "user": user,
+        "scope": scope,
+        "brand": _brand(user, scope),
         "csrf_token": ensure_csrf(request),
         "clip_config": {"pre": settings.clip_pre_s, "post": settings.clip_post_s, "max": settings.clip_max_window_s},
         "map_config": {

@@ -3,6 +3,8 @@
 import time
 from datetime import timezone
 
+from sqlalchemy import inspect
+
 from app.models import Alarm, AlarmNote, AuditLog, Site
 from app.services import arming
 from app.services.alarm_filter import LEVEL_NAMES
@@ -16,9 +18,18 @@ def _iso(dt):
     return dt.isoformat()
 
 
+def _tenant_label(site) -> str:
+    """The site's company name, if it's loaded (it's eager-loaded with every site query)."""
+    if site is None or "tenant" in inspect(site).unloaded or site.tenant is None:
+        return ""
+    return site.tenant.label
+
+
 def alarm_dict(a: Alarm) -> dict:
     return {
         "id": a.id,
+        "tenant_id": a.tenant_id,
+        "tenant_name": _tenant_label(a.site),
         "site_id": a.site_id,
         "site_name": a.site.name if a.site else "",
         "site_address": a.site.address if a.site else "",
@@ -61,6 +72,8 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         marker = "ok"
     return {
         "id": s.id,
+        "tenant_id": s.tenant_id,
+        "tenant_name": _tenant_label(s),
         "name": s.name,
         "cloud_id": s.cloud_id,
         "host": s.host,
@@ -98,6 +111,9 @@ def audit_dict(r: AuditLog) -> dict:
         "ts": _iso(r.ts),
         "action": r.action,
         "user": r.user.label if r.user else "system",
+        # Someone from another company acted here: TWG support. Shown so the company can see it.
+        "support": bool(r.user and r.user.tenant_id != r.tenant_id),
+        "tenant_id": r.tenant_id,
         "site_name": r.site.name if r.site else "",
         "site_id": r.site_id,
         "alarm_id": r.alarm_id,

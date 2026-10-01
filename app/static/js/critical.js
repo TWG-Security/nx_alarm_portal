@@ -1,6 +1,6 @@
 // Full-screen pop-up for critical alarms, on every page. Oldest unhandled first.
 
-import { openAlarms, on, emit, esc, fmtTime, timerHtml, acknowledge } from "./common.js";
+import { openAlarms, on, emit, esc, fmtTime, timerHtml, acknowledge, isMine } from "./common.js";
 import { silence, isSilenced } from "./sound.js";
 import { mountPlayer } from "./player.js";
 
@@ -10,7 +10,8 @@ let minimized = new Set();
 try { minimized = new Set(JSON.parse(sessionStorage.getItem(MIN_KEY) || "[]")); } catch (e) { /* ignore */ }
 let shownId = null, idx = 0, signature = "", player = null;
 
-const criticals = () => [...openAlarms.values()].filter((a) => a.priority === 1).sort((a, b) => a.event_ts_ms - b.event_ts_ms);
+// Only your own company's criticals pop up (another company's show in its feed, without a pop-up).
+const criticals = () => [...openAlarms.values()].filter((a) => a.priority === 1 && isMine(a)).sort((a, b) => a.event_ts_ms - b.event_ts_ms);
 const queue = () => criticals().filter((a) => !minimized.has(a.id));
 function saveMin() { try { sessionStorage.setItem(MIN_KEY, JSON.stringify([...minimized])); } catch (e) { /* ignore */ } }
 

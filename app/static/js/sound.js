@@ -6,7 +6,7 @@
 // Browsers block audio until the user interacts with the page; a banner asks for that click.
 // With several portal tabs open, only one "leader" tab plays, so sounds don't stack.
 
-import { openAlarms, openCounts, on } from "./common.js";
+import { openAlarms, on, mineCounts, isMine } from "./common.js";
 
 const SILENCE_MS = 120_000;
 const REPEAT_MS = { 1: 4_000, 2: 30_000 };
@@ -84,7 +84,7 @@ const lastPlayed = { 1: 0, 2: 0 };
 setInterval(() => {
   const leader = isLeader();   // also keeps this tab's leadership fresh
   if (!leader || muted || !running() || isSilenced()) return;
-  const c = openCounts();
+  const c = mineCounts();          // only your own company's alarms sound
   const now = Date.now();
   if (c[1] > 0) {
     if (now - lastPlayed[1] >= REPEAT_MS[1]) { play("critical"); lastPlayed[1] = now; }
@@ -94,6 +94,7 @@ setInterval(() => {
 }, 500);
 
 on("alarm.arrived", (a) => {
+  if (!isMine(a)) return;          // another company's alarm (TWG's multi-company view): shown, never sounded
   if (a.priority === 1) { unsilence(); lastPlayed[1] = 0; return; }   // the loop sounds the siren right away
   const now = Date.now();
   if (a.priority === 2) { play("alarm"); lastPlayed[2] = now; }
@@ -106,7 +107,7 @@ const muteBtn = document.getElementById("mute-toggle");
 const silenceBtn = document.getElementById("silence-btn");
 
 function paint() {
-  const c = openCounts();
+  const c = mineCounts();   // the Silence button is for the alarms that sound
   const loud = c[1] + c[2] > 0;
   if (banner) banner.hidden = muted || running() || !ctx;
   if (muteBtn) {

@@ -1,4 +1,4 @@
-import { api, esc, toast } from "./common.js";
+import { api, esc, toast, CFG, can } from "./common.js";
 import { play } from "./sound.js";
 
 const tbody = document.getElementById("level-rows");
@@ -38,3 +38,37 @@ saveBtn.addEventListener("click", async () => {
 
 document.querySelectorAll("[data-test]").forEach((b) => b.addEventListener("click", () => play(b.dataset.test, { force: true })));
 render(await api("/api/settings/alarm-levels"));
+
+
+// ---------------------------------------------------------------- company branding (own company, or TWG managing it)
+(() => {
+  const sc = CFG.scope || {};
+  const tid = sc.tenantId;
+  if (!tid || sc.mode === "all" || !(CFG.isAdmin && (tid === CFG.tenantId || can("platform.manage")))) return;
+  const card = document.getElementById("branding-card");
+  const img = document.getElementById("b-logo"), remove = document.getElementById("b-remove");
+  const paint = (b) => {
+    img.hidden = !b.has_logo; remove.hidden = !b.has_logo;
+    if (b.has_logo) img.src = `/branding/${tid}/logo?t=${Date.now()}`;
+  };
+  api(`/api/tenants/${tid}/branding`).then((b) => {
+    card.hidden = false;
+    document.getElementById("b-display").value = b.display_name || b.name;
+    paint(b);
+  }).catch(() => {});
+  document.getElementById("b-save").addEventListener("click", async () => {
+    try { await api(`/api/tenants/${tid}`, { method: "PUT", body: { display_name: document.getElementById("b-display").value } }); toast("Saved. Reload to see it in the top bar"); }
+    catch (e) { toast(esc(e.message), { kind: "error" }); }
+  });
+  document.getElementById("b-file").addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const fd = new FormData(); fd.append("file", file);
+    const res = await fetch(`/api/tenants/${tid}/logo`, { method: "POST", body: fd, credentials: "same-origin",
+      headers: { "X-CSRF-Token": document.querySelector('meta[name="csrf-token"]').content } });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) return toast(esc(data.detail || `HTTP ${res.status}`), { kind: "error" });
+    paint({ has_logo: true }); toast("Logo uploaded. Reload to see it in the top bar");
+  });
+  remove.addEventListener("click", async () => { await api(`/api/tenants/${tid}/logo`, { method: "DELETE" }); paint({ has_logo: false }); });
+})();

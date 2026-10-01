@@ -1,8 +1,7 @@
 // Alarm detail drawer: the recorded clip and live video side by side, details, acknowledge with a
 // verdict (real event / false alarm). Used on every page.
 
-import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip,
-         can } from "./common.js";
+import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine } from "./common.js";
 import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
 
@@ -37,6 +36,7 @@ function render(a) {
     <div class="drawer-head">
       <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
         <h1 style="margin-top:8px">${esc(a.caption)}</h1>
+        ${isMine(a) ? "" : `<div><span class="chip tenant-chip">${esc(a.tenant_name || "Another company")}</span></div>`}
         <div><b>${esc(a.site_name)}</b>${a.site_address ? ` <span class="muted">· ${esc(a.site_address)}</span>` : ""}</div>
         ${a.source_name ? `<div class="muted">${esc(a.source_name)}</div>` : ""}</div>
       <button class="btn btn-sm" id="drawer-close" aria-label="Close">✕</button>

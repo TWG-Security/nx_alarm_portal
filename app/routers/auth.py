@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, render
-from app.models import User
+from app.models import Tenant, User
 from app.security import new_csrf_token, verify_password
 
 router = APIRouter()
@@ -46,6 +46,12 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
             audit(db, user.tenant_id, "login.failed", user_id=user.id, ip=ip)
             await db.commit()
         return render(request, "login.html", error="Invalid email or password.", email=email)
+    tenant = await db.get(Tenant, user.tenant_id)
+    if tenant is None or not tenant.is_active:
+        audit(db, user.tenant_id, "login.failed", user_id=user.id, ip=ip, reason="company disabled")
+        await db.commit()
+        return render(request, "login.html", error="Your company's portal access is disabled. Contact TWG Security.",
+                      email=email)
     _FAILS.pop(ip, None)
     request.session.clear()
     request.session.update({"uid": user.id, "tid": user.tenant_id, "csrf": new_csrf_token()})

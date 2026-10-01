@@ -1,6 +1,5 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon,
-         markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml } from "./common.js";
+import { CFG, api, esc, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer } from "./drawer.js";
 
 const sites = new Map();     // id -> site
@@ -34,7 +33,7 @@ function renderSites() {
   ul.innerHTML = list.map(({ s, st }) => `
     <li class="site-item ${s.id === selectedId ? "selected" : ""}" data-id="${s.id}" tabindex="0">
       <span class="dot dot--${st.marker}"></span>
-      <span class="name" title="${esc(s.name)}">${esc(s.name)}</span>
+      <span class="name" title="${esc(s.tenant_name ? `${s.tenant_name}: ${s.name}` : s.name)}">${esc(s.name)}</span>${tenantTag(s)}
       ${s.arming?.armed === false ? '<span class="chip disarmed" title="Security events are recorded but not raised">Disarmed</span>' : ""}
       ${st.c[1] + st.c[2] ? `<span class="badge">${st.c[1] + st.c[2]}</span>` : ""}
       ${st.c[3] ? `<span class="chip p3">${st.c[3]}</span>` : ""}
@@ -49,7 +48,7 @@ function renderDetail() {
   box.hidden = false;
   box.innerHTML = `
     <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
-      <div><h2 style="margin-bottom:2px">${esc(s.name)}</h2><div class="muted">${esc(s.address || "No address")}</div></div>
+      <div><h2 style="margin-bottom:2px">${esc(s.name)}</h2>${multiCompany ? `<div><b>${esc(s.tenant_name)}</b></div>` : ""}<div class="muted">${esc(s.address || "No address")}</div></div>
       <button class="btn btn-sm" id="close-detail" aria-label="Close">✕</button>
     </div>
     ${armCardHtml(s)}
@@ -72,7 +71,7 @@ function renderDetail() {
 // ---------------------------------------------------------------- right: live feed
 function feedRows() {
   return [...openAlarms.values()]
-    .filter((a) => (!selectedId || a.site_id === selectedId))
+    .filter((a) => inView(a) && (!selectedId || a.site_id === selectedId))
     .sort((a, b) => a.priority - b.priority || b.event_ts_ms - a.event_ts_ms);
 }
 
@@ -99,7 +98,7 @@ function renderFeed() {
     <li class="feed-item p${a.priority}" data-id="${a.id}" tabindex="0">
       <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
-      <div class="feed-where"><b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}</div>
+      <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}</div>
       <div class="meta">${a.source_name ? `${esc(a.source_name)} · ` : ""}${fmtTime(a.event_ts_ms)}</div>
       <div class="feed-actions"><button class="btn btn-sm btn-primary" data-ack="${a.id}">Acknowledge</button>
         <button class="btn btn-sm" data-detail="${a.id}">Details</button></div>

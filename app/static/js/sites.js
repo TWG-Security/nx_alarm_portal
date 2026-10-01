@@ -1,4 +1,4 @@
-import { CFG, api, esc, relTime, on, openCounts, markerState, STATUS, armChip, armLine, setArmed, ruleHealthHtml } from "./common.js";
+import { CFG, api, esc, relTime, on, openCounts, markerState, STATUS, armChip, armLine, setArmed, ruleHealthHtml, tenantTag } from "./common.js";
 
 const tbody = document.getElementById("site-rows");
 let sites = [];
@@ -12,7 +12,7 @@ function render() {
     const c = openCounts(s.id);
     const marker = markerState(s, c);
     return `<tr>
-      <td><div style="display:flex;gap:8px;align-items:center"><span class="dot dot--${marker}"></span><b>${esc(s.name)}</b></div>
+      <td><div style="display:flex;gap:8px;align-items:center"><span class="dot dot--${marker}"></span><b>${esc(s.name)}</b>${tenantTag(s)}</div>
         <div class="muted mono">${esc(s.cloud_id || s.host)}</div>${s.address ? `<div class="muted">${esc(s.address)}</div>` : ""}</td>
       <td style="min-width:200px">${armChip(s)} <button class="btn btn-sm" data-arm="${s.arming?.armed === false ? "arm" : "disarm"}" data-id="${s.id}">${s.arming?.armed === false ? "Arm now" : "Disarm…"}</button>
         <div class="arm-line">${armLine(s)}</div></td>

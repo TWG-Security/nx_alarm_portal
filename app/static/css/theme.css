@@ -136,6 +136,16 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--o
 .chip.offline, .chip.auth_error { color: var(--red-text); }
 .chip.acked { color: var(--ok); }
 .chip.armed { color: var(--ok); }
+.chip.tenant-chip { background: rgba(224, 138, 48, .14); color: var(--orange); margin-right: 6px; }
+.chip.support-chip { background: rgba(224, 138, 48, .18); color: var(--orange); }
+.site-item .tenant-chip { margin-left: auto; }
+.brand-name { background: #FFFFFF; color: #1A1A1A; border-radius: 6px; padding: 6px 10px; font-weight: 800; font-size: 14px; white-space: nowrap; }
+.brand-title { display: flex; flex-direction: column; line-height: 1.15; }
+.powered-by { font-size: 10px; font-weight: 600; color: var(--text-muted); letter-spacing: .02em; }
+.scope-switch { width: auto; max-width: 220px; height: 32px; font-size: 13px; font-weight: 600; }
+.support-banner { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 8px 16px; font-size: 13px;
+  background: rgba(224, 138, 48, .14); border-bottom: 1px solid var(--orange); color: var(--text); }
+.support-banner .btn { margin-left: auto; }
 .chip.verdict-real { background: var(--red); color: #fff; }
 .chip.verdict-false { background: var(--surface-3); color: var(--text); border: 1px dashed var(--text-muted); }
 .btn-verdict-real { background: var(--red); border-color: var(--red); color: #fff; }
@@ -509,3 +519,10 @@ code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; b
 .player-mount:focus { outline: none; }
 .player-controls svg { pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+/* companies (TWG) */
+.branding-card { margin-bottom: 20px; }
+.logo-mini { padding: 2px 6px; }
+.logo-mini img { height: 22px; }
+.logo-edit { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.logo-edit .logo-chip { min-width: 60px; min-height: 40px; align-items: center; justify-content: center; }
+.logo-edit .logo-chip img { height: 34px; }
