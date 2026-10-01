@@ -60,8 +60,10 @@
       <textarea id="ack-note" maxlength="4000" placeholder="What did you see / do? (e.g. verified on camera, false alarm — wildlife)"></textarea>
     </div>
     <div class="dialog-actions">
+      <span class="muted ack-as">Acknowledge as</span>
       <button class="btn" value="cancel" type="button" id="ack-cancel">Cancel</button>
-      <button class="btn btn-primary" value="ok" type="submit" id="ack-submit">Acknowledge</button>
+      <button class="btn btn-verdict-false" value="false" type="submit" id="ack-false">False alarm</button>
+      <button class="btn btn-verdict-real" value="real" type="submit" id="ack-real">Real event</button>
     </div>
   </form>
 </dialog>
@@ -113,7 +115,7 @@
 <dialog id="critical-dialog" class="critical-dialog" aria-labelledby="crit-title"></dialog>
 <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
 <aside class="drawer" id="drawer" hidden aria-label="Alarm detail"></aside>
-<script>window.PORTAL = {{ {"user": user.label, "isAdmin": user.is_admin, "map": map_config, "clip": clip_config} | tojson }};</script>
+<script>window.PORTAL = {{ {"user": user.label, "isAdmin": user.is_admin, "perms": user.permissions | sort | list, "map": map_config, "clip": clip_config} | tojson }};</script>
 <script src="{{ asset('vendor/leaflet/leaflet.js') }}"></script>
 <script type="module" src="{{ asset('js/console.js') }}"></script>
 {% endif %}

@@ -212,7 +212,13 @@ def _audit_row(a: AuditLog) -> dict:
     if a.action == "alarm.acknowledged":
         nx = d.get("nx") or {}
         detail = f"NX write-back: {nx.get('method') or '-'}{' (failed: ' + str(nx.get('error')) + ')' if nx.get('ok') is False else ''}"
-        return {"ts": ts, "what": "Acknowledged", "who": who, "detail": detail}
+        verdict = {"real": "Real event. ", "false": "False alarm. "}.get(d.get("verdict", ""), "")
+        return {"ts": ts, "what": "Acknowledged" + (" (bulk)" if d.get("bulk") else ""), "who": who, "detail": verdict + detail}
+    if a.action == "alarm.verdict":
+        name = {"real": "real event", "false": "false alarm", "": "not marked"}
+        return {"ts": ts, "what": "Verdict changed" + (" (bulk)" if d.get("bulk") else ""), "who": who,
+                "detail": f"{name.get(d.get('old', ''), d.get('old'))} → {name.get(d.get('new', ''), d.get('new'))}"
+                          + (f" · “{d['note']}”" if d.get("note") else "")}
     if a.action == "alarm.exported":
         return {"ts": ts, "what": f"Exported ({d.get('format', '').upper()})", "who": who, "detail": d.get("note", "")}
     if a.action == "alarm.raised":
@@ -343,7 +349,9 @@ def build_pdf(alarm: Alarm, ev: Evidence, events: list[dict], user: User, note: 
             ("Level", f"{level} ({LEVEL_SOURCE.get(alarm.level_source, 'event type')})"),
             ("Event time", f"{_fmt(alarm.event_ts_ms, tz)}   ({_fmt(alarm.event_ts_ms, timezone.utc)})"),
             ("Received", f"{_fmt(_ms(alarm.received_at), tz)}  · {max(0, _ms(alarm.received_at) - alarm.event_ts_ms):,} ms after the event"),
-            ("Status", status)]
+            ("Status", status),
+            ("Verdict", {"real": "REAL EVENT", "false": "FALSE ALARM"}.get(alarm.verdict, "Not marked")
+             + (f" (marked by {alarm.verdict_by.label} at {_fmt(_ms(alarm.verdict_at), tz)})" if alarm.verdict and alarm.verdict_by else ""))]
     if nx:
         rows.append(("NX write-back", f"{nx.get('method', '-')}{'' if nx.get('ok', True) else ' · FAILED: ' + str(nx.get('error'))}"))
     if alarm.description:
@@ -465,7 +473,7 @@ def build_zip(alarm: Alarm, ev: Evidence, pdf: bytes, user: User, note: str, now
         "alarm_id": alarm.id, "site": alarm.site.name if alarm.site else "", "camera": alarm.source_name,
         "caption": alarm.caption, "event_type": alarm.event_type, "event_ts_ms": alarm.event_ts_ms,
         "event_time_utc": _fmt(alarm.event_ts_ms, timezone.utc), "event_time_site": _fmt(alarm.event_ts_ms, tz),
-        "state": alarm.state, "ack_note": alarm.ack_note, "acked_by": alarm.acked_by.label if alarm.acked_by else None,
+        "state": alarm.state, "verdict": alarm.verdict or None, "ack_note": alarm.ack_note, "acked_by": alarm.acked_by.label if alarm.acked_by else None,
         "clip": ev.clip.to_dict() if ev.clip else None, "exported_by": user.label, "exported_at_ms": now_ms,
         "export_note": note, "files": sums,
     }

@@ -46,6 +46,35 @@ class User(Base):
     def label(self) -> str:
         return self.display_name or self.email
 
+    @property
+    def permissions(self) -> set[str]:
+        """Admins hold every permission; others get their groups' (loaded by deps.current_user)."""
+        from app.permissions import PERMISSIONS
+        return set(PERMISSIONS) if self.is_admin else set(getattr(self, "_perms", ()))
+
+    def can(self, perm: str) -> bool:
+        return perm in self.permissions
+
+
+class UserGroup(Base):
+    """A named set of users with extra permissions (app/permissions.py), e.g. "Supervisors"."""
+
+    __tablename__ = "user_groups"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_groups_tenant_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    permissions: Mapped[list] = mapped_column(JSONType, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class UserGroupMember(Base):
+    __tablename__ = "user_group_members"
+
+    group_id: Mapped[int] = mapped_column(ForeignKey("user_groups.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True, index=True)
+
 
 class Site(Base):
     """One NX Witness deployment (an NX "site"), usually reached through the vmsproxy relay."""
@@ -125,12 +154,17 @@ class Alarm(Base):
     acked_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     acked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     ack_note: Mapped[str] = mapped_column(Text, default="")
+    # Operator's call on the event: "real" (a genuine incident) or "false" (false alarm); "" = not marked.
+    verdict: Mapped[str] = mapped_column(String(10), default="")
+    verdict_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    verdict_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     nx_ack_result: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
     raw: Mapped[dict] = mapped_column(JSONType, default=dict)
 
     site: Mapped[Site] = relationship(lazy="joined")
-    acked_by: Mapped[User | None] = relationship(lazy="joined")
+    acked_by: Mapped[User | None] = relationship(foreign_keys=[acked_by_id], lazy="joined")
+    verdict_by: Mapped[User | None] = relationship(foreign_keys=[verdict_by_id], lazy="joined")
 
 
 class AuditLog(Base):

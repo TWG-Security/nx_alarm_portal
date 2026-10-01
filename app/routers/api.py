@@ -15,7 +15,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, current_user, require_admin
-from app.models import Alarm, AuditLog, Site, Tenant, User
+from app.models import Alarm, AuditLog, Site, Tenant, User, UserGroup, UserGroupMember
+from app.permissions import PERMISSIONS, require
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
@@ -262,6 +263,13 @@ async def site_op(site_id: int, op: str, request: Request, user: User = Depends(
 
 class AckIn(BaseModel):
     note: str = Field(default="", max_length=4000)
+    verdict: str = Field(default="", pattern="^(|real|false)$")     # optional so pages opened before verdicts still ack
+
+
+class BulkIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+    verdict: str = Field(pattern="^(real|false)$")
+    note: str = Field(default="", max_length=4000)
 
 
 @router.get("/alarms")
@@ -270,6 +278,7 @@ async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Dep
                       site_id: int | None = None, category: str | None = Query(None, pattern="^(security|system)$"),
                       priority: int | None = Query(None, ge=1, le=3),
                       q: str | None = Query(None, max_length=200),
+                      verdict: str | None = Query(None, pattern="^(real|false|none)$"),
                       before_id: int | None = None, limit: int = Query(100, ge=1, le=500)):
     stmt = select(Alarm).where(Alarm.tenant_id == user.tenant_id)
     if state == "open":
@@ -285,10 +294,43 @@ async def list_alarms(user: User = Depends(current_user), db: AsyncSession = Dep
     if q:
         like = f"%{q}%"
         stmt = stmt.where(Alarm.caption.ilike(like) | Alarm.source_name.ilike(like) | Alarm.description.ilike(like))
+    if verdict:
+        stmt = stmt.where(Alarm.verdict == ("" if verdict == "none" else verdict))
     if before_id:
         stmt = stmt.where(Alarm.id < before_id)
     rows = (await db.scalars(stmt.order_by(Alarm.id.desc()).limit(limit))).unique().all()
     return [alarm_dict(a) for a in rows]
+
+
+@router.post("/alarms/bulk")
+async def bulk_edit(body: BulkIn, request: Request, user: User = Depends(require("alarms.bulk_edit")),
+                    db: AsyncSession = Depends(get_db)):
+    """Admin override: mark many alarms real/false. Open ones are acknowledged with that verdict
+    (and the note); closed ones get their verdict changed. Every change is audit-logged."""
+    ids = sorted(set(body.ids))
+    ip, n = client_ip(request), len(ids)
+    acked, changed, unchanged = [], [], []
+    for aid in ids:
+        alarm = await db.scalar(select(Alarm).where(Alarm.id == aid, Alarm.tenant_id == user.tenant_id)
+                                .execution_options(populate_existing=True))
+        if alarm is None:
+            unchanged.append(aid)
+            continue
+        if alarm.state == "new":
+            try:
+                await ack_service.acknowledge(db, alarm, user, body.note, ip=ip, verdict=body.verdict, bulk=n)
+                acked.append(aid)
+                continue
+            except ack_service.AlreadyAcknowledged:     # someone acked it meanwhile: fall through to the verdict
+                alarm = await db.scalar(select(Alarm).where(Alarm.id == aid).execution_options(populate_existing=True))
+        if await ack_service.set_verdict(db, alarm, user, body.verdict, body.note, ip=ip, bulk=n):
+            await db.commit()
+            await db.refresh(alarm)
+            bus.publish(user.tenant_id, "alarm.updated", alarm_dict(alarm))
+            changed.append(aid)
+        else:
+            unchanged.append(aid)
+    return {"acknowledged": acked, "changed": changed, "unchanged": unchanged}
 
 
 async def _get_alarm(db: AsyncSession, user: User, alarm_id: int) -> Alarm:
@@ -308,7 +350,7 @@ async def ack_alarm(alarm_id: int, body: AckIn, request: Request, user: User = D
                     db: AsyncSession = Depends(get_db)):
     alarm = await _get_alarm(db, user, alarm_id)
     try:
-        alarm = await ack_service.acknowledge(db, alarm, user, body.note, ip=client_ip(request))
+        alarm = await ack_service.acknowledge(db, alarm, user, body.note, ip=client_ip(request), verdict=body.verdict)
     except ack_service.AlreadyAcknowledged as exc:
         raise HTTPException(409, "Alarm was already acknowledged") from exc
     return alarm_dict(alarm)
@@ -459,6 +501,91 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
     audit(db, user.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
     await db.commit()
     return _user_dict(target)
+
+
+# -------------------------------------------------------------------------- groups
+
+class GroupIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    permissions: list[str] = Field(default_factory=list)
+    member_ids: list[int] = Field(default_factory=list, max_length=1000)
+
+
+async def _groups_payload(db: AsyncSession, tenant_id: int) -> dict:
+    groups = (await db.scalars(select(UserGroup).where(UserGroup.tenant_id == tenant_id).order_by(UserGroup.name))).all()
+    members = (await db.execute(select(UserGroupMember.group_id, UserGroupMember.user_id)
+                                .join(UserGroup, UserGroup.id == UserGroupMember.group_id)
+                                .where(UserGroup.tenant_id == tenant_id))).all()
+    by_group: dict[int, list[int]] = {}
+    for gid, uid in members:
+        by_group.setdefault(gid, []).append(uid)
+    return {"permissions": PERMISSIONS,
+            "groups": [{"id": g.id, "name": g.name, "permissions": g.permissions or [],
+                        "member_ids": sorted(by_group.get(g.id, []))} for g in groups]}
+
+
+async def _save_group(db: AsyncSession, user: User, group: UserGroup, body: GroupIn) -> tuple[list[int], list[int]]:
+    bad = [p for p in body.permissions if p not in PERMISSIONS]
+    if bad:
+        raise HTTPException(400, f"Unknown permission(s): {', '.join(bad)}")
+    group.name, group.permissions = body.name.strip(), sorted(set(body.permissions))
+    try:                       # first, so a duplicate name is a clean 409 (not an autoflush error below)
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(409, f"A group named '{body.name}' already exists") from exc
+    valid = set((await db.scalars(select(User.id).where(User.tenant_id == user.tenant_id,
+                                                        User.id.in_(body.member_ids or [0])))).all())
+    old = set((await db.scalars(select(UserGroupMember.user_id).where(UserGroupMember.group_id == group.id))).all())
+    for uid in old - valid:
+        await db.delete(await db.get(UserGroupMember, (group.id, uid)))
+    for uid in valid - old:
+        db.add(UserGroupMember(group_id=group.id, user_id=uid))
+    return sorted(valid - old), sorted(old - valid)
+
+
+@router.get("/groups")
+async def list_groups(user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)):
+    return await _groups_payload(db, user.tenant_id)
+
+
+@router.post("/groups")
+async def create_group(body: GroupIn, request: Request, user: User = Depends(require_admin),
+                       db: AsyncSession = Depends(get_db)):
+    group = UserGroup(tenant_id=user.tenant_id, name=body.name.strip(), permissions=[])
+    db.add(group)
+    added, _ = await _save_group(db, user, group, body)
+    audit(db, user.tenant_id, "group.created", user_id=user.id, ip=client_ip(request), name=group.name,
+          permissions=group.permissions, added=added)
+    await db.commit()
+    return await _groups_payload(db, user.tenant_id)
+
+
+@router.put("/groups/{group_id}")
+async def update_group(group_id: int, body: GroupIn, request: Request, user: User = Depends(require_admin),
+                       db: AsyncSession = Depends(get_db)):
+    group = await db.scalar(select(UserGroup).where(UserGroup.id == group_id, UserGroup.tenant_id == user.tenant_id))
+    if group is None:
+        raise HTTPException(404)
+    before = list(group.permissions or [])
+    added, removed = await _save_group(db, user, group, body)
+    audit(db, user.tenant_id, "group.updated", user_id=user.id, ip=client_ip(request), name=group.name,
+          permissions=group.permissions, permissions_before=before, added=added, removed=removed)
+    await db.commit()
+    return await _groups_payload(db, user.tenant_id)
+
+
+@router.delete("/groups/{group_id}")
+async def delete_group(group_id: int, request: Request, user: User = Depends(require_admin),
+                       db: AsyncSession = Depends(get_db)):
+    group = await db.scalar(select(UserGroup).where(UserGroup.id == group_id, UserGroup.tenant_id == user.tenant_id))
+    if group is None:
+        raise HTTPException(404)
+    await db.execute(UserGroupMember.__table__.delete().where(UserGroupMember.group_id == group.id))
+    audit(db, user.tenant_id, "group.deleted", user_id=user.id, ip=client_ip(request), name=group.name)
+    await db.delete(group)
+    await db.commit()
+    return await _groups_payload(db, user.tenant_id)
 
 
 # ------------------------------------------------------------------------- geocode

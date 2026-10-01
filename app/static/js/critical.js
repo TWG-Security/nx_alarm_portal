@@ -38,7 +38,9 @@ function render() {
       <div class="field"><label for="crit-note">Disposition note</label>
         <textarea id="crit-note" maxlength="4000" placeholder="What did you see / do? (e.g. verified on camera, dispatched, false alarm)"></textarea></div>
       <div class="crit-actions">
-        <button class="btn btn-primary" data-act="ack">Acknowledge</button>
+        <span class="muted ack-as">Acknowledge as</span>
+        <button class="btn btn-verdict-real" data-act="ack" data-verdict="real">Real event</button>
+        <button class="btn btn-verdict-false" data-act="ack" data-verdict="false">False alarm</button>
         <button class="btn" data-act="map">Show on map</button>
         <button class="btn" data-act="silence" ${isSilenced() ? "disabled" : ""}>Silence 2 min</button>
         <button class="btn" data-act="min" title="Hide this pop-up. Alarms stay open in the feed">Minimize</button>
@@ -59,7 +61,8 @@ dlg.addEventListener("click", async (e) => {
   const a = queue()[idx];
   if (!a) return render();
   if (act === "ack") {
-    await acknowledge(a.id, dlg.querySelector("#crit-note").value, e.target);   // store update re-renders
+    const btn = e.target.closest("[data-act]");
+    await acknowledge(a.id, dlg.querySelector("#crit-note").value, btn, btn.dataset.verdict);   // store update re-renders
   } else if (act === "map") {
     minimized.add(a.id); saveMin(); render();
     if (location.pathname === "/") emit("focus-alarm", a); else location.href = `/?alarm=${a.id}`;

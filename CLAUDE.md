@@ -57,6 +57,9 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Pollers, ingest, rule `#tags`, rule health (`rule_delays`), site status, "site connection lost" alarm | `app/services/poller.py` |
 | NX push (JSON-RPC websocket) | `app/services/push.py` |
 | Acknowledge + NX write-back (forced-ack clear or bookmark) | `app/services/ack.py` |
+| Verdicts (real / false), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`) |
+| Groups & permissions | `app/permissions.py` (catalog, `require()`), `user_groups` / `user_group_members` (migration 0005), `/api/groups`; `deps.current_user` loads `user._perms`, pages get `CFG.perms` |
+| Live video | `GET /media/alarms/{id}/live.webm`: relays NX `/media/<dev>.webm?resolution=640x360` (≤6 per site, 20 min cap, commits the DB session first so no connection is pinned); `static/js/live.js` |
 | Incident report PDF / evidence ZIP | `app/services/report.py` (reportlab + Pillow; CPU work in `asyncio.to_thread`); `GET /api/alarms/{id}/export?format=pdf|zip&note&pre&post&quality` |
 | Site arming: state maths, schedules, `#24h`, announce loop | `app/services/arming.py` (migration 0004); API `POST /api/sites/{id}/arm|disarm` |
 | Clips (growing → full), ffmpeg, cache, prefetch, bounding boxes | `app/services/clips.py` |
@@ -118,6 +121,10 @@ JS modules:
 - One NX event produces one row per rule action. The portal collapses them by `event_key` and keeps the loudest classification.
 - NX only logs events that some rule fired on. A rule's **"Interval of action"** makes NX hold back repeats inside that interval, so it should be off on alarm rules.
 
+**Live video** (measured through the relay on site 1, 2026-10-01)
+- `GET /media/<device>.webm?resolution=640x360`: VP8, about **100 KB/s**, first byte in 0.25 s.
+- `.mpjpeg`: about 26 fps but **1.7 MB/s**. Not used.
+
 **Clips**
 - `GET /rest/v4/devices/{id}/media.mp4?positionMs&durationMs&stream=secondary` starts on the keyframe **before** `positionMs`. The true start time is in the MP4 comment tag `{"startTimeMs": ...}` (read with ffprobe).
 - `utcTimestamps` changes nothing visible.
@@ -155,12 +162,13 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 63 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 67 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.arming   # ~3 min: disarm/arm UI, suppression, #24h, timer, schedule
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.export /tmp      # export ZIP from the drawer, checksums, alarm latency mid-export
+tools/dev_up.sh && .venv/bin/python -m tools.e2e.verdicts /tmp    # live beside recorded, verdict buttons, groups, operator bulk edit
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
 ```

@@ -2,6 +2,7 @@
 // marker and object-presence marks, time controls, and analytics bounding boxes drawn in sync.
 
 import { CFG, api, esc } from "./common.js";
+import { mountLive } from "./live.js";
 
 const STEP_S = 15;               // "earlier / later" widens the window by this much
 const MAX_WINDOW_S = CFG.clip?.max || 300;
@@ -12,17 +13,18 @@ const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", min
 const clockTenths = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", fractionalSecondDigits: 1 });
 const offset = (ms) => `${ms < 0 ? "−" : "+"}${(Math.abs(ms) / 1000).toFixed(1)}s`;
 
-export function mountPlayer(root, alarm, { autoplay = true } = {}) {
+// liveToggle: show the "Live" button that swaps the clip for live video (the drawer shows live beside the clip instead).
+export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } = {}) {
   let pre = CFG.clip?.pre ?? 10, post = CFG.clip?.post ?? 20, quality = "sd";
   let info = null, tracks = [], showBoxes = true, live = false, destroyed = false;
-  let pollTimer = null, liveTimer = null, raf = null;
+  let pollTimer = null, liveCtl = null, raf = null;
 
   root.innerHTML = `
     <div class="player">
       <div class="player-stage">
         <img class="player-poster" alt="" src="/media/alarms/${alarm.id}/snapshot.jpg">
         <video muted playsinline loop preload="auto" hidden></video>
-        <img class="player-live" alt="Live view" hidden>
+        <div class="player-live" hidden></div>
         <canvas class="player-boxes"></canvas>
         <div class="player-msg"><span class="spinner"></span><span class="txt">Preparing clip…</span></div>
         <div class="player-clock" hidden></div>
@@ -49,14 +51,14 @@ export function mountPlayer(root, alarm, { autoplay = true } = {}) {
           <button class="btn btn-sm toggle on" data-c="loop" title="Loop the clip">Loop</button>
           <button class="btn btn-sm toggle on" data-c="boxes" title="Show analytics boxes" hidden>Boxes</button>
           <button class="btn btn-sm toggle" data-c="hd" title="Full-quality stream (slower to prepare)">HD</button>
-          <button class="btn btn-sm toggle" data-c="live" title="Live view from this camera">Live</button>
+          ${liveToggle ? '<button class="btn btn-sm toggle" data-c="live" title="Live video from this camera">Live</button>' : ""}
           <a class="btn btn-sm" data-c="download" title="Download clip (MP4)" hidden>Download</a>
         </span>
       </div>
     </div>`;
   const $ = (s) => root.querySelector(s);
   const video = $("video"), canvas = $("canvas"), ctx = canvas.getContext("2d");
-  const msg = $(".player-msg"), poster = $(".player-poster"), liveImg = $(".player-live");
+  const msg = $(".player-msg"), poster = $(".player-poster"), liveBox = $(".player-live");
   const range = $(".tl-range");
   poster.addEventListener("error", () => { poster.hidden = true; });
 
@@ -195,14 +197,12 @@ export function mountPlayer(root, alarm, { autoplay = true } = {}) {
   // ------------------------------------------------------------ controls
   function setLive(on) {
     live = on;
-    $('[data-c="live"]').classList.toggle("on", on);
-    clearInterval(liveTimer);
-    liveImg.hidden = !on;
+    $('[data-c="live"]')?.classList.toggle("on", on);
+    liveCtl?.destroy(); liveCtl = null;
+    liveBox.hidden = !on;
     if (on) {
       video.pause();
-      const tick = () => { liveImg.src = `/media/alarms/${alarm.id}/live.jpg?t=${Date.now()}`; };
-      tick(); liveTimer = setInterval(tick, 1500);
-      $(".player-clock").innerHTML = '<b class="live-dot">● LIVE</b>';
+      liveCtl = mountLive(liveBox, alarm, { label: false });
     } else if (info) {
       video.play().catch(() => {});
     }
@@ -253,7 +253,7 @@ export function mountPlayer(root, alarm, { autoplay = true } = {}) {
   return {
     destroy() {
       destroyed = true;
-      clearTimeout(pollTimer); clearInterval(liveTimer); cancelAnimationFrame(raf);
+      clearTimeout(pollTimer); liveCtl?.destroy(); cancelAnimationFrame(raf);
       video.pause(); video.removeAttribute("src"); video.load();
       root.innerHTML = "";
     },

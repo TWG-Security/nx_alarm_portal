@@ -40,6 +40,9 @@ def alarm_dict(a: Alarm) -> dict:
         "acked_at": _iso(a.acked_at),
         "acked_by": a.acked_by.label if a.acked_by else None,
         "ack_note": a.ack_note,
+        "verdict": a.verdict or "",
+        "verdict_by": a.verdict_by.label if a.verdict_by else None,
+        "verdict_at": _iso(a.verdict_at),
         "nx_ack_result": a.nx_ack_result,
     }
 

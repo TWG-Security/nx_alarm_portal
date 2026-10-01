@@ -87,6 +87,23 @@ async def media(d: str, positionMs: int, durationMs: int = 10000):
                         "-metadata", "comment=" + json.dumps({"startTimeMs": str(start), "version": 4}), out], check=True)
         return Response(open(out, "rb").read(), media_type="video/mp4")
 
+@app.get("/media/{d}.webm")
+async def live_webm(d: str):
+    """Live view like NX's /media/<id>.webm: a VP8 test pattern streamed in real time."""
+    from fastapi.responses import StreamingResponse
+    proc = await asyncio.create_subprocess_exec(
+        FFMPEG, "-v", "error", "-re", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=15", "-c:v", "libvpx",
+        "-deadline", "realtime", "-b:v", "600k", "-f", "webm", "pipe:1", stdout=asyncio.subprocess.PIPE)
+    async def body():
+        try:
+            while chunk := await proc.stdout.read(16384):
+                yield chunk
+        finally:
+            if proc.returncode is None:
+                proc.kill()
+            await proc.wait()
+    return StreamingResponse(body(), media_type="video/webm")
+
 @app.get("/rest/v4/analytics/objectTracks")
 async def tracks(startTimeMs: int = 0, endTimeMs: int = 2**62):
     return [t for t in TRACKS if t["endTimeMs"] >= startTimeMs and t["startTimeMs"] <= endTimeMs]

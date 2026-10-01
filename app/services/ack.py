@@ -52,15 +52,20 @@ async def write_back(alarm: Alarm, user: User, note: str) -> dict:
         return {"method": method, "ok": False, "error": str(describe_http_error(exc))}
 
 
-async def acknowledge(db: AsyncSession, alarm: Alarm, user: User, note: str, ip: str = "") -> Alarm:
+VERDICTS = {"real": "Real event", "false": "False alarm"}
+
+
+async def acknowledge(db: AsyncSession, alarm: Alarm, user: User, note: str, ip: str = "", verdict: str = "",
+                      bulk: int = 0) -> Alarm:
+    """verdict: "real" | "false" | "" (pages opened before verdicts existed send none)."""
     note = (note or "").strip()[:4000]
+    verdict = verdict if verdict in VERDICTS else ""
     # Atomic claim: only one operator can move an alarm out of "new", even if two click at once.
     acked_at = datetime.now(timezone.utc)
-    claimed = await db.execute(
-        update(Alarm)
-        .where(Alarm.id == alarm.id, Alarm.state == "new")
-        .values(state="acknowledged", acked_at=acked_at, acked_by_id=user.id, ack_note=note)
-    )
+    values = dict(state="acknowledged", acked_at=acked_at, acked_by_id=user.id, ack_note=note)
+    if verdict:
+        values.update(verdict=verdict, verdict_by_id=user.id, verdict_at=acked_at)
+    claimed = await db.execute(update(Alarm).where(Alarm.id == alarm.id, Alarm.state == "new").values(**values))
     if claimed.rowcount == 0:
         await db.rollback()
         raise AlreadyAcknowledged()
@@ -70,8 +75,21 @@ async def acknowledge(db: AsyncSession, alarm: Alarm, user: User, note: str, ip:
     await db.refresh(alarm)
     alarm.nx_ack_result = result
     audit(db, alarm.tenant_id, "alarm.acknowledged", user_id=user.id, site_id=alarm.site_id,
-          alarm_id=alarm.id, ip=ip, note=note, nx=result)
+          alarm_id=alarm.id, ip=ip, note=note, nx=result, verdict=verdict, **({"bulk": bulk} if bulk else {}))
     await db.commit()
     await db.refresh(alarm)
     bus.publish(alarm.tenant_id, "alarm.acked", alarm_dict(alarm))
     return alarm
+
+
+async def set_verdict(db: AsyncSession, alarm: Alarm, user: User, verdict: str, note: str = "", ip: str = "",
+                      bulk: int = 0) -> bool:
+    """Change the verdict on an alarm that is no longer open (acknowledged, or recorded while disarmed).
+    Callers check the alarms.bulk_edit permission. Returns False if nothing changed."""
+    if verdict not in VERDICTS or alarm.state == "new" or alarm.verdict == verdict:
+        return False
+    old = alarm.verdict
+    alarm.verdict, alarm.verdict_by_id, alarm.verdict_at = verdict, user.id, datetime.now(timezone.utc)
+    audit(db, alarm.tenant_id, "alarm.verdict", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id, ip=ip,
+          old=old, new=verdict, note=(note or "").strip()[:4000], **({"bulk": bulk} if bulk else {}))
+    return True

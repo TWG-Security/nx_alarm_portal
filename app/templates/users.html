@@ -9,6 +9,24 @@
       <tbody id="user-rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
+  <div class="card groups-card" style="margin-bottom:20px">
+    <h2>Groups &amp; permissions</h2>
+    <p class="muted" style="margin-top:0">Admins can do everything. Give operators extra rights by putting them in a group.</p>
+    <div id="group-list" class="group-list"><div class="empty muted">Loading…</div></div>
+    <form id="group-form" class="group-form" hidden>
+      <h3 id="group-form-title">New group</h3>
+      <div class="field" style="max-width:360px"><label for="g-name">Group name</label><input id="g-name" type="text" maxlength="100" required placeholder="e.g. Supervisors"></div>
+      <div class="field"><label>Permissions</label><div id="g-perms"></div></div>
+      <div class="field"><label>Members</label><div id="g-members" class="member-grid"></div>
+        <small>Admins already have every permission, so they aren't listed.</small></div>
+      <div class="row" style="flex-wrap:wrap">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto">Save group</button>
+        <button class="btn" type="button" id="g-cancel" style="flex:0 0 auto">Cancel</button>
+        <button class="btn btn-danger" type="button" id="g-delete" style="flex:0 0 auto;margin-left:auto" hidden>Delete group</button>
+      </div>
+    </form>
+    <button class="btn" id="g-new" type="button">+ New group</button>
+  </div>
   <form class="card" id="user-form" style="max-width:640px">
     <h2>Add user</h2>
     <div class="row">

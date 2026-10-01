@@ -1,6 +1,9 @@
-// Alarm detail drawer: event-time frame, live view, details, acknowledge. Used on every page.
+// Alarm detail drawer: the recorded clip and live video side by side, details, acknowledge with a
+// verdict (real event / false alarm). Used on every page.
 
-import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, on, toast, PRIORITY } from "./common.js";
+import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip,
+         can } from "./common.js";
+import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
 
 const LEVEL_SOURCE = {
@@ -9,11 +12,12 @@ const LEVEL_SOURCE = {
 };
 const drawer = document.getElementById("drawer");
 const backdrop = document.getElementById("drawer-backdrop");
-let current = null, player = null;
+let current = null, player = null, live = null;
 
 export function closeDrawer() {
   current = null;
   player?.destroy(); player = null;
+  live?.destroy(); live = null;
   drawer.hidden = true;
   backdrop.hidden = true;
 }
@@ -22,6 +26,11 @@ function render(a) {
   const acked = a.state === "acknowledged";
   const disarmed = a.state === "disarmed";
   const nx = a.nx_ack_result;
+  const override = can("alarms.bulk_edit");
+  const verdictRow = `<dt>Verdict</dt><dd>${verdictChip(a) || '<span class="muted">Not marked</span>'}
+    ${a.verdict_by ? `<span class="muted">by ${esc(a.verdict_by)} · ${relTime(a.verdict_at)}</span>` : ""}
+    ${override ? `<div class="verdict-override">${Object.entries(VERDICT).filter(([v]) => v !== a.verdict).map(([v, label]) =>
+      `<button class="btn btn-sm" data-override="${v}" title="Admin override (logged)">Mark ${label.toLowerCase()}</button>`).join("")}</div>` : ""}</dd>`;
   const keepNote = drawer.querySelector("#drawer-note")?.value || "";
   drawer.querySelector(".drawer-top").innerHTML = `
     <div class="drawer-head">
@@ -44,17 +53,21 @@ function render(a) {
       ${disarmed ? `
         <h2>Received while the site was disarmed</h2>
         <p class="muted">This event was recorded but not raised: no sound, no pop-up, no live feed card. Nothing to acknowledge.
-          To have an NX rule raise alarms even while its site is disarmed, add <b>#24h</b> to the rule's Title/Comment.</p>` : acked ? `
+          To have an NX rule raise alarms even while its site is disarmed, add <b>#24h</b> to the rule's Title/Comment.</p>
+        <dl class="kv">${verdictRow}</dl>` : acked ? `
         <h2>Acknowledged</h2>
         <dl class="kv">
           <dt>By</dt><dd>${esc(a.acked_by || "—")}</dd>
           <dt>At</dt><dd>${fmtTime(a.acked_at)} <span class="muted">(${relTime(a.acked_at)})</span></dd>
+          ${verdictRow}
           <dt>Note</dt><dd style="white-space:pre-wrap">${esc(a.ack_note || "—")}</dd>
           <dt>NX write-back</dt><dd>${nx ? (nx.ok ? `<span class="chip acked">${esc(nx.method)}</span>` : `<span class="chip offline">failed</span> ${esc(nx.error || "")}`) : "—"}</dd>
         </dl>` : `
         <div class="field"><label for="drawer-note">Disposition note</label>
           <textarea id="drawer-note" maxlength="4000" placeholder="What did you see / do?"></textarea></div>
-        <button class="btn btn-primary" id="drawer-ack">Acknowledge</button>`}
+        <div class="verdict-buttons"><span class="muted ack-as">Acknowledge as</span>
+          <button class="btn btn-verdict-real" data-ack="real">Real event</button>
+          <button class="btn btn-verdict-false" data-ack="false">False alarm</button></div>`}
       <a class="btn btn-sm" style="margin-left:8px" href="/audit?alarm_id=${a.id}">Audit trail</a>
       <button class="btn btn-sm" id="drawer-export" title="Incident report PDF, or PDF + video clip + stills">Export report / clip…</button>
     </div>`;
@@ -66,10 +79,16 @@ export async function openDrawer(id, fallback) {
   let a = fallback;
   try { a = await api(`/api/alarms/${id}`); } catch (e) { if (!a) { toast(esc(e.message), { kind: "error" }); return; } }
   current = a;
-  player?.destroy();
-  drawer.innerHTML = '<div class="drawer-top"></div><div class="player-mount"></div><div class="drawer-details"></div>';
+  player?.destroy(); live?.destroy(); live = null;
+  drawer.innerHTML = `<div class="drawer-top"></div>
+    <div class="drawer-media${a.device_id ? "" : " single"}">
+      <section><div class="media-label">Recorded <span class="muted">around the alarm</span></div><div class="player-mount"></div></section>
+      ${a.device_id ? '<section><div class="media-label">Live <span class="muted">now</span></div><div class="live-mount"></div></section>' : ""}
+    </div>
+    <div class="drawer-details"></div>`;
   render(a);
-  player = mountPlayer(drawer.querySelector(".player-mount"), a);
+  player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
+  if (a.device_id) live = mountLive(drawer.querySelector(".live-mount"), a);
   drawer.hidden = false;
   backdrop.hidden = false;
   drawer.querySelector("#drawer-close").focus();
@@ -78,10 +97,23 @@ export async function openDrawer(id, fallback) {
 drawer.addEventListener("click", async (e) => {
   if (e.target.id === "drawer-close") return closeDrawer();
   if (e.target.id === "drawer-export") return openExport(current);
-  if (e.target.id === "drawer-ack") {
-    const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target);
+  const verdict = e.target.dataset.ack;
+  if (verdict) {
+    const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target, verdict);
     if (updated) { current = updated; render(updated); }
     return;
+  }
+  const override = e.target.dataset.override;
+  if (override) {
+    const why = prompt(`Change the verdict to “${VERDICT[override]}”? This admin override is logged.\nReason (optional):`, "");
+    if (why === null) return;
+    e.target.disabled = true;
+    try {
+      await api("/api/alarms/bulk", { method: "POST", body: { ids: [current.id], verdict: override, note: why } });
+      const updated = await api(`/api/alarms/${current.id}`);
+      current = updated; applyAlarm(updated); render(updated);
+      toast(`Verdict changed to ${VERDICT[override].toLowerCase()}`);
+    } catch (err) { toast(esc(err.message), { kind: "error" }); e.target.disabled = false; }
   }
 });
 backdrop.addEventListener("click", closeDrawer);

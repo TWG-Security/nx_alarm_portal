@@ -2,10 +2,12 @@
 
 import asyncio
 import json
+import time
 from collections import OrderedDict
 
 import re
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from sqlalchemy import select
@@ -84,6 +86,68 @@ async def alarm_snapshot(alarm_id: int, user: User = Depends(current_user), db: 
     else:
         _SNAP_CACHE.move_to_end(alarm.id)
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
+LIVE_MAX_PER_SITE = 6          # ~0.8 Mbit/s each through the relay
+LIVE_MAX_S = 20 * 60           # a forgotten tab stops after this; the page reconnects when it's looked at
+_live_slots: dict[int, asyncio.Semaphore] = {}
+
+
+@router.get("/media/alarms/{alarm_id}/live.webm")
+async def alarm_live_video(alarm_id: int, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Live video from the alarm's camera: NX transcodes to VP8/WebM (~100 KB/s at 640x360), the portal relays it.
+
+    Measured through the relay: first byte in 0.25 s. NX's MJPEG stream is ~17x the bandwidth.
+    """
+    alarm = await _alarm_for(db, user, alarm_id)
+    await db.commit()          # release the DB connection: a live stream runs for minutes (sessions don't expire on commit)
+    slots = _live_slots.setdefault(alarm.site_id, asyncio.Semaphore(LIVE_MAX_PER_SITE))
+    if slots.locked():
+        raise HTTPException(429, "Too many live views of this site are open; close one and retry")
+    await slots.acquire()
+    client = manager.client_for(alarm.site)
+    resp = None
+    try:
+        for attempt in (1, 2):
+            if not client._token:
+                await client._login()
+            req = client._client.build_request("GET", f"{client.base_url}/media/{alarm.device_id}.webm",
+                                               params={"resolution": "640x360"}, headers=client._headers(),
+                                               timeout=httpx.Timeout(15, read=30))
+            resp = await client._client.send(req, stream=True)
+            if resp.status_code == 401 and attempt == 1:
+                await resp.aclose()
+                client._token = None
+                continue
+            break
+        if resp.status_code != 200:
+            code = resp.status_code
+            await resp.aclose()
+            raise HTTPException(502, f"NX refused the live stream (HTTP {code})")
+    except HTTPException:
+        slots.release()
+        raise
+    except Exception as exc:  # noqa: BLE001
+        slots.release()
+        if resp is not None:
+            await resp.aclose()
+        raise HTTPException(502, str(describe_http_error(exc))) from exc
+
+    async def body():
+        started = time.monotonic()
+        try:
+            async for chunk in resp.aiter_raw():
+                yield chunk
+                if time.monotonic() - started > LIVE_MAX_S:
+                    break
+        except httpx.HTTPError:
+            pass                                    # NX dropped it; the page notices and reconnects
+        finally:
+            await resp.aclose()
+            slots.release()
+
+    return StreamingResponse(body(), media_type="video/webm",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @router.get("/media/alarms/{alarm_id}/live.jpg")

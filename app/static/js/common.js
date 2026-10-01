@@ -59,6 +59,10 @@ setInterval(() => {
 }, 1000);
 
 export const PRIORITY = { 1: "Critical", 2: "Alarm", 3: "Warning" };
+export const can = (perm) => (CFG.perms || []).includes(perm);
+// The operator's call on an event (app/services/ack.py VERDICTS).
+export const VERDICT = { real: "Real event", false: "False alarm" };
+export const verdictChip = (a) => a.verdict ? `<span class="chip verdict-${a.verdict}" title="${a.verdict_by ? `Marked by ${esc(a.verdict_by)}` : ""}">${VERDICT[a.verdict]}</span>` : "";
 export const STATUS = { online: "Online", offline: "Offline", auth_error: "Login failed", pending: "Pending" };
 
 export function toast(msg, { kind = "", timeout = 5000, onClick } = {}) {
@@ -228,15 +232,14 @@ export async function setArmed(site, armed) {
 export function openAck(alarm) {
   const dlg = document.getElementById("ack-dialog");
   const note = document.getElementById("ack-note");
-  const submit = document.getElementById("ack-submit");
   document.getElementById("ack-summary").textContent =
     `${alarm.caption} · ${alarm.site_name}${alarm.source_name ? " · " + alarm.source_name : ""}`;
   note.value = "";
   return new Promise((resolve) => {
     const onClose = async () => {
       dlg.removeEventListener("close", onClose);
-      if (dlg.returnValue !== "ok") return resolve(null);
-      resolve(await acknowledge(alarm.id, note.value, submit));
+      if (!(dlg.returnValue in VERDICT)) return resolve(null);
+      resolve(await acknowledge(alarm.id, note.value, null, dlg.returnValue));
     };
     dlg.addEventListener("close", onClose);
     document.getElementById("ack-cancel").onclick = () => dlg.close("cancel");
@@ -246,14 +249,16 @@ export function openAck(alarm) {
   });
 }
 
-export async function acknowledge(id, note, button) {
+// verdict: "real" | "false" — every acknowledgement records the operator's call.
+export async function acknowledge(id, note, button, verdict = "") {
   if (button) button.disabled = true;
   try {
-    const updated = await api(`/api/alarms/${id}/ack`, { method: "POST", body: { note } });
+    const updated = await api(`/api/alarms/${id}/ack`, { method: "POST", body: { note, verdict } });
+    const what = verdict ? ` as ${VERDICT[verdict].toLowerCase()}` : "";
     if (updated.nx_ack_result && !updated.nx_ack_result.ok) {
-      toast(`Acknowledged, but the NX write-back failed: ${esc(updated.nx_ack_result.error)}`, { kind: "error", timeout: 9000 });
+      toast(`Acknowledged${what}, but the NX write-back failed: ${esc(updated.nx_ack_result.error)}`, { kind: "error", timeout: 9000 });
     } else {
-      toast("Alarm acknowledged");
+      toast(`Alarm acknowledged${what}`);
     }
     applyAlarm(updated);
     return updated;

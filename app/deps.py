@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import get_settings
 from app.db import get_db
 from app.models import User
+from app.permissions import load_permissions
 from app.security import new_csrf_token
 from app.static_version import asset
 
@@ -50,6 +51,7 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
     if user is None or not user.is_active:
         request.session.clear()
         raise NotAuthenticated()
+    user._perms = await load_permissions(db, user)
     return user
 
 

@@ -3,6 +3,21 @@
 ## [Unreleased]
 
 ### Added
+- **Verdicts:**
+  - Every acknowledgement records the operator's call: **Real event** or **False alarm**. This applies in the drawer, the quick dialog and the critical pop-up, which now have two buttons instead of one Acknowledge.
+  - The alarm list shows verdict chips and can be filtered by verdict (real / false / not marked).
+  - The verdict is in the PDF report and the audit log. Pages opened before this change can still acknowledge without a verdict.
+- **Groups & permissions** (Users page):
+  - Admins create groups, tick permissions and pick members. The first permission is `alarms.bulk_edit`; admins always have it.
+- **Bulk edit (admin override):**
+  - On the Alarms page, select alarms (or "Select all shown") and mark them Real event or False alarm. Open ones are acknowledged with that verdict and the note; closed ones get their verdict changed.
+  - The dialog spells out what will happen (counting critical alarms), and every change is audit-logged with old and new values.
+  - Single overrides are available in the drawer.
+- **Live beside recorded:**
+  - The alarm drawer is wider: recorded clip on the left, **live video** on the right.
+  - Live video is NX's WebM stream (VP8 640x360, ~0.8 Mbit/s, first frame ~1 s), relayed by the portal. MJPEG would have been about 17 times the bandwidth.
+  - The live view stays near real time, pauses in hidden tabs, falls back to stills if the stream fails, and is capped at 6 streams per site and 20 min per stream.
+  - The critical pop-up's Live button plays the same video.
 - **Incident export**, from any alarm's details panel ("Export report / clip…"):
   - **Incident report (PDF)**, TWG-branded:
     - summary, with times in the site's time zone and UTC to the millisecond
