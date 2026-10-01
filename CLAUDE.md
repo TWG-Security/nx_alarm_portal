@@ -1,6 +1,6 @@
 # TWG Alarm Portal: project brief for Claude
 
-Read this at the start of every session. It's the handoff: what exists, how it works, what NX actually
+Read this at the start of every session, then **`BACKLOG.md`** (the current build plan). It's the handoff: what exists, how it works, what NX actually
 does (verified, not assumed), how to deploy and test, the rules, and what's next. **Update it at the end of
 any session that changes the picture.** Keep it current rather than adding a history log.
 
@@ -224,6 +224,14 @@ tools/dev_down.sh
 - Commits end with the attribution lines from the session's system reminder. Branch `feature/base-portal`.
 
 ## Open items / backlog (roughly in priority order)
+0. **NEXT UP: [`BACKLOG.md`](BACKLOG.md).** The user decided on 2026-10-01 to port account security from `TWG-Security/MCP-Control-Platform` @ `b17a07a` (local copy in `~/src/MCP-Control-Platform`):
+   - sign-in attack protection and Cloudflare edge bans
+   - 2FA (TOTP, passkeys, recovery codes, mandatory 2FA)
+   - sessions
+   - email, invites, forgot password, password rules
+   - Google sign-in
+   - a TWG **Platform settings** page
+   BACKLOG.md has the full spec, phases, defaults, alarm-safety rules, tests and open questions (SNMP, 2FA scope, SMTP, Cloudflare token, office IP). Work from it.
 1. **Cloudflare Tunnel follow-ups:**
    - put **Cloudflare Access** in front, since the portal is on the internet behind a password only. Click-level steps (one-time PIN, policy, 1-week session) were given to the user on 2026-09-30; they haven't confirmed it's done.
      **A policy limited to `@twgsecurity.com` would lock out customer companies**: add their domains, or allow one-time PIN for any email.
