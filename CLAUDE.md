@@ -26,7 +26,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
 ## Current production state (2026-10-02)
-- **Production runs `feature/base-portal` at `85b7265`** (3D site view; deployed 2026-10-02 12:36 UTC, no migration; health back in 5 s, both sites "live push connected"; pre-deploy backup `20261002-123632Z`). Before that `857d825` (deployed 2026-10-02 00:23 UTC, migration 0011). Restart: health back in 11 s, both sites "live push connected", the 3 signed-in browsers adopted as sessions (nobody signed out). Pre-deploy backup `20261002-002202Z`.
+- **Production runs `feature/base-portal` at `2aa398e`** (3D cameras + HUD + siren fix; deployed 2026-10-02 17:53 UTC, migration 0012; health back in 5 s, both sites "live push connected"; pre-deploy backup `20261002-175246Z`; camera lists read fine from both NX sites: 33 and 7). Before that `85b7265` (3D site view v1, 12:36 UTC).
   - Tunnel connector `10.0.2.58` is trusted (Platform page / `trust-proxy`); tunnel visitors now show their real IP (verified: 24.245.109.40).
   - Not configured yet: email, Cloudflare, Google sign-in, 2FA requirement, office allowlist.
 - Before that it ran `4ec5b96` (2026-10-01 17:20 UTC). It includes:
@@ -288,7 +288,7 @@ tools/dev_down.sh
 11. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
 13. Merge PR #1 once the user is happy.
-14. **3D site view ("God's Eye View")**: v1 deployed 2026-10-02 (`85b7265`). The user then said the flat free imagery looked bad ("crap 3d map") and asked for the look of gods-eye-view, "where I can add the cameras in". v2 is built (not deployed yet): HUD, cameras, Google 3D buildings support.
+14. **3D site view ("God's Eye View")**: v1 deployed 2026-10-02 (`85b7265`). The user then said the flat free imagery looked bad ("crap 3d map") and asked for the look of gods-eye-view, "where I can add the cameras in". v2 deployed 17:53 UTC (`2aa398e`): HUD, cameras, Google 3D buildings support (waiting on a key).
    - Where: map page → site panel → **3D view** replaces the map pane (feed and site list stay). `static/js/globe.js` (Cesium), wired in `map.js`; HUD markup in `map.html`, styles under "3D site view" in `theme.css`.
    - **Cameras:** `sites.camera_places` JSON (migration 0012), `{device id: {name, lat, lng, heading, fov, range_m}}`. API: `GET /api/sites/{id}/cameras` (NX list + placements), `PUT|DELETE /api/sites/{id}/cameras/{device}` (admins). Live: `/media/sites/{id}/cameras/{device}/live.webm|jpg`, placed cameras only, sharing `_live_webm` and the 6-per-site cap with alarm live view. Tests `tests/test_camera_places.py`, tenancy rows added; e2e `tools/e2e/cameras.py`.
    - **3D buildings need `GOOGLE_MAP_TILES_KEY`** in `.env` (Map Tiles API browser key restricted to `https://alarmportal.twgsecurity.net/*` and `https://10.1.10.97/*`; click-level steps were given to the user 2026-10-02). Not tested yet: no key. With it, `createGooglePhotorealistic3DTileset` replaces the globe and the flight re-aims at the sampled ground height. The map page sends `Referrer-Policy: strict-origin-when-cross-origin` so the key's website restriction sees our origin.
