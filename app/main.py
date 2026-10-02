@@ -59,6 +59,8 @@ async def lifespan(app: FastAPI):
         await manager.start_all()
         tasks.append(asyncio.create_task(arming.run_scheduler(), name="arming-scheduler"))
         tasks.append(asyncio.create_task(security_guard.run_sweeper(), name="security-sweeper"))
+        from app.routers.tiles import run_prefetcher
+        tasks.append(asyncio.create_task(run_prefetcher(), name="imagery-prefetch"))
     yield
     for t in tasks:
         t.cancel()

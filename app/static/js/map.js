@@ -183,7 +183,7 @@ const dms = (v, pos, neg) => {
 };
 function renderCoords({ lat, lng, alt, heading }) {
   $id("hud-coords").innerHTML = `${dms(lat, "N", "S")}  ${dms(lng, "E", "W")}<br>
-    ${lat.toFixed(5)}, ${lng.toFixed(5)}<br>ALT ${Math.round(alt).toLocaleString()} M · HDG ${String(Math.round(heading)).padStart(3, "0")}°`;
+    ${lat.toFixed(5)}, ${lng.toFixed(5)}<br>ALT ${Math.round(alt).toLocaleString()} M · HDG ${String(Math.round(heading) % 360).padStart(3, "0")}°`;
 }
 const tickClock = () => { $id("hud-clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC"; };
 

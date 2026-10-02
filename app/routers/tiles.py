@@ -116,3 +116,62 @@ async def sat_tile(z: int, x: int, y: int, request: Request):
     path = Path(settings.tile_cache_dir) / "sat" / str(z) / str(x) / f"{y}.jpg"
     data = await _cached(path, settings.sat_tile_cache_ttl_s, url, _sat_slots)
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ---------------------------------------------------------------- pre-loading sharp imagery
+# NAIP tiles take 1-8 s each the first time, so the 3D view starts blurry. A background job
+# fetches the deep levels around every site ahead of time (slowly: 2 at a time), then once a day
+# tops up anything that expired. Only network waits; the alarm path is unaffected.
+PREFETCH_LEVELS = (17, 18, 19)
+PREFETCH_RADIUS_M = 250
+_prefetch_slots = asyncio.Semaphore(2)
+log = __import__("logging").getLogger(__name__)
+
+
+def tiles_around(lat: float, lng: float, z: int, radius_m: float) -> list[tuple[int, int]]:
+    n = 2 ** z
+    fx = (lng + 180) / 360 * n
+    fy = (1 - math.asinh(math.tan(math.radians(lat))) / math.pi) / 2 * n
+    span = radius_m / (2 * _MERC * math.cos(math.radians(lat)) / n)     # radius in tiles at this latitude
+    return [(x, y) for x in range(int(fx - span), int(fx + span) + 1) for y in range(int(fy - span), int(fy + span) + 1)
+            if 0 <= x < n and 0 <= y < n]
+
+
+async def prefetch_site(lat: float, lng: float) -> tuple[int, int]:
+    """Fetch the sharp levels around a point into the cache. Returns (downloaded or refreshed, failed)."""
+    settings = get_settings()
+    got = failed = 0
+    for z in PREFETCH_LEVELS:
+        if z <= settings.sat_tile_max_tiled or z > settings.sat_tile_max_zoom:
+            continue
+        for x, y in tiles_around(lat, lng, z, PREFETCH_RADIUS_M):
+            path = Path(settings.tile_cache_dir) / "sat" / str(z) / str(x) / f"{y}.jpg"
+            if path.exists() and time.time() - path.stat().st_mtime < settings.sat_tile_cache_ttl_s:
+                continue
+            try:
+                await _cached(path, settings.sat_tile_cache_ttl_s, settings.sat_hires_url.format(bbox=tile_bbox(z, x, y)), _prefetch_slots)
+                got += 1
+            except Exception:  # noqa: BLE001 - outside the US, USGS down: the view falls back to coarser tiles
+                failed += 1
+    return got, failed
+
+
+async def run_prefetcher(every_s: float = 24 * 3600) -> None:
+    from sqlalchemy import select
+    from app.db import sessionmaker
+    from app.models import Site
+    await asyncio.sleep(30)          # let pollers and push settle after a restart first
+    while True:
+        try:
+            async with sessionmaker()() as db:
+                spots = (await db.execute(select(Site.id, Site.lat, Site.lng).where(
+                    Site.archived_at.is_(None), Site.lat.is_not(None), Site.lng.is_not(None)))).all()
+            for site_id, lat, lng in spots:
+                got, failed = await prefetch_site(lat, lng)
+                if got or failed:
+                    log.info("imagery pre-load: site %s: %d tiles fetched, %d failed", site_id, got, failed)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("imagery pre-load failed: %s", exc)
+        await asyncio.sleep(every_s)

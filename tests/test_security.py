@@ -177,3 +177,22 @@ async def test_map_page_offers_3d_view_and_cesium_is_served(client, admin):
     assert 'id="globe"' in page and "/tiles/sat/{z}/{x}/{y}.jpg" in page
     r = await client.get("/static/vendor/cesium/Cesium.js")
     assert r.status_code == 200 and len(r.content) > 1_000_000
+
+
+def test_tiles_around_covers_the_radius():
+    from app.routers.tiles import tiles_around
+    tiles = tiles_around(40.51527, -75.523403, 19, 250)     # TWG office; z19 tiles are ~58 m wide here
+    assert len(tiles) == 100 and (152155, 197501) in tiles   # the tile the office is on, plus ±4-5 around it
+    assert len(tiles_around(40.51527, -75.523403, 17, 250)) == 9
+
+
+@respx.mock
+async def test_prefetch_fills_the_cache_once(tmp_path, monkeypatch):
+    from app.config import get_settings
+    from app.routers import tiles
+    monkeypatch.setattr(get_settings(), "tile_cache_dir", str(tmp_path / "tiles"))
+    route = respx.get(url__startswith="https://imagery.nationalmap.gov/").mock(
+        return_value=httpx.Response(200, content=b"JPEG", headers={"content-type": "image/jpeg"}))
+    got, failed = await tiles.prefetch_site(40.5, -75.5)
+    assert failed == 0 and got == route.call_count > 50
+    assert await tiles.prefetch_site(40.5, -75.5) == (0, 0)          # all cached now: nothing fetched again
