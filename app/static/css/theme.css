@@ -261,6 +261,14 @@ tr:last-child td { border-bottom: 0; }
 .cam-place select, .cam-place button { font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
 .cam-place button { padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, .3); background: #222; color: #fff; cursor: pointer; }
 .cam-place button.go { border-color: #E08A30; color: #E08A30; }
+.cam-place li.editing { background: rgba(224, 138, 48, .14); }
+.cam-editor { padding: 10px; border-bottom: 1px solid rgba(224, 138, 48, .5); background: rgba(224, 138, 48, .08); }
+.cam-editor .ed-name { display: flex; justify-content: space-between; align-items: center; gap: 8px; text-transform: uppercase; letter-spacing: .05em; }
+.cam-editor .ed-hint { margin: 6px 0 8px; color: #E08A30; line-height: 1.45; }
+.cam-editor .ed-nums { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.cam-editor .ed-nums label { display: inline-flex; align-items: center; gap: 4px; color: #ccc; }
+.cam-editor .ed-nums input { width: 58px; height: 24px; padding: 0 4px; background: #1a1a1a; color: #fff; border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.cam-editor .ed-save { margin-top: 6px; color: #9a9a9a; font-size: 11px; min-height: 14px; }
 .map-notice { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--text-muted); }
 
 /* Leaflet: dark mode darkens OSM's light tiles; pins and controls are styled separately. */

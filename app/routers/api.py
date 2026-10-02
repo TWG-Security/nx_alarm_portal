@@ -252,8 +252,8 @@ class CameraPlaceIn(BaseModel):
     lat: float = Field(ge=-90, le=90)
     lng: float = Field(ge=-180, le=180)
     heading: float = Field(default=0, ge=0, le=360)        # degrees clockwise from north, the way it faces
-    fov: float = Field(default=60, ge=10, le=360)          # field of view, degrees (360 = fisheye / dome)
-    range_m: float = Field(default=40, ge=5, le=500)       # how far the view cone is drawn
+    fov: float = Field(default=60, ge=5, le=360)           # field of view, degrees (360 = fisheye / dome)
+    range_m: float = Field(default=40, ge=2, le=500)       # how far the view cone is drawn
 
 
 async def _site_cameras(site: Site) -> dict[str, str]:

@@ -170,19 +170,23 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
     const b = Cesium.Math.toRadians(bearingDeg);
     return [lng + (m * Math.sin(b)) / (M_PER_DEG * Math.cos(Cesium.Math.toRadians(lat))), lat + (m * Math.cos(b)) / M_PER_DEG];
   };
-  function conePositions(c) {
+  function coneLngLat(c) {          // flat [lng, lat, lng, lat, ...] outline of the view cone
     const fov = Math.min(c.fov || 60, 360), r = c.range_m || 40, pts = [];
-    if (fov < 360) pts.push(c.lng, c.lat);
+    if (fov < 359.5) pts.push(c.lng, c.lat);
     const steps = Math.max(6, Math.round(fov / 6));
     for (let i = 0; i <= steps; i++) pts.push(...offset(c.lat, c.lng, (c.heading || 0) - fov / 2 + (fov * i) / steps, r));
-    return Cesium.Cartesian3.fromDegreesArray(pts);
+    return pts;
   }
+  const conePositions = (c) => Cesium.Cartesian3.fromDegreesArray(coneLngLat(c));
+  const distM = (a, b) => Math.hypot((b.lng - a.lng) * M_PER_DEG * Math.cos(Cesium.Math.toRadians(a.lat)), (b.lat - a.lat) * M_PER_DEG);
+  const bearing = (a, b) => (Cesium.Math.toDegrees(Math.atan2((b.lng - a.lng) * Math.cos(Cesium.Math.toRadians(a.lat)), b.lat - a.lat)) + 360) % 360;
   const camsE = new Map();    // "site:device" -> { marker, cone }
   function updateCameras() {
     const seen = new Set();
     for (const c of cameras()) {
       const key = `${c.siteId}:${c.deviceId}`;
       seen.add(key);
+      const hide = key === editKey;   // being edited: the editor draws it
       const tint = c.alarm ? color("alarm") : ORANGE;
       let e = camsE.get(key);
       if (!e) {
@@ -209,6 +213,7 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
       e.edge.polyline.positions = [...ring, ring[0]];
       e.edge.polyline.material = tint;
       e.edge.polyline.width = c.alarm ? 3 : 2;
+      e.marker.show = e.cone.show = e.edge.show = !hide;
     }
     for (const [key, e] of camsE) {
       if (seen.has(key)) continue;
@@ -227,28 +232,27 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
     settle = setInterval(() => { scene.requestRender(); if (++n >= 6) clearInterval(settle); }, 250);
   }
 
-  // ---- clicks: pick a pin or camera, or (while placing) a spot on the ground
+  // ---- clicks: pick a pin or camera; while editing, the editor gets the mouse
   const toDeg = Cesium.Math.toDegrees;
   function groundAt(pos) {
-    let c = scene.pickPositionSupported ? scene.pickPosition(pos) : undefined;
-    if (!c || (!google && !scene.globe.show)) c = viewer.camera.pickEllipsoid(pos, scene.globe.ellipsoid);
+    // Flat globe: the ellipsoid is the ground. Google's tiles: the depth under the mouse.
+    let c = google && scene.pickPositionSupported ? scene.pickPosition(pos) : undefined;
+    if (!c) c = viewer.camera.pickEllipsoid(pos, scene.globe.ellipsoid);
     if (!c) return null;
     const g = Cesium.Cartographic.fromCartesian(c);
     return { lat: toDeg(g.latitude), lng: toDeg(g.longitude) };
   }
-  let placing = null;         // { onPoint(pt), onMove(pt) } while an admin places a camera
+  let editKey = null, editor = null;     // the camera being placed or edited
   const input = new Cesium.ScreenSpaceEventHandler(scene.canvas);
   input.setInputAction((click) => {
-    if (placing) { const pt = groundAt(click.position); if (pt) placing.onPoint(pt); return; }
+    if (editor?.click(click.position)) return;
     const hit = scene.pick(click.position)?.id;
     if (hit?.camera) onPickCamera?.(hit.camera.siteId, hit.camera.deviceId);
     else if (hit?.siteId != null) onPick?.(hit.siteId);
   }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
-  input.setInputAction((move) => {
-    if (!placing?.onMove) return;
-    const pt = groundAt(move.endPosition);
-    if (pt) placing.onMove(pt);
-  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+  input.setInputAction((move) => editor?.move(move.endPosition), Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+  input.setInputAction((down) => editor?.down(down.position), Cesium.ScreenSpaceEventType.LEFT_DOWN);
+  input.setInputAction(() => editor?.up(), Cesium.ScreenSpaceEventType.LEFT_UP);
 
   // ---- HUD readout: where the view is centred, when it stops moving
   viewer.camera.moveEnd.addEventListener(() => {
@@ -302,48 +306,99 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
     scene.requestRender();
   }
 
-  // ---- placing a camera: click its spot, then the direction it faces (a cone follows the mouse)
-  let preview = null;
-  function placeCamera({ fov = 60, range_m = 40 } = {}) {
-    cancelPlacing();
-    return new Promise((resolve) => {
-      let at = null;
-      const draw = (heading) => {
-        const c = { ...at, heading, fov, range_m };
-        if (!preview) preview = viewer.entities.add({ polygon: { classificationType: Cesium.ClassificationType.BOTH, material: Cesium.Color.WHITE.withAlpha(0.35) } });
-        preview.polygon.hierarchy = new Cesium.PolygonHierarchy(conePositions(c));
-        scene.requestRender();
-      };
-      const bearing = (to) => (toDeg(Math.atan2((to.lng - at.lng) * Math.cos(Cesium.Math.toRadians(at.lat)), to.lat - at.lat)) + 360) % 360;
-      placing = {
-        step: "spot",
-        onPoint(pt) {
-          if (!at) { at = pt; placing.step = "direction"; draw(0); placing.onStep?.("direction"); return; }
-          const heading = fov >= 360 ? 0 : bearing(pt);
-          endPlacing();
-          resolve({ ...at, heading, fov, range_m });
-        },
-        onMove(pt) { if (at && fov < 360) draw(bearing(pt)); },
-        cancel() { resolve(null); },
-      };
-      if (fov >= 360) placing.onPoint = (pt) => { endPlacing(); resolve({ ...pt, heading: 0, fov, range_m }); };
+  // ---- camera editor (admins). Not placed yet: click its spot, then move the mouse to aim it
+  // (direction and distance follow the mouse) and click. Placed: drag the handles. The centre
+  // moves it, the tip aims it and sets the distance, the side handles set the width (any angle,
+  // all the way to a 360° dome). Every finished change goes to onCommit (saved by the caller).
+  const LIMITS = { fov: [5, 360], range: [2, 500] };
+  const clampTo = (v, [lo, hi]) => Math.min(hi, Math.max(lo, v));
+  function editCamera(cam, { onChange, onCommit, onMode } = {}) {
+    stopEditing();
+    editKey = `${cam.siteId}:${cam.deviceId}`;
+    const st = { heading: 0, fov: 60, range_m: 30, ...cam };
+    let mode = st.lat == null ? "spot" : "edit", drag = null;
+    const live = (fn) => new Cesium.CallbackProperty(fn, false);
+    const at = (bearingDeg, m) => { const [lng, lat] = offset(st.lat, st.lng, bearingDeg, m); return Cesium.Cartesian3.fromDegrees(lng, lat, 0); };
+    const ready = () => st.lat != null;
+    const handle = (kind, pos, size, col) => viewer.entities.add({
+      position: live(() => (ready() ? pos() : Cesium.Cartesian3.ZERO)),
+      point: { show: live(() => ready() && mode === "edit"), pixelSize: size, color: col, outlineColor: INK, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
     });
+    const YELLOW = Cesium.Color.fromCssColorString("#FFD54A");
+    const parts = [
+      viewer.entities.add({
+        polygon: { show: live(() => ready()), hierarchy: live(() => new Cesium.PolygonHierarchy(ready() ? conePositions(st) : [])), material: Cesium.Color.WHITE.withAlpha(0.28), height: 0 },
+        polyline: { show: live(() => ready()), positions: live(() => { if (!ready()) return []; const r = conePositions(st); return [...r, r[0]]; }), width: 2,
+                    material: ORANGE, depthFailMaterial: ORANGE },
+      }),
+      handle("move", () => Cesium.Cartesian3.fromDegrees(st.lng, st.lat, 0), 16, Cesium.Color.WHITE),
+      handle("aim", () => at(st.heading, st.range_m), 13, ORANGE),
+      handle("left", () => at(st.heading - Math.min(st.fov, 359) / 2, st.range_m * 0.8), 11, YELLOW),
+      handle("right", () => at(st.heading + Math.min(st.fov, 359) / 2, st.range_m * 0.8), 11, YELLOW),
+    ];
+    ["move", "aim", "left", "right"].forEach((k, i) => { parts[i + 1].editHandle = k; });
+    const setMode = (m) => { mode = m; onMode?.(m, { ...st }); scene.requestRender(); };
+    const changed = () => { onChange?.({ ...st }); scene.requestRender(); };
+    const commit = () => onCommit?.({ lat: st.lat, lng: st.lng, heading: Math.round(st.heading * 10) / 10 % 360,
+                                      fov: Math.round(st.fov), range_m: Math.round(st.range_m * 10) / 10 });
+    const ctl = scene.screenSpaceCameraController;
+    editor = {
+      click(pos) {
+        if (mode === "spot") { const pt = groundAt(pos); if (pt) { Object.assign(st, pt); setMode("aim"); changed(); } return true; }
+        if (mode === "aim") { setMode("edit"); commit(); return true; }
+        return !!drag;
+      },
+      move(pos) {
+        if (mode === "aim" || drag) {
+          const pt = groundAt(pos);
+          if (!pt) return;
+          if (drag === "move") Object.assign(st, pt);
+          else if (mode === "aim" || drag === "aim") { st.heading = bearing(st, pt); st.range_m = clampTo(distM(st, pt), LIMITS.range); }
+          else if (drag === "left" || drag === "right") {
+            const diff = Math.abs(((bearing(st, pt) - st.heading + 540) % 360) - 180);    // 0..180 from the centre line
+            st.fov = clampTo(2 * diff, LIMITS.fov);
+            if (st.fov > 350) st.fov = 360;
+            st.range_m = clampTo(distM(st, pt) / 0.8, LIMITS.range);
+          }
+          changed();
+        }
+      },
+      down(pos) {
+        if (mode !== "edit") return;
+        const kind = scene.pick(pos)?.id?.editHandle;
+        if (!kind) return;
+        drag = kind;
+        ctl.enableInputs = false;          // the drag moves the handle, not the view
+      },
+      up() {
+        if (!drag) return;
+        drag = null;
+        ctl.enableInputs = true;
+        commit();
+      },
+      stop() { ctl.enableInputs = true; parts.forEach((e) => viewer.entities.remove(e)); },
+      set(values) { Object.assign(st, values); changed(); if (mode === "edit") commit(); },
+      get mode() { return mode; },
+      get state() { return { ...st }; },
+    };
+    setMode(mode);
+    update();
+    return editor;
   }
-  function endPlacing() {           // stop placing; returns what was being placed
-    const p = placing;
-    placing = null;
-    if (preview) { viewer.entities.remove(preview); preview = null; scene.requestRender(); }
-    return p;
+  function stopEditing() {
+    if (!editor) return;
+    editor.stop();
+    editor = null; editKey = null;
+    update();
   }
-  function cancelPlacing() { endPlacing()?.cancel?.(); }
 
   update();
   return {
-    update, flyTo, setImagery, placeCamera, cancelPlacing,
-    get placingStep() { return placing?.step || null; },
-    onPlacingStep(cb) { if (placing) placing.onStep = cb; },
+    update, flyTo, setImagery, editCamera, stopEditing,
+    get editing() { return editor ? { key: editKey, mode: editor.mode } : null; },
+    currentEditor: () => editor,
     hasBuildings: !!google,
-    destroy() { clearInterval(settle); cancelPlacing(); input.destroy(); viewer.destroy(); },
+    destroy() { clearInterval(settle); stopEditing(); input.destroy(); viewer.destroy(); },
     get viewer() { return viewer; },   // for tests and debugging
     stats,
   };

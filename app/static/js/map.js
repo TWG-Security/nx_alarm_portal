@@ -198,7 +198,10 @@ async function openGlobeView(site) {
     globe = await openGlobe(globeEl, {
       pins: globePins, cameras: globeCams,
       onPick: (id) => select(id),
-      onPickCamera: openCamPanel,
+      onPickCamera: (siteId, dev) => {
+        if (placingSite === siteId) return startCamEdit(dev, sites.get(siteId)?.camera_places?.[dev]?.name || "Camera");
+        openCamPanel(siteId, dev);
+      },
       onView: renderCoords,
       onTooSlow: (why) => {
         closeGlobeView();
@@ -258,59 +261,130 @@ camPanel.addEventListener("click", (e) => {
   if (id) { const a = openAlarms.get(Number(id)); if (a) focusAlarm(a); }
 });
 
-// ---- place cameras (admins): pick a camera, click its spot, then the direction it faces
-const FOVS = [[60, "Narrow 60°"], [90, "Wide 90°"], [120, "Ultra-wide 120°"], [360, "360° dome"]];
-let placingSite = null;
+// ---- place and edit cameras (admins). The editor in globe.js does the mouse work; this panel
+// lists the site's cameras and shows/edits the numbers. Every finished change is saved at once.
+let placingSite = null, editing = null;      // editing = { dev, name }
+const MODE_HINT = {
+  spot: (n) => `Click where ${n} is.`,
+  aim: (n) => `Move the mouse to aim ${n}: the cone follows (direction and distance). Click to set it.`,
+  edit: () => "Drag the white dot to move, the orange tip to aim and set distance, the yellow side dots to widen or narrow.",
+};
+const camRow = (c) => `<li data-dev="${esc(c.device_id)}" data-name="${esc(c.name)}">
+  <span class="nm" title="${esc(c.name)}">${esc(c.name)}${c.place ? ' <span class="placed">✓ placed</span>' : ""}</span>
+  <button type="button" class="go" data-edit>${c.place ? "Edit" : "Place"}</button>
+  ${c.place ? '<button type="button" data-unplace title="Take it off the 3D view">Remove</button>' : ""}</li>`;
+
 async function openPlacing() {
   const s = sites.get(selectedId);
   if (!s) { toast("Select a site first.", { kind: "warn" }); return; }
   placingSite = s.id;
   camsBtn.classList.add("active");
   camPlace.hidden = false;
-  camPlace.innerHTML = `<div class="hint">Loading ${esc(s.name)}'s cameras…</div>`;
+  if (!camPlace.querySelector("ul")) camPlace.innerHTML = `<div class="hint">Loading ${esc(s.name)}'s cameras…</div>`;
   try {
     const cams = await api(`/api/sites/${s.id}/cameras`);
     if (placingSite !== s.id) return;
-    camPlace.innerHTML = `<div class="hint" id="place-hint">Pick a camera, then click where it is on the map.</div>
-      <ul>${cams.map((c) => `<li data-dev="${esc(c.device_id)}">
-        <span class="nm" title="${esc(c.name)}">${esc(c.name)}${c.place ? ' <span class="placed">✓ placed</span>' : ""}</span>
-        <select aria-label="View width">${FOVS.map(([v, t]) => `<option value="${v}"${(c.place?.fov || 60) === v ? " selected" : ""}>${t}</option>`).join("")}</select>
-        <button type="button" class="go" data-place>${c.place ? "Move" : "Place"}</button>
-        ${c.place ? '<button type="button" data-unplace title="Take it off the 3D view">✕</button>' : ""}</li>`).join("") || '<li class="nm">No cameras found on this site.</li>'}</ul>`;
+    camPlace.innerHTML = `<div class="cam-editor" id="cam-editor" hidden></div>
+      <div class="hint">Pick a camera to place it, or click a camera on the map to edit it.</div>
+      <ul>${cams.map(camRow).join("") || '<li class="nm">No cameras found on this site.</li>'}</ul>`;
+    if (editing) renderEditor();
   } catch (err) {
     camPlace.innerHTML = `<div class="hint">Couldn't list cameras: ${esc(err.message)}</div>`;
   }
 }
 function closePlacing() {
-  globe?.cancelPlacing();
+  stopCamEdit();
   placingSite = null; camsBtn.classList.remove("active");
   camPlace.hidden = true; camPlace.replaceChildren();
 }
-async function saveSite(data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); }
-camPlace.addEventListener("click", async (e) => {
-  const li = e.target.closest("li[data-dev]");
-  if (!li || !globe || placingSite == null) return;
-  const dev = li.dataset.dev, name = li.querySelector(".nm").textContent.replace("✓ placed", "").trim();
+
+function renderEditor(st = globe?.editing && editing ? editing.st : null, saveState = "") {
+  const box = $id("cam-editor");
+  if (!box || !editing) return;
+  box.hidden = false;
+  const mode = globe?.editing?.mode || "spot";
+  box.innerHTML = `<div class="ed-name"><b>${esc(editing.name)}</b><button type="button" data-ed-done>Done</button></div>
+    <div class="ed-hint">${esc(MODE_HINT[mode](editing.name))}</div>
+    ${st && mode !== "spot" ? `<div class="ed-nums">
+      <label>Aim <input type="number" data-ed="heading" min="0" max="359" step="1" value="${Math.round(st.heading) % 360}">°</label>
+      <label>Width <input type="number" data-ed="fov" min="5" max="360" step="1" value="${Math.round(st.fov)}">°</label>
+      <label>Distance <input type="number" data-ed="range_m" min="2" max="500" step="1" value="${Math.round(st.range_m)}"> m</label>
+      <button type="button" data-ed-dome>${st.fov >= 360 ? "Cone" : "360° dome"}</button>
+    </div>` : ""}
+    <div class="ed-save" id="ed-save">${esc(saveState)}</div>`;
+}
+// While dragging only the numbers change (rebuilding the inputs would steal focus).
+function paintNumbers(st) {
+  const box = $id("cam-editor");
+  if (!box) return;
+  for (const k of ["heading", "fov", "range_m"]) {
+    const el = box.querySelector(`[data-ed="${k}"]`);
+    if (el && document.activeElement !== el) el.value = Math.round(k === "heading" ? st[k] % 360 : st[k]);
+  }
+  const dome = box.querySelector("[data-ed-dome]");
+  if (dome) dome.textContent = st.fov >= 360 ? "Cone" : "360° dome";
+}
+
+async function saveCam(siteId, dev, place) {
+  const say = (t) => { const el = $id("ed-save"); if (el) el.textContent = t; };
+  say("Saving…");
+  try {
+    await saveSite(await api(`/api/sites/${siteId}/cameras/${encodeURIComponent(dev)}`, { method: "PUT", body: place }));
+    say("Saved ✓");
+    const li = camPlace.querySelector(`li[data-dev="${CSS.escape(dev)}"]`);
+    if (li && !li.querySelector(".placed")) openPlacing();          // first placement: refresh the list
+  } catch (err) { say(`Not saved: ${err.message}`); toast(esc(err.message), { kind: "error" }); }
+}
+
+function startCamEdit(dev, name) {
   const site = sites.get(placingSite);
+  if (!site || !globe) return;
+  stopCamEdit();
+  const place = site.camera_places?.[dev];
+  editing = { dev, name, st: place ? { ...place } : null };
+  globe.editCamera({ siteId: site.id, deviceId: dev, name, ...(place || {}) }, {
+    onMode: (mode, st) => { editing.st = st; renderEditor(st); },
+    onChange: (st) => { editing.st = st; paintNumbers(st); },
+    onCommit: (place) => saveCam(site.id, dev, place),
+  });
+  renderEditor(editing.st);
+  camPlace.querySelectorAll("li[data-dev]").forEach((li) => li.classList.toggle("editing", li.dataset.dev === dev));
+}
+function stopCamEdit() {
+  globe?.stopEditing();
+  editing = null;
+  const box = $id("cam-editor");
+  if (box) { box.hidden = true; box.replaceChildren(); }
+  camPlace.querySelectorAll("li.editing").forEach((li) => li.classList.remove("editing"));
+}
+async function saveSite(data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); }
+
+camPlace.addEventListener("click", async (e) => {
+  if (!globe || placingSite == null) return;
+  if (e.target.closest("[data-ed-done]")) return stopCamEdit();
+  if (e.target.closest("[data-ed-dome]") && editing?.st) return editorSet({ fov: editing.st.fov >= 360 ? 90 : 360 });
+  const li = e.target.closest("li[data-dev]");
+  if (!li) return;
+  const dev = li.dataset.dev, name = li.dataset.name;
   if (e.target.closest("[data-unplace]")) {
-    await saveSite(await api(`/api/sites/${site.id}/cameras/${encodeURIComponent(dev)}`, { method: "DELETE" }));
+    if (editing?.dev === dev) stopCamEdit();
+    await saveSite(await api(`/api/sites/${placingSite}/cameras/${encodeURIComponent(dev)}`, { method: "DELETE" }));
     return openPlacing();
   }
-  if (!e.target.closest("[data-place]")) return;
-  const fov = Number(li.querySelector("select").value);
-  const hint = $id("place-hint");
-  hint.textContent = `Click where ${name} is.  (Esc to cancel)`;
-  const done = globe.placeCamera({ fov });
-  globe.onPlacingStep(() => { hint.textContent = `Now click the direction ${name} faces.`; });
-  const spot = await done;
-  if (!spot) { if ($id("place-hint")) $id("place-hint").textContent = "Pick a camera, then click where it is on the map."; return; }
-  try {
-    await saveSite(await api(`/api/sites/${site.id}/cameras/${encodeURIComponent(dev)}`, { method: "PUT", body: spot }));
-    toast(`${esc(name)} placed.`, { kind: "ok", timeout: 3000 });
-  } catch (err) { toast(esc(err.message), { kind: "error" }); }
-  openPlacing();
+  if (e.target.closest("[data-edit]")) startCamEdit(dev, name);
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && globe?.placingStep) globe.cancelPlacing(); });
+// Typing a number applies it (and saves) when the field is left or Enter is pressed.
+const editorSet = (values) => { if (editing) globe?.currentEditor()?.set(values); };
+camPlace.addEventListener("change", (e) => {
+  const k = e.target.dataset?.ed;
+  if (!k) return;
+  const v = Number(e.target.value);
+  if (!Number.isFinite(v)) return;
+  editorSet({ [k]: k === "heading" ? ((v % 360) + 360) % 360 : v });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && editing && globe?.editing?.mode !== "edit") stopCamEdit();
+});
 
 globeBar.addEventListener("click", (e) => {
   const t = e.target;
