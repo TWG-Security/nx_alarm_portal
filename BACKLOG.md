@@ -1,7 +1,7 @@
 # Backlog: account security and Platform settings (port from MCP-Control-Platform)
 
 > **Status 2026-10-02: all 4 phases built and deployed (`857d825`).** What's left is in CLAUDE.md "Open items"
-> (office allowlist, the user's open questions; the 3D site view, item 14, is built but not deployed).
+> (office allowlist, the user's open questions; the 3D site view, item 14, is deployed).
 
 **Next session: read `CLAUDE.md` first, then this file. It's everything needed to build this without
 re-reading the other project.** The user decided the scope on 2026-10-01: build **everything** below, plus a

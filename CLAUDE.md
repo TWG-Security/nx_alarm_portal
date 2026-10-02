@@ -26,7 +26,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
 ## Current production state (2026-10-02)
-- **Production runs `feature/base-portal` at `857d825`** (deployed 2026-10-02 00:23 UTC, migration 0011). Restart: health back in 11 s, both sites "live push connected", the 3 signed-in browsers adopted as sessions (nobody signed out). Pre-deploy backup `20261002-002202Z`.
+- **Production runs `feature/base-portal` at `85b7265`** (3D site view; deployed 2026-10-02 12:36 UTC, no migration; health back in 5 s, both sites "live push connected"; pre-deploy backup `20261002-123632Z`). Before that `857d825` (deployed 2026-10-02 00:23 UTC, migration 0011). Restart: health back in 11 s, both sites "live push connected", the 3 signed-in browsers adopted as sessions (nobody signed out). Pre-deploy backup `20261002-002202Z`.
   - Tunnel connector `10.0.2.58` is trusted (Platform page / `trust-proxy`); tunnel visitors now show their real IP (verified: 24.245.109.40).
   - Not configured yet: email, Cloudflare, Google sign-in, 2FA requirement, office allowlist.
 - Before that it ran `4ec5b96` (2026-10-01 17:20 UTC). It includes:
@@ -286,7 +286,7 @@ tools/dev_down.sh
 11. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
 13. Merge PR #1 once the user is happy.
-14. **3D site view ("God's Eye View")**: BUILT on 2026-10-02, **not deployed**. The user's choice: clicking a site opens a 3D view of it; free imagery now, 3D buildings once there's a key.
+14. **3D site view ("God's Eye View")**: built and **deployed** on 2026-10-02 (`85b7265`). The user's choice: clicking a site opens a 3D view of it; free imagery now, 3D buildings once there's a key.
    - What it does: map page → site panel → **3D view** dives from space into a tilted view of the site in the map pane (feed and site list stay visible). Pins coloured by state, click a pin to select, Satellite/Street, Re-center, 2D map. Selecting a site or a feed alarm flies there. No auto-fly on new alarms (it would yank the view away from an operator).
    - Imagery: USGS The National Map, public domain, so fine commercially. z<=16 from the tiled `USGSImageryOnly` (fast); z17-19 from `USGSNAIPPlus/ImageServer/exportImage` per tile (0.3 m, **1-8 s per tile** first time, then cached 30 days). US only at close range. Cesium ion is never used (no token; baseLayer/geocoder off).
    - **Measured (headless SwiftShader, the worst case):** alarms 44-85 ms with the view closed. With it open they were **300-800 ms late** during the fly-in and imagery loading, normal (37-83 ms) once settled, and frames hit 3.3 s while dragging. Hence the safeguards in `globe.js`: software WebGL (SwiftShader/llvmpipe/Basic Render) → refused with a message; a frame watchdog closes the view if one frame is ≥1 s or 3 are ≥150 ms within 10 s (it tripped within ~2 s on SwiftShader); a failed load → message, 2D map back. `localStorage twg-3d-force=1` skips the software check (tests only).
