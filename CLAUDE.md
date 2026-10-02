@@ -61,6 +61,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
   device `3c78795b-9824-22c1-88ad-cdb477f27197`) is tagged **`#alarm`** (the user changed it from `#warning`). Its action is "Write to Log", with "Interval of action" off. It's the one to fire for tests; it chimes as an Alarm in the portal.
 - Measured on production:
   - soft trigger → portal: **87–219 ms**, by push
+  - critical siren: was up to 0.5 s after the pop-up (sound loop tick); fixed 2026-10-02 to play on arrival (33-42 ms in dev)
   - video playing **6.9 s** after the event
   - a 30 s clip (including conversion to H.264) is ready in about 2 s
 
@@ -237,7 +238,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 139 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 142 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -248,6 +249,7 @@ tools/dev_up.sh && .venv/bin/python -m tools.e2e.signin /tmp      # 5 bad sign-i
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.twofactor /tmp   # authenticator app, passkey (virtual authenticator), forced enrolment, remote sign-out -> SIGNED OUT banner + tone
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.email /tmp       # SMTP sink on :8125: test email, invite -> setup link, forgot -> reset link
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.cameras /tmp # place cameras on the 3D view, live window, alarm turns a camera red
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.globe /tmp   # 3D view: software-GL refusal, forced open + watchdog, alarm latency while open, failed load
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
@@ -286,9 +288,10 @@ tools/dev_down.sh
 11. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
 13. Merge PR #1 once the user is happy.
-14. **3D site view ("God's Eye View")**: built and **deployed** on 2026-10-02 (`85b7265`). The user's choice: clicking a site opens a 3D view of it; free imagery now, 3D buildings once there's a key.
-   - What it does: map page → site panel → **3D view** dives from space into a tilted view of the site in the map pane (feed and site list stay visible). Pins coloured by state, click a pin to select, Satellite/Street, Re-center, 2D map. Selecting a site or a feed alarm flies there. No auto-fly on new alarms (it would yank the view away from an operator).
-   - Imagery: USGS The National Map, public domain, so fine commercially. z<=16 from the tiled `USGSImageryOnly` (fast); z17-19 from `USGSNAIPPlus/ImageServer/exportImage` per tile (0.3 m, **1-8 s per tile** first time, then cached 30 days). US only at close range. Cesium ion is never used (no token; baseLayer/geocoder off).
-   - **Measured (headless SwiftShader, the worst case):** alarms 44-85 ms with the view closed. With it open they were **300-800 ms late** during the fly-in and imagery loading, normal (37-83 ms) once settled, and frames hit 3.3 s while dragging. Hence the safeguards in `globe.js`: software WebGL (SwiftShader/llvmpipe/Basic Render) → refused with a message; a frame watchdog closes the view if one frame is ≥1 s or 3 are ≥150 ms within 10 s (it tripped within ~2 s on SwiftShader); a failed load → message, 2D map back. `localStorage twg-3d-force=1` skips the software check (tests only).
-   - **Not measured yet: a real GPU / the wall-screen PC.** After deploying, open the 3D view there and press Truss 8: the alarm should appear as fast as on the 2D map, and the watchdog shouldn't trip. If it trips on decent hardware, loosen `FRAME_SLOW_MS`.
-   - Next, if wanted: Google Photorealistic 3D Tiles behind a setting (needs a metered Google Maps Platform key, which the browser uses directly, so site coordinates go to Google; no video), camera positions on the site, a slow orbit for the wall screen, remembering 3D mode across reloads. The voice feature from gods-eye-view needs OpenAI (TWG policy question); not planned.
+14. **3D site view ("God's Eye View")**: v1 deployed 2026-10-02 (`85b7265`). The user then said the flat free imagery looked bad ("crap 3d map") and asked for the look of gods-eye-view, "where I can add the cameras in". v2 is built (not deployed yet): HUD, cameras, Google 3D buildings support.
+   - Where: map page → site panel → **3D view** replaces the map pane (feed and site list stay). `static/js/globe.js` (Cesium), wired in `map.js`; HUD markup in `map.html`, styles under "3D site view" in `theme.css`.
+   - **Cameras:** `sites.camera_places` JSON (migration 0012), `{device id: {name, lat, lng, heading, fov, range_m}}`. API: `GET /api/sites/{id}/cameras` (NX list + placements), `PUT|DELETE /api/sites/{id}/cameras/{device}` (admins). Live: `/media/sites/{id}/cameras/{device}/live.webm|jpg`, placed cameras only, sharing `_live_webm` and the 6-per-site cap with alarm live view. Tests `tests/test_camera_places.py`, tenancy rows added; e2e `tools/e2e/cameras.py`.
+   - **3D buildings need `GOOGLE_MAP_TILES_KEY`** in `.env` (Map Tiles API browser key restricted to `https://alarmportal.twgsecurity.net/*` and `https://10.1.10.97/*`; click-level steps were given to the user 2026-10-02). Not tested yet: no key. With it, `createGooglePhotorealistic3DTileset` replaces the globe and the flight re-aims at the sampled ground height. The map page sends `Referrer-Policy: strict-origin-when-cross-origin` so the key's website restriction sees our origin.
+   - Imagery without a key: USGS The National Map, public domain. z<=16 tiled `USGSImageryOnly`; z17-19 `USGSNAIPPlus/ImageServer/exportImage` per tile (0.3 m, 1-8 s first time, cached 30 days). Cesium ion is never used.
+   - **Alarm safety (measured, headless SwiftShader = worst case):** alarms 44-85 ms with the view closed; 300-800 ms late during load and frames of 3.3 s while dragging on software GL. So: software WebGL is refused; a frame watchdog closes the view (one frame ≥1 s or 3 ≥150 ms within 10 s; tripped within ~2 s on SwiftShader); a failed load leaves the 2D map. With the watchdog off (test switch), an alarm reached the screen in 103-114 ms with the 3D view open and a camera's live video playing. Test switch: localStorage `twg-3d-force` = 1 (skip graphics check) or 2 (also no watchdog). **Not measured on a real GPU / the wall-screen PC yet.**
+   - Next, if wanted: tune for Google tiles once there's a key (watchdog limits, `maximumScreenSpaceError`), a slow orbit for the wall screen, remember 3D mode across reloads, camera height/tilt. Voice control (gods-eye-view uses OpenAI) is not planned.

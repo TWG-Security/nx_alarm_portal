@@ -40,9 +40,9 @@ function tone(freq, start, dur, { type = "sine", gain = 0.22, freqEnd } = {}) {
   o.stop(start + dur + 0.02);
 }
 
-export function play(level, { force = false } = {}) {
-  if (!ctx || (!force && (muted || !isLeader()))) return;
-  if (!running()) { ctx.resume().catch(() => {}); if (!force) return; }
+export function play(level, { force = false } = {}) {   // true if it played
+  if (!ctx || (!force && (muted || !isLeader()))) return false;
+  if (!running()) { ctx.resume().catch(() => {}); if (!force) return false; }
   const t = ctx.currentTime + 0.02;
   if (level === "critical") {
     for (let i = 0; i < 4; i++) tone(i % 2 ? 1250 : 650, t + i * 0.36, 0.34, { type: "square", gain: 0.16, freqEnd: i % 2 ? 650 : 1250 });
@@ -54,6 +54,7 @@ export function play(level, { force = false } = {}) {
     tone(587, t, 0.18, { gain: 0.14 });
     tone(440, t + 0.2, 0.26, { gain: 0.12 });
   }
+  return true;
 }
 
 // Losing the live connection means alarms could be late: say so out loud, every 10 s.
@@ -95,7 +96,11 @@ setInterval(() => {
 
 on("alarm.arrived", (a) => {
   if (!isMine(a)) return;          // another company's alarm (TWG's multi-company view): shown, never sounded
-  if (a.priority === 1) { unsilence(); lastPlayed[1] = 0; return; }   // the loop sounds the siren right away
+  if (a.priority === 1) {          // siren now (not on the repeat loop's next tick, up to 0.5 s later); the loop repeats it
+    unsilence();
+    lastPlayed[1] = play("critical") ? Date.now() : 0;
+    return;
+  }
   const now = Date.now();
   if (a.priority === 2) { play("alarm"); lastPlayed[2] = now; }
   else play("warning");

@@ -137,7 +137,7 @@ function fitToSites() {
 function renderAll() {
   renderStats(); renderSites(); renderDetail(); renderFeed();
   for (const s of sites.values()) upsertMarker(s);
-  globe?.update();
+  globe?.update(); renderHud();
 }
 
 function select(id, pan = true) {
@@ -149,11 +149,43 @@ function select(id, pan = true) {
 }
 
 // ---------------------------------------------------------------- 3D view (over the map pane)
-const globeEl = document.getElementById("globe"), globeBar = document.getElementById("globe-bar"), globeMsg = document.getElementById("globe-msg");
+const $id = (x) => document.getElementById(x);
+const globeEl = $id("globe"), globeBar = $id("globe-bar"), globeMsg = $id("globe-msg"), hud = $id("hud");
+const camPanel = $id("cam-panel"), camPlace = $id("cam-place"), camsBtn = $id("globe-cams");
+let hudClock = null, camLive = null, camOpen = null;   // camOpen = { siteId, deviceId }
+
 const globePins = () => [...sites.values()].map((s) => {
   const { c, marker } = stateOf(s);
   return { id: s.id, name: s.name, lat: s.lat, lng: s.lng, state: marker, count: c[1] + c[2] + c[3], disarmed: s.arming?.armed === false };
 });
+const camAlarm = (siteId, deviceId) => [...openAlarms.values()].find((a) => a.site_id === siteId && a.device_id === deviceId && inView(a));
+const globeCams = () => [...sites.values()].flatMap((s) => Object.entries(s.camera_places || {}).map(([deviceId, p]) =>
+  ({ siteId: s.id, deviceId, ...p, alarm: !!camAlarm(s.id, deviceId) })));
+
+// HUD text: the selected site, a UTC clock, counts, and where the view is centred.
+const STATE_TXT = { ok: "NORMAL", warn: "WARNING", alarm: "ALARM", offline: "OFFLINE" };
+function renderHud() {
+  if (!globe) return;
+  const s = sites.get(selectedId);
+  if (s) {
+    const { c, marker } = stateOf(s);
+    const n = c[1] + c[2] + c[3];
+    $id("hud-site").innerHTML = `${esc(s.name.toUpperCase())}<br><span class="hud-sub">${esc((s.address || "").toUpperCase())}</span><br>
+      <span class="st ${marker}">${STATE_TXT[marker]}${n ? ` · ${n} OPEN` : ""}</span>${s.arming?.armed === false ? ' <span class="st warn">DISARMED</span>' : ""}`;
+  } else $id("hud-site").textContent = "";
+  const open = [...openAlarms.values()].filter(inView).length;
+  const placed = [...sites.values()].reduce((n, x) => n + Object.keys(x.camera_places || {}).length, 0);
+  $id("hud-counts").textContent = `SITES ${sites.size} · CAMERAS ${placed} · OPEN ALARMS ${open}`;
+}
+const dms = (v, pos, neg) => {
+  const a = Math.abs(v), d = Math.floor(a), m = Math.floor((a - d) * 60), sec = ((a - d) * 60 - m) * 60;
+  return `${d}°${String(m).padStart(2, "0")}'${sec.toFixed(1).padStart(4, "0")}"${v >= 0 ? pos : neg}`;
+};
+function renderCoords({ lat, lng, alt, heading }) {
+  $id("hud-coords").innerHTML = `${dms(lat, "N", "S")}  ${dms(lng, "E", "W")}<br>
+    ${lat.toFixed(5)}, ${lng.toFixed(5)}<br>ALT ${Math.round(alt).toLocaleString()} M · HDG ${String(Math.round(heading)).padStart(3, "0")}°`;
+}
+const tickClock = () => { $id("hud-clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC"; };
 
 async function openGlobeView(site) {
   if (globe) { globe.flyTo(site); return; }
@@ -164,7 +196,10 @@ async function openGlobeView(site) {
   try {
     const { openGlobe } = await import("./globe.js");
     globe = await openGlobe(globeEl, {
-      pins: globePins, onPick: (id) => select(id),
+      pins: globePins, cameras: globeCams,
+      onPick: (id) => select(id),
+      onPickCamera: openCamPanel,
+      onView: renderCoords,
       onTooSlow: (why) => {
         closeGlobeView();
         toast(`3D view closed to keep alarms fast: ${esc(why)}. The 2D map is back.`, { kind: "warn", timeout: 10000 });
@@ -173,6 +208,10 @@ async function openGlobeView(site) {
     window.__globeStats = globe.stats;
     window.__globe = globe.viewer;   // for tools/e2e/globe.py and debugging
     globeMsg.hidden = true;
+    hud.hidden = false; camsBtn.hidden = !CFG.isAdmin;
+    $id("imagery-3d").textContent = globe.hasBuildings ? "3D" : "Satellite";
+    tickClock(); hudClock = setInterval(tickClock, 1000);
+    renderHud();
     globe.flyTo(sites.get(selectedId) || site, { fromSpace: true });
   } catch (err) {
     console.error("3D view failed", err);
@@ -184,19 +223,104 @@ async function openGlobeView(site) {
 }
 
 function closeGlobeView() {
+  closeCamPanel(); closePlacing();
   try { globe?.destroy(); } catch (err) { console.error(err); }
   globe = null; delete window.__globe; delete window.__globeStats;
-  globeEl.hidden = true; globeBar.hidden = true; globeMsg.hidden = true;
+  clearInterval(hudClock); hudClock = null;
+  globeEl.hidden = true; globeBar.hidden = true; globeMsg.hidden = true; hud.hidden = true;
   globeEl.replaceChildren();
 }
 
+// ---- live camera window: click a camera on the 3D view
+async function openCamPanel(siteId, deviceId) {
+  const s = sites.get(siteId), p = s?.camera_places?.[deviceId];
+  if (!p) return;
+  closeCamPanel();
+  camOpen = { siteId, deviceId };
+  const a = camAlarm(siteId, deviceId);
+  camPanel.classList.toggle("alarm", !!a);
+  camPanel.innerHTML = `<div class="cam-head"><span><b>${esc(p.name || "Camera")}</b> <span class="muted">· ${esc(s.name)}</span></span>
+      <span>${a ? `<button type="button" data-cam-alarm="${a.id}" title="Open this alarm">ALARM ▸</button>` : ""}<button type="button" data-cam-close aria-label="Close">✕</button></span></div>
+    <div class="cam-live"></div>`;
+  camPanel.hidden = false;
+  const { mountLive } = await import("./live.js");
+  if (camOpen?.deviceId !== deviceId) return;
+  camLive = mountLive(camPanel.querySelector(".cam-live"), { id: 0, device_id: deviceId },
+    { label: false, base: `/media/sites/${siteId}/cameras/${encodeURIComponent(deviceId)}` });
+}
+function closeCamPanel() {
+  try { camLive?.destroy(); } catch (err) { console.error(err); }
+  camLive = null; camOpen = null; camPanel.hidden = true; camPanel.replaceChildren();
+}
+camPanel.addEventListener("click", (e) => {
+  if (e.target.closest("[data-cam-close]")) return closeCamPanel();
+  const id = e.target.closest("[data-cam-alarm]")?.dataset.camAlarm;
+  if (id) { const a = openAlarms.get(Number(id)); if (a) focusAlarm(a); }
+});
+
+// ---- place cameras (admins): pick a camera, click its spot, then the direction it faces
+const FOVS = [[60, "Narrow 60°"], [90, "Wide 90°"], [120, "Ultra-wide 120°"], [360, "360° dome"]];
+let placingSite = null;
+async function openPlacing() {
+  const s = sites.get(selectedId);
+  if (!s) { toast("Select a site first.", { kind: "warn" }); return; }
+  placingSite = s.id;
+  camsBtn.classList.add("active");
+  camPlace.hidden = false;
+  camPlace.innerHTML = `<div class="hint">Loading ${esc(s.name)}'s cameras…</div>`;
+  try {
+    const cams = await api(`/api/sites/${s.id}/cameras`);
+    if (placingSite !== s.id) return;
+    camPlace.innerHTML = `<div class="hint" id="place-hint">Pick a camera, then click where it is on the map.</div>
+      <ul>${cams.map((c) => `<li data-dev="${esc(c.device_id)}">
+        <span class="nm" title="${esc(c.name)}">${esc(c.name)}${c.place ? ' <span class="placed">✓ placed</span>' : ""}</span>
+        <select aria-label="View width">${FOVS.map(([v, t]) => `<option value="${v}"${(c.place?.fov || 60) === v ? " selected" : ""}>${t}</option>`).join("")}</select>
+        <button type="button" class="go" data-place>${c.place ? "Move" : "Place"}</button>
+        ${c.place ? '<button type="button" data-unplace title="Take it off the 3D view">✕</button>' : ""}</li>`).join("") || '<li class="nm">No cameras found on this site.</li>'}</ul>`;
+  } catch (err) {
+    camPlace.innerHTML = `<div class="hint">Couldn't list cameras: ${esc(err.message)}</div>`;
+  }
+}
+function closePlacing() {
+  globe?.cancelPlacing();
+  placingSite = null; camsBtn.classList.remove("active");
+  camPlace.hidden = true; camPlace.replaceChildren();
+}
+async function saveSite(data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); }
+camPlace.addEventListener("click", async (e) => {
+  const li = e.target.closest("li[data-dev]");
+  if (!li || !globe || placingSite == null) return;
+  const dev = li.dataset.dev, name = li.querySelector(".nm").textContent.replace("✓ placed", "").trim();
+  const site = sites.get(placingSite);
+  if (e.target.closest("[data-unplace]")) {
+    await saveSite(await api(`/api/sites/${site.id}/cameras/${encodeURIComponent(dev)}`, { method: "DELETE" }));
+    return openPlacing();
+  }
+  if (!e.target.closest("[data-place]")) return;
+  const fov = Number(li.querySelector("select").value);
+  const hint = $id("place-hint");
+  hint.textContent = `Click where ${name} is.  (Esc to cancel)`;
+  const done = globe.placeCamera({ fov });
+  globe.onPlacingStep(() => { hint.textContent = `Now click the direction ${name} faces.`; });
+  const spot = await done;
+  if (!spot) { if ($id("place-hint")) $id("place-hint").textContent = "Pick a camera, then click where it is on the map."; return; }
+  try {
+    await saveSite(await api(`/api/sites/${site.id}/cameras/${encodeURIComponent(dev)}`, { method: "PUT", body: spot }));
+    toast(`${esc(name)} placed.`, { kind: "ok", timeout: 3000 });
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+  openPlacing();
+});
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && globe?.placingStep) globe.cancelPlacing(); });
+
 globeBar.addEventListener("click", (e) => {
-  if (e.target.id === "globe-close") return closeGlobeView();
-  if (e.target.id === "globe-recenter") return globe?.flyTo(sites.get(selectedId));
-  const kind = e.target.dataset.imagery;
+  const t = e.target;
+  if (t.id === "globe-close") return closeGlobeView();
+  if (t.id === "globe-recenter") return globe?.flyTo(sites.get(selectedId));
+  if (t.id === "globe-cams") return placingSite == null ? openPlacing() : closePlacing();
+  const kind = t.dataset.imagery;
   if (kind && globe) {
     globe.setImagery(kind);
-    globeBar.querySelectorAll("[data-imagery]").forEach((b) => b.classList.toggle("active", b === e.target));
+    globeBar.querySelectorAll("[data-imagery]").forEach((b) => b.classList.toggle("active", b === t));
   }
 });
 

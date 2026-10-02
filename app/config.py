@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     sat_tile_max_zoom: int = 19
     sat_tile_cache_ttl_s: int = 30 * 24 * 3600
     sat_tile_attribution: str = "USGS The National Map: Orthoimagery"
+    # Google Photorealistic 3D Tiles (real 3D buildings) for the 3D site view. A browser key
+    # (Map Tiles API, restricted to the portal's web addresses): browsers fetch the tiles from
+    # Google directly, so site locations go to Google. Empty = USGS imagery on a flat globe.
+    google_map_tiles_key: str = ""
     # Address lookup (OSM Nominatim by default; policy: max 1 request/second, identify the app).
     geocoder_url: str = "https://nominatim.openstreetmap.org/search"
     geocoder_user_agent: str = "TWG-Alarm-Portal/0.1 (+https://github.com/TWG-Security/nx_alarm_portal)"

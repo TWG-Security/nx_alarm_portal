@@ -3,6 +3,12 @@
 ## [Unreleased]
 
 ### Added
+- **Cameras on the 3D view** (migration 0012): admins click **Place cameras**, pick a camera from the site's NX list, click where it is, then click the direction it faces (or choose a 360° dome: one click). Each camera shows as a marker, a name tag and its view cone on the ground. **Click a camera** for a live window (the same relayed live video as the alarm drawer). An open alarm from a camera turns its cone and tag red. Placements are per site, audit-logged (`site.camera_placed`, `site.camera_removed`), and only placed cameras can be opened this way (`/media/sites/{id}/cameras/{device}/live.webm|jpg`).
+- **"God's eye" HUD on the 3D view:** corner brackets, title, the selected site and its state, a UTC clock, site/camera/open-alarm counts, and the view centre in degrees-minutes-seconds with altitude and heading. Tactical monospace look in TWG orange.
+- **Real 3D buildings when a Google key is set** (`GOOGLE_MAP_TILES_KEY`, a Map Tiles API browser key): Google Photorealistic 3D Tiles replace the flat aerial view; pins and cameras sit on the buildings and ground. Without the key, nothing changes. The map page now sends its origin (never the path) as Referer so a key restricted to the portal's addresses works.
+
+### Fixed
+- **The critical siren started up to 0.5 s after the pop-up** (it waited for the sound loop's next tick; measured 170-314 ms). It now plays on arrival: 33-42 ms. Repeats every 4 s, Silence and "a new critical breaks the silence" re-checked.
 - **3D site view** (map page → click a site → **3D view**): the view dives from space into a tilted 3D aerial view of the site, with every site's pin coloured by state (alarm, warning, offline, OK) and its open-alarm count. Drag to spin or tilt, click a pin to select that site, **Satellite / Street** imagery, **Re-center**, **2D map** to go back. Selecting a site or an alarm in the feed flies the 3D view there. The site list, site panel and live feed stay on screen.
   - Free, commercially usable imagery: **USGS The National Map** (public domain; 0.3 m NAIP aerials, US only at close range), proxied and cached by the portal like the street map (`/tiles/sat/…`, 30 days). The first visit to a site takes a few seconds to sharpen; later visits are served from the cache. No 3D buildings yet (they need a paid Google Maps key).
   - CesiumJS 1.146 (Apache-2.0) is bundled in `static/vendor/cesium` and downloaded only when someone opens the 3D view. Nothing goes to Cesium ion or any other third party.

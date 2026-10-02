@@ -19,7 +19,7 @@ from app.config import get_settings
 from app.db import get_db, sessionmaker
 from app.deps import client_ip, current_user
 from app.scope import Scope, get_scope
-from app.models import Alarm, User
+from app.models import Alarm, Site, User
 from app.services import clips, report
 from app.services.bus import bus
 from app.services.poller import manager
@@ -107,17 +107,21 @@ async def alarm_live_video(alarm_id: int, scope: Scope = Depends(get_scope), db:
     """
     alarm = await _alarm_for(db, scope, alarm_id)
     await db.commit()          # release the DB connection: a live stream runs for minutes (sessions don't expire on commit)
-    slots = _live_slots.setdefault(alarm.site_id, asyncio.Semaphore(LIVE_MAX_PER_SITE))
+    return await _live_webm(alarm.site, alarm.device_id)
+
+
+async def _live_webm(site: Site, device_id: str) -> StreamingResponse:
+    slots = _live_slots.setdefault(site.id, asyncio.Semaphore(LIVE_MAX_PER_SITE))
     if slots.locked():
         raise HTTPException(429, "Too many live views of this site are open; close one and retry")
     await slots.acquire()
-    client = manager.client_for(alarm.site)
+    client = manager.client_for(site)
     resp = None
     try:
         for attempt in (1, 2):
             if not client._token:
                 await client._login()
-            req = client._client.build_request("GET", f"{client.base_url}/media/{alarm.device_id}.webm",
+            req = client._client.build_request("GET", f"{client.base_url}/media/{device_id}.webm",
                                                params={"resolution": "640x360"}, headers=client._headers(),
                                                timeout=httpx.Timeout(15, read=30))
             resp = await client._client.send(req, stream=True)
@@ -154,6 +158,33 @@ async def alarm_live_video(alarm_id: int, scope: Scope = Depends(get_scope), db:
 
     return StreamingResponse(body(), media_type="video/webm",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+# ------------------------------------------------------------------ cameras placed on a site's 3D view
+
+async def _placed_camera(db: AsyncSession, scope: Scope, site_id: int, device_id: str) -> Site:
+    """The site, if this camera is placed on its 3D view (only placed cameras are viewable this way)."""
+    site = await db.scalar(select(Site).where(Site.id == site_id, scope.where(Site.tenant_id)))
+    if site is None or device_id.strip("{}") not in (site.camera_places or {}):
+        raise HTTPException(404)
+    return site
+
+
+@router.get("/media/sites/{site_id}/cameras/{device_id}/live.webm")
+async def camera_live_video(site_id: int, device_id: str, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    site = await _placed_camera(db, scope, site_id, device_id)
+    await db.commit()
+    return await _live_webm(site, device_id.strip("{}"))
+
+
+@router.get("/media/sites/{site_id}/cameras/{device_id}/live.jpg")
+async def camera_live(site_id: int, device_id: str, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    site = await _placed_camera(db, scope, site_id, device_id)
+    try:
+        data = await manager.client_for(site).get_thumbnail(device_id.strip("{}"), -1)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(502, str(describe_http_error(exc))) from exc
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 
 @router.get("/media/alarms/{alarm_id}/live.jpg")

@@ -106,6 +106,7 @@ def render(request: Request, name: str, user: User | None = None, scope=None, **
             "satUrl": "/tiles/sat/{z}/{x}/{y}.jpg",
             "satMaxZoom": settings.sat_tile_max_zoom,
             "satAttribution": settings.sat_tile_attribution,
+            "google3dKey": settings.google_map_tiles_key or None,
         },
         **ctx,
     })

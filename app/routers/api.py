@@ -246,6 +246,76 @@ async def arm_site(site_id: int, body: ArmIn, request: Request, scope: Scope = D
     return data
 
 
+# --------------------------------------------------------------------------- camera positions (3D view)
+
+class CameraPlaceIn(BaseModel):
+    lat: float = Field(ge=-90, le=90)
+    lng: float = Field(ge=-180, le=180)
+    heading: float = Field(default=0, ge=0, le=360)        # degrees clockwise from north, the way it faces
+    fov: float = Field(default=60, ge=10, le=360)          # field of view, degrees (360 = fisheye / dome)
+    range_m: float = Field(default=40, ge=5, le=500)       # how far the view cone is drawn
+
+
+async def _site_cameras(site: Site) -> dict[str, str]:
+    """{device id: name} of the site's cameras, fresh from NX; the poller's last list if NX can't be reached."""
+    try:
+        devices = await manager.client_for(site).list_devices() or []
+        return {(d.get("id") or "").strip("{}"): d.get("name", "") for d in devices
+                if (d.get("deviceType") or "Camera").lower() not in ("server", "io")}
+    except Exception:  # noqa: BLE001
+        return manager.device_names(site.id)
+
+
+@router.get("/sites/{site_id}/cameras")
+async def list_site_cameras(site_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    site = await _get_site(db, scope, site_id)
+    names = await _site_cameras(site)
+    places = site.camera_places or {}
+    ids = list(names) + [d for d in places if d not in names]      # placed cameras NX no longer lists stay visible
+    return sorted(({"device_id": d, "name": names.get(d) or places.get(d, {}).get("name") or d,
+                    "in_nx": d in names, "place": places.get(d)} for d in ids), key=lambda c: c["name"].lower())
+
+
+@router.put("/sites/{site_id}/cameras/{device_id}")
+async def place_camera(site_id: int, device_id: str, body: CameraPlaceIn, request: Request,
+                       user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                       db: AsyncSession = Depends(get_db)):
+    site = await _get_site(db, scope, site_id, write=True)
+    device_id = device_id.strip("{}")
+    names = await _site_cameras(site)
+    if device_id not in names and device_id not in (site.camera_places or {}):
+        raise HTTPException(404, "That camera isn't on this site")
+    places = dict(site.camera_places or {})
+    places[device_id] = {"name": names.get(device_id) or places.get(device_id, {}).get("name", ""),
+                         "lat": round(body.lat, 7), "lng": round(body.lng, 7), "heading": round(body.heading % 360, 1),
+                         "fov": round(body.fov, 1), "range_m": round(body.range_m, 1)}
+    site.camera_places = places
+    audit(db, site.tenant_id, "site.camera_placed", user_id=user.id, site_id=site.id, ip=client_ip(request),
+          device_id=device_id, camera=places[device_id]["name"])
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
+@router.delete("/sites/{site_id}/cameras/{device_id}")
+async def unplace_camera(site_id: int, device_id: str, request: Request, user: User = Depends(require_admin),
+                         scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    site = await _get_site(db, scope, site_id, write=True)
+    device_id = device_id.strip("{}")
+    places = dict(site.camera_places or {})
+    gone = places.pop(device_id, None)
+    if gone is None:
+        raise HTTPException(404, "That camera isn't placed")
+    site.camera_places = places or None
+    audit(db, site.tenant_id, "site.camera_removed", user_id=user.id, site_id=site.id, ip=client_ip(request),
+          device_id=device_id, camera=gone.get("name", ""))
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
 @router.post("/sites/{site_id}/{op}")
 async def site_op(site_id: int, op: str, request: Request, user: User = Depends(require_admin),
                   scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):

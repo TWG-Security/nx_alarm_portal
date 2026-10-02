@@ -89,6 +89,7 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "nx_site_name": s.nx_site_name,
         "nx_version": s.nx_version,
         "camera_count": s.camera_count,
+        "camera_places": s.camera_places or {},
         "open_critical": critical,
         "open_alarm": alarm,
         "open_warning": warning,

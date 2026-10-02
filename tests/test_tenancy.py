@@ -61,6 +61,8 @@ async def world(session):
 async def test_customers_never_see_or_touch_each_other(client, session, world):
     sa, sb = world["sites"]["Acme Security"], world["sites"]["Bravo Guards"]
     aa, ab = world["alarms"]["Acme Security"], world["alarms"]["Bravo Guards"]
+    sb.camera_places = {"cam-b": {"name": "Bravo cam", "lat": 40, "lng": -75, "heading": 0, "fov": 60, "range_m": 40}}
+    await session.commit()
     await _as(client, world["a_admin"].email)
 
     assert [s["id"] for s in (await client.get("/api/sites")).json()] == [sa.id]
@@ -90,6 +92,11 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("GET", f"/api/alarms/{ab.id}/objects", None), ("GET", f"/api/alarms/{ab.id}/export", None),
         ("GET", f"/media/clips/a{ab.id}_10_20_sd.mp4", None), ("GET", f"/sites/{sb.id}/edit", None),
         ("GET", f"/branding/{world['b'].id}/logo", None), ("PUT", f"/api/tenants/{world['b'].id}", {"display_name": "x"}),
+        ("GET", f"/api/sites/{sb.id}/cameras", None),
+        ("PUT", f"/api/sites/{sb.id}/cameras/cam-b", {"lat": 40, "lng": -75, "heading": 90}),
+        ("DELETE", f"/api/sites/{sb.id}/cameras/cam-b", None),
+        ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.jpg", None),
+        ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.webm", None),
     ]:
         r = await client.request(method, path, json=body)
         assert r.status_code == 404, (method, path, r.status_code, r.text[:200])
@@ -100,6 +107,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
     await session.refresh(ab)
     await session.refresh(sb)
     assert (ab.state, sb.enabled, sb.armed) == ("new", True, True)
+    assert list(sb.camera_places) == ["cam-b"]
     # And the platform screens are TWG-only.
     for path in ("/api/tenants", "/companies", "/platform", "/api/platform/settings", "/api/platform/security",
                  "/api/platform/auth-events", "/api/platform/email-log"):

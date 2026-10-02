@@ -250,6 +250,11 @@ class PollerManager:
             from app.services.push import run_push  # late import: push uses this module
             rt.push_task = asyncio.create_task(run_push(self, rt), name=f"push-site-{site.id}")
 
+    def device_names(self, site_id: int) -> dict[str, str]:
+        """{device id: name} from the last device refresh (empty until the site's first poll)."""
+        rt = self._rt.get(site_id)
+        return dict(rt.device_names) if rt else {}
+
     def rule_info(self, site_id: int) -> dict:
         """For the Sites/map pages: can we read the site's NX rules, and which alarm rules delay repeats."""
         rt = self._rt.get(site_id)

@@ -6,7 +6,7 @@ const MAX_BEHIND_S = 1.5;        // jump to the newest frame if playback falls t
 const STALL_MS = 8000;           // no new frames this long = treat the stream as dead
 const STILL_EVERY_MS = 1500;
 
-export function mountLive(root, alarm, { label = true } = {}) {
+export function mountLive(root, alarm, { label = true, base = `/media/alarms/${alarm.id}` } = {}) {
   root.innerHTML = `
     <div class="live-pane">
       <div class="live-stage">
@@ -41,7 +41,7 @@ export function mountLive(root, alarm, { label = true } = {}) {
     say("Connecting to the camera…"); state("Connecting…");
     $('[data-l="retry"]')?.setAttribute("hidden", "");
     lastProgress = Date.now();
-    video.src = `/media/alarms/${alarm.id}/live.webm?t=${Date.now()}`;
+    video.src = `${base}/live.webm?t=${Date.now()}`;
     video.play().catch(() => {});
   }
 
@@ -51,7 +51,7 @@ export function mountLive(root, alarm, { label = true } = {}) {
     mode = "stills"; video.hidden = true; still.hidden = false;
     say(""); state(`${why}: showing a still every ${STILL_EVERY_MS / 1000} s`);
     $('[data-l="retry"]')?.removeAttribute("hidden");
-    const tick = () => { still.src = `/media/alarms/${alarm.id}/live.jpg?t=${Date.now()}`; };
+    const tick = () => { still.src = `${base}/live.jpg?t=${Date.now()}`; };
     tick(); stillTimer = setInterval(tick, STILL_EVERY_MS);
   }
 

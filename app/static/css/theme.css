@@ -211,14 +211,55 @@ tr:last-child td { border-bottom: 0; }
 .site-item .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-canvas { position: relative; background: var(--surface-2); }
 #map { position: absolute; inset: 0; z-index: 0; }
-/* 3D site view (globe.js): sits over the 2D map in the same pane */
+/* 3D site view (globe.js): sits over the 2D map in the same pane, with a HUD overlay */
 #globe { position: absolute; inset: 0; z-index: 1; background: #000; }
 #globe .cesium-widget-credits, .globe-credits { font: 11px var(--font); }
-.globe-bar { position: absolute; top: 12px; left: 12px; z-index: 2; display: flex; gap: 8px; align-items: center; }
-.globe-bar .btn, .globe-bar .seg { box-shadow: var(--shadow); }
+.hud { --hud: #E08A30; --hud-dim: rgba(224, 138, 48, .7); position: absolute; inset: 0; z-index: 2; pointer-events: none;
+  font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #fff; letter-spacing: .06em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .9); }
+.hud::before { content: ""; position: absolute; inset: 0 0 auto 0; height: 190px; background: linear-gradient(rgba(0, 0, 0, .62), rgba(0, 0, 0, 0)); }
+.hud::after { content: ""; position: absolute; inset: auto 0 0 0; height: 150px; background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, .55)); }
+.hud-c { z-index: 1; position: absolute; width: 26px; height: 26px; border: 2px solid var(--hud); }
+.hud-c.tl { top: 10px; left: 10px; border-right: 0; border-bottom: 0; }
+.hud-c.tr { top: 10px; right: 10px; border-left: 0; border-bottom: 0; }
+.hud-c.bl { bottom: 10px; left: 10px; border-right: 0; border-top: 0; }
+.hud-c.br { bottom: 10px; right: 10px; border-left: 0; border-top: 0; }
+.hud-tl { z-index: 1; position: absolute; top: 22px; left: 26px; }
+.hud-tr { z-index: 1; position: absolute; top: 22px; right: 26px; text-align: right; }
+.hud-bl { z-index: 1; position: absolute; bottom: 40px; left: 26px; line-height: 1.6; }
+.hud-title { font-size: 17px; letter-spacing: .28em; color: #fff; }
+.hud-eye { color: var(--hud); }
+.hud-sub { color: var(--hud); font-size: 11px; margin-top: 2px; }
+.hud-site { margin-top: 12px; font-size: 13px; }
+.hud-site .st { display: inline-block; margin-top: 4px; padding: 1px 6px; border: 1px solid currentColor; font-size: 11px; }
+.hud-site .st.ok { color: var(--ok); } .hud-site .st.warn { color: var(--warn); } .hud-site .st.alarm { color: #ff6b5b; } .hud-site .st.offline { color: #aaa; }
+#hud-clock { font-size: 14px; }
+.globe-bar { position: absolute; bottom: 18px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; gap: 8px; align-items: center;
+  padding: 6px; background: rgba(13, 13, 13, .82); border: 1px solid rgba(224, 138, 48, .55); border-radius: 8px; }
+.globe-bar .btn, .globe-bar .seg button { white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: .04em; text-transform: uppercase; font-size: 12px; }
 .globe-bar .seg button { height: 30px; }
-.globe-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; max-width: 420px;
+.globe-bar #globe-cams.active { border-color: #E08A30; color: #E08A30; }
+.globe-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 4; max-width: 420px;
   padding: 14px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); text-align: center; }
+/* the live camera window (click a camera) and the place-cameras list */
+.cam-panel, .cam-place { position: absolute; z-index: 3; background: rgba(13, 13, 13, .9); border: 1px solid rgba(224, 138, 48, .6); border-radius: 6px;
+  color: #fff; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
+.cam-panel { top: 96px; right: 26px; width: min(380px, calc(100% - 52px)); }
+.cam-panel.alarm { border-color: #ff6b5b; }
+.cam-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-bottom: 1px solid rgba(224, 138, 48, .35); letter-spacing: .05em; }
+.cam-head b { text-transform: uppercase; }
+.cam-head .muted { color: #bbb; }
+.cam-head button { background: none; border: 0; color: #fff; font-size: 15px; cursor: pointer; }
+.cam-panel .live-pane { margin: 0; }
+.cam-place { top: 96px; left: 26px; width: min(330px, calc(100% - 52px)); max-height: calc(100% - 190px); overflow: auto; }
+.cam-place .hint { padding: 8px 10px; color: #E08A30; border-bottom: 1px solid rgba(224, 138, 48, .35); }
+.cam-place ul { list-style: none; margin: 0; padding: 0; }
+.cam-place li { display: flex; align-items: center; gap: 6px; padding: 7px 10px; border-bottom: 1px solid rgba(255, 255, 255, .08); }
+.cam-place li .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cam-place li .placed { color: var(--ok); font-size: 11px; }
+.cam-place select, .cam-place button { font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.cam-place button { padding: 3px 8px; border-radius: 4px; border: 1px solid rgba(255, 255, 255, .3); background: #222; color: #fff; cursor: pointer; }
+.cam-place button.go { border-color: #E08A30; color: #E08A30; }
 .map-notice { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--text-muted); }
 
 /* Leaflet: dark mode darkens OSM's light tiles; pins and controls are styled separately. */

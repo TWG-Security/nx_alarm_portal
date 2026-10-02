@@ -222,6 +222,8 @@ class Site(Base):
     nx_site_name: Mapped[str] = mapped_column(String(200), default="")
     nx_version: Mapped[str] = mapped_column(String(50), default="")
     camera_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Where each camera is on the 3D view: {"<NX device id>": {name, lat, lng, heading, fov, range_m}}
+    camera_places: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

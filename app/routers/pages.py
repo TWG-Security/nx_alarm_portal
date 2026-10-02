@@ -15,7 +15,10 @@ router = APIRouter()
 
 @router.get("/")
 async def map_page(request: Request, user: User = Depends(current_user), scope: Scope = Depends(get_scope)):
-    return render(request, "map.html", user, scope=scope, page="map")
+    resp = render(request, "map.html", user, scope=scope, page="map")
+    # Google's 3D tiles check the key's allowed websites against the Referer; send our origin (never the path).
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    return resp
 
 
 @router.get("/alarms")
