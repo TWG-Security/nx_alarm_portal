@@ -25,8 +25,11 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Delayed or silently missed alarms are unacceptable. Their words: "NEVER, this is going to be critical".** Every change must keep sub-second delivery and loud failure modes. **Test failure paths end to end and measure the latency** before saying something works. Never claim timing you haven't measured.
 - **Tell the user before redeploying.** A restart once landed on their test press.
 
-## Current production state (2026-10-01)
-- **Production runs `feature/base-portal` at `4ec5b96`** (deployed 2026-10-01 17:20 UTC, migration 0007; later commits are docs and the backup script only). It includes:
+## Current production state (2026-10-02)
+- **Production runs `feature/base-portal` at `857d825`** (deployed 2026-10-02 00:23 UTC, migration 0011). Restart: health back in 11 s, both sites "live push connected", the 3 signed-in browsers adopted as sessions (nobody signed out). Pre-deploy backup `20261002-002202Z`.
+  - Tunnel connector `10.0.2.58` is trusted (Platform page / `trust-proxy`); tunnel visitors now show their real IP (verified: 24.245.109.40).
+  - Not configured yet: email, Cloudflare, Google sign-in, 2FA requirement, office allowlist.
+- Before that it ran `4ec5b96` (2026-10-01 17:20 UTC). It includes:
   - site arming and schedules
   - NX rule health (effective delays)
   - versioned assets
@@ -256,19 +259,9 @@ tools/dev_down.sh
 - Commits end with the attribution lines from the session's system reminder. Branch `feature/base-portal`.
 
 ## Open items / backlog (roughly in priority order)
-0. **READY TO DEPLOY (not deployed): `a9b9537`**, i.e. all 4 phases of BACKLOG.md (sign-in protection + Cloudflare, 2FA/passkeys/sessions, email/invites/resets/password rules, Google sign-in; migrations 0008-0011). Tell the user first. Existing sessions are adopted (screens stay signed in). After `docker compose up -d --build app`:
-   - `docker compose exec -T app python -m app.cli trust-proxy --ip 10.0.2.58` (the tunnel connector, verified 2026-10-01)
-   - `docker compose exec -T app python -m app.cli allow-ip --ip 204.186.88.58 --label "TWG office"` once the user confirms that's the office's public IP (it's this server's)
-   - check the Platform page "Your address" through the tunnel shows a public IP, not 10.0.2.58
-   - still open from the user: SNMP (q1), 2FA scope (q2, defaults: off, each company decides), SMTP mailbox (q3), Cloudflare token + Zone ID (q4), Google OAuth client (q7)
-   Earlier plan, for reference: [`BACKLOG.md`](BACKLOG.md). The user decided on 2026-10-01 to port account security from `TWG-Security/MCP-Control-Platform` @ `b17a07a` (local copy in `~/src/MCP-Control-Platform`):
-   - sign-in attack protection and Cloudflare edge bans
-   - 2FA (TOTP, passkeys, recovery codes, mandatory 2FA)
-   - sessions
-   - email, invites, forgot password, password rules
-   - Google sign-in
-   - a TWG **Platform settings** page
-   BACKLOG.md has the full spec, phases, defaults, alarm-safety rules, tests and open questions (SNMP, 2FA scope, SMTP, Cloudflare token, office IP). Work from it.
+0. **Account security is DEPLOYED** (2026-10-02 00:23 UTC, `857d825`, migrations 0008-0011; see "Current production state"). Left to do:
+   - allowlist the office: `docker compose exec -T app python -m app.cli allow-ip --ip 204.186.88.58 --label "TWG office"` once the user confirms that's the office's public IP (it's this server's)
+   - still open from the user: SNMP (q1 in BACKLOG.md), 2FA scope (q2; today nobody is required), SMTP mailbox (q3), Cloudflare token + Zone ID (q4), Google OAuth client (q7). All are entered on the Platform page.
 1. **Cloudflare Tunnel follow-ups:**
    - put **Cloudflare Access** in front, since the portal is on the internet behind a password only. Click-level steps (one-time PIN, policy, 1-week session) were given to the user on 2026-09-30; they haven't confirmed it's done.
      **A policy limited to `@twgsecurity.com` would lock out customer companies**: add their domains, or allow one-time PIN for any email.
@@ -289,4 +282,9 @@ tools/dev_down.sh
    - the user changes the admin password and deletes the temp file
 11. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
-13. Merge PR #1 once the user is happy. It's large: base portal plus everything since. The user hasn't asked to merge yet.
+13. Merge PR #1 once the user is happy.
+14. **3D "God's Eye View" globe** (the user asked on 2026-10-02): use `github.com/bilawalsidhu/gods-eye-view` (MIT, vanilla JS + CesiumJS + Vite, ~46k stars, active). It's a photorealistic 3D globe with live public layers (aircraft, ships, satellites, weather, quakes, public cameras), click-to-track, NVG/FLIR looks, share links, voice control (OpenAI Realtime).
+   - **Likely fit:** an optional 3D view of the map page: sites as markers on the globe, alarm pins pulsing, fly to a site on alarm, nearby live context (aircraft, weather) around a site. Port the pieces we need (CesiumJS globe, layer modules) rather than embedding the whole app, same as the MCP-Control-Platform port.
+   - **Licensing to settle first:** the code is MIT, but the map data isn't. Cesium ion's free tier is personal/non-commercial only, and Google Photorealistic 3D Tiles need a metered Google Maps key for commercial use. Esri imagery has its own terms, and some bundled datasets are non-commercial (its DATA_SOURCES.md). TWG is a business, so plan on a paid Google Maps Tiles key or Cesium commercial plan, or keyless Esri/OSM 2.5D. The voice feature needs an OpenAI key (TWG policy: check whether a Claude-based alternative is wanted).
+   - **Alarm safety:** WebGL is heavy. The 2D Leaflet map stays the default, and the 3D view must never slow the alarm feed, sound or pop-ups (separate page or lazy-loaded, measured on the wall-screen hardware). No customer camera video goes to third parties.
+   - Ask the user: which screens it's for (wall display, customer demos), and whether a paid tiles key is OK. It's large: base portal plus everything since. The user hasn't asked to merge yet.
