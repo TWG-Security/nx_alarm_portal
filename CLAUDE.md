@@ -99,7 +99,8 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Clips (growing → full), ffmpeg, cache, prefetch, bounding boxes | `app/services/clips.py` |
 | SSE stream, snapshot/clip/objects endpoints | `app/routers/stream.py` |
 | JSON API (sites, alarms, audit, users, settings, geocode) | `app/routers/api.py` |
-| OSM tile proxy + disk cache | `app/routers/tiles.py` |
+| Tile proxy + disk cache: OSM street map, USGS aerial imagery (`/tiles/sat/`, NAIP 0.3 m above z16) | `app/routers/tiles.py` |
+| 3D site view (CesiumJS 1.146 vendored in `static/vendor/cesium`, lazy-loaded) | `static/js/globe.js`, opened from `map.js` (site panel "3D view"); e2e `tools/e2e/globe.py` |
 | Frontend (no build step) | `app/templates/*.html`, `app/static/js/*.js`, `app/static/css/theme.css`, Leaflet vendored in `app/static/vendor/leaflet` |
 
 JS modules:
@@ -111,6 +112,7 @@ JS modules:
 - `player.js`: clip player, timeline and boxes
 - `map.js`: overview with sites, map and live feed
 - `live.js`: live WebM view (drawer side pane, critical pop-up's Live button)
+- `globe.js`: the 3D site view (Cesium), imported by `map.js` only when "3D view" is clicked; software-WebGL refusal and frame watchdog
 - `companies.js`: TWG's Companies page
 - `alarms.js` (incl. bulk edit), `sites.js`, `site_form.js` (arming schedule), `settings.js` (incl. company branding), `audit.js`, `users.js` (incl. groups)
 
@@ -235,7 +237,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 136 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 139 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -246,6 +248,7 @@ tools/dev_up.sh && .venv/bin/python -m tools.e2e.signin /tmp      # 5 bad sign-i
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.twofactor /tmp   # authenticator app, passkey (virtual authenticator), forced enrolment, remote sign-out -> SIGNED OUT banner + tone
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.email /tmp       # SMTP sink on :8125: test email, invite -> setup link, forgot -> reset link
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.globe /tmp   # 3D view: software-GL refusal, forced open + watchdog, alarm latency while open, failed load
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
 ```
@@ -283,8 +286,9 @@ tools/dev_down.sh
 11. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
 13. Merge PR #1 once the user is happy.
-14. **3D "God's Eye View" globe** (the user asked on 2026-10-02): use `github.com/bilawalsidhu/gods-eye-view` (MIT, vanilla JS + CesiumJS + Vite, ~46k stars, active). It's a photorealistic 3D globe with live public layers (aircraft, ships, satellites, weather, quakes, public cameras), click-to-track, NVG/FLIR looks, share links, voice control (OpenAI Realtime).
-   - **Likely fit:** an optional 3D view of the map page: sites as markers on the globe, alarm pins pulsing, fly to a site on alarm, nearby live context (aircraft, weather) around a site. Port the pieces we need (CesiumJS globe, layer modules) rather than embedding the whole app, same as the MCP-Control-Platform port.
-   - **Licensing to settle first:** the code is MIT, but the map data isn't. Cesium ion's free tier is personal/non-commercial only, and Google Photorealistic 3D Tiles need a metered Google Maps key for commercial use. Esri imagery has its own terms, and some bundled datasets are non-commercial (its DATA_SOURCES.md). TWG is a business, so plan on a paid Google Maps Tiles key or Cesium commercial plan, or keyless Esri/OSM 2.5D. The voice feature needs an OpenAI key (TWG policy: check whether a Claude-based alternative is wanted).
-   - **Alarm safety:** WebGL is heavy. The 2D Leaflet map stays the default, and the 3D view must never slow the alarm feed, sound or pop-ups (separate page or lazy-loaded, measured on the wall-screen hardware). No customer camera video goes to third parties.
-   - Ask the user: which screens it's for (wall display, customer demos), and whether a paid tiles key is OK. It's large: base portal plus everything since. The user hasn't asked to merge yet.
+14. **3D site view ("God's Eye View")**: BUILT on 2026-10-02, **not deployed**. The user's choice: clicking a site opens a 3D view of it; free imagery now, 3D buildings once there's a key.
+   - What it does: map page → site panel → **3D view** dives from space into a tilted view of the site in the map pane (feed and site list stay visible). Pins coloured by state, click a pin to select, Satellite/Street, Re-center, 2D map. Selecting a site or a feed alarm flies there. No auto-fly on new alarms (it would yank the view away from an operator).
+   - Imagery: USGS The National Map, public domain, so fine commercially. z<=16 from the tiled `USGSImageryOnly` (fast); z17-19 from `USGSNAIPPlus/ImageServer/exportImage` per tile (0.3 m, **1-8 s per tile** first time, then cached 30 days). US only at close range. Cesium ion is never used (no token; baseLayer/geocoder off).
+   - **Measured (headless SwiftShader, the worst case):** alarms 44-85 ms with the view closed. With it open they were **300-800 ms late** during the fly-in and imagery loading, normal (37-83 ms) once settled, and frames hit 3.3 s while dragging. Hence the safeguards in `globe.js`: software WebGL (SwiftShader/llvmpipe/Basic Render) → refused with a message; a frame watchdog closes the view if one frame is ≥1 s or 3 are ≥150 ms within 10 s (it tripped within ~2 s on SwiftShader); a failed load → message, 2D map back. `localStorage twg-3d-force=1` skips the software check (tests only).
+   - **Not measured yet: a real GPU / the wall-screen PC.** After deploying, open the 3D view there and press Truss 8: the alarm should appear as fast as on the 2D map, and the watchdog shouldn't trip. If it trips on decent hardware, loosen `FRAME_SLOW_MS`.
+   - Next, if wanted: Google Photorealistic 3D Tiles behind a setting (needs a metered Google Maps Platform key, which the browser uses directly, so site coordinates go to Google; no video), camera positions on the site, a slow orbit for the wall screen, remembering 3D mode across reloads. The voice feature from gods-eye-view needs OpenAI (TWG policy question); not planned.

@@ -103,6 +103,9 @@ def render(request: Request, name: str, user: User | None = None, scope=None, **
             "tileUrl": "/tiles/{z}/{x}/{y}.png",
             "attribution": settings.map_tile_attribution,
             "maxZoom": settings.map_tile_max_zoom,
+            "satUrl": "/tiles/sat/{z}/{x}/{y}.jpg",
+            "satMaxZoom": settings.sat_tile_max_zoom,
+            "satAttribution": settings.sat_tile_attribution,
         },
         **ctx,
     })

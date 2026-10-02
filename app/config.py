@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     tile_cache_ttl_s: int = 7 * 24 * 3600   # OSM asks clients to cache for at least 7 days
     map_tile_attribution: str = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
     map_tile_max_zoom: int = 19
+    # Aerial imagery for the 3D site view, also proxied and cached. USGS The National Map is public
+    # domain (fine for commercial use) but US-only at high zoom. Levels up to sat_tile_max_tiled come
+    # from the tiled cache (fast); deeper ones from NAIP (0.3 m) rendered per tile (1-8 s, then cached).
+    sat_tile_url: str = "https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/{z}/{y}/{x}"
+    sat_tile_max_tiled: int = 16
+    sat_hires_url: str = ("https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage"
+                          "?bbox={bbox}&bboxSR=3857&imageSR=3857&size=256,256&format=jpg&f=image")
+    sat_tile_max_zoom: int = 19
+    sat_tile_cache_ttl_s: int = 30 * 24 * 3600
+    sat_tile_attribution: str = "USGS The National Map: Orthoimagery"
     # Address lookup (OSM Nominatim by default; policy: max 1 request/second, identify the app).
     geocoder_url: str = "https://nominatim.openstreetmap.org/search"
     geocoder_user_agent: str = "TWG-Alarm-Portal/0.1 (+https://github.com/TWG-Security/nx_alarm_portal)"

@@ -211,6 +211,14 @@ tr:last-child td { border-bottom: 0; }
 .site-item .name { font-weight: 600; flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .map-canvas { position: relative; background: var(--surface-2); }
 #map { position: absolute; inset: 0; z-index: 0; }
+/* 3D site view (globe.js): sits over the 2D map in the same pane */
+#globe { position: absolute; inset: 0; z-index: 1; background: #000; }
+#globe .cesium-widget-credits, .globe-credits { font: 11px var(--font); }
+.globe-bar { position: absolute; top: 12px; left: 12px; z-index: 2; display: flex; gap: 8px; align-items: center; }
+.globe-bar .btn, .globe-bar .seg { box-shadow: var(--shadow); }
+.globe-bar .seg button { height: 30px; }
+.globe-msg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 3; max-width: 420px;
+  padding: 14px 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); text-align: center; }
 .map-notice { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 24px; text-align: center; color: var(--text-muted); }
 
 /* Leaflet: dark mode darkens OSM's light tiles; pins and controls are styled separately. */

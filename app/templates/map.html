@@ -15,7 +15,19 @@
     <div class="map-side-section" style="padding-bottom:6px"><h3>Sites</h3></div>
     <ul class="site-list" id="site-list"><li class="empty">Loading…</li></ul>
   </aside>
-  <section class="map-canvas"><div id="map"></div></section>
+  <section class="map-canvas">
+    <div id="map"></div>
+    <div id="globe" hidden></div>
+    <div class="globe-bar" id="globe-bar" hidden>
+      <button class="btn btn-sm" type="button" id="globe-close" title="Back to the flat map">2D map</button>
+      <div class="seg" role="group" aria-label="Imagery">
+        <button type="button" data-imagery="sat" class="active">Satellite</button>
+        <button type="button" data-imagery="street">Street</button>
+      </div>
+      <button class="btn btn-sm" type="button" id="globe-recenter" title="Fly back to the selected site">Re-center</button>
+    </div>
+    <div class="globe-msg" id="globe-msg" hidden></div>
+  </section>
   <aside class="feed" aria-label="Live alarms">
     <div class="feed-head">
       <h2>Live alarms</h2>

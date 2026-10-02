@@ -141,3 +141,39 @@ async def test_static_files_are_versioned_so_deploys_never_mix_old_and_new(clien
     assert (await client.get("/static/v/old-build/js/common.js")).status_code == 200       # stale pages still load
     assert (await client.get("/static/v/x/js/nope.js")).status_code == 404
     assert (await client.get("/static/js/common.js")).headers["cache-control"] == "no-cache"
+
+
+@respx.mock
+async def test_sat_tile_proxy_tiled_then_hires(client, admin, tmp_path, monkeypatch):
+    from app.config import get_settings
+    from app.routers.tiles import tile_bbox
+    monkeypatch.setattr(get_settings(), "tile_cache_dir", str(tmp_path / "tiles"))
+    tiled = respx.get("https://basemap.nationalmap.gov/arcgis/rest/services/USGSImageryOnly/MapServer/tile/16/24671/19014").mock(
+        return_value=httpx.Response(200, content=b"JPEG-tiled", headers={"content-type": "image/jpeg"}))
+    hires = respx.get(url__startswith="https://imagery.nationalmap.gov/").mock(
+        return_value=httpx.Response(200, content=b"JPEG-naip", headers={"content-type": "image/jpeg"}))
+
+    assert (await client.get("/tiles/sat/16/19014/24671.jpg")).status_code == 401
+    await login(client, admin[1].email)
+    r = await client.get("/tiles/sat/16/19014/24671.jpg")          # z <= 16: the tiled service (note y/x order)
+    assert r.status_code == 200 and r.content == b"JPEG-tiled" and r.headers["content-type"] == "image/jpeg"
+    for _ in range(2):
+        assert (await client.get("/tiles/sat/18/76057/98686.jpg")).content == b"JPEG-naip"
+    assert tiled.call_count == 1 and hires.call_count == 1           # repeats come from disk
+    assert f"bbox={tile_bbox(18, 76057, 98686)}" in str(hires.calls.last.request.url)
+    assert (await client.get("/tiles/sat/20/1/1.jpg")).status_code == 404   # deeper than NAIP goes
+
+
+def test_tile_bbox_is_web_mercator():
+    from app.routers.tiles import tile_bbox
+    assert tile_bbox(0, 0, 0) == "-20037508.343,-20037508.343,20037508.343,20037508.343"
+    minx, miny, maxx, maxy = map(float, tile_bbox(1, 1, 0).split(","))
+    assert (minx, miny) == (0.0, 0.0) and maxx == maxy == 20037508.343
+
+
+async def test_map_page_offers_3d_view_and_cesium_is_served(client, admin):
+    await login(client, admin[1].email)
+    page = (await client.get("/")).text
+    assert 'id="globe"' in page and "/tiles/sat/{z}/{x}/{y}.jpg" in page
+    r = await client.get("/static/vendor/cesium/Cesium.js")
+    assert r.status_code == 200 and len(r.content) > 1_000_000

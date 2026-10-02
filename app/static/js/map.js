@@ -1,10 +1,11 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer } from "./drawer.js";
 
 const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
 let selectedId = null, feedPriority = "";
+let globe = null, globeOpening = false;   // the 3D view (globe.js), loaded on first use
 const SEVERITY = { alarm: 0, warn: 1, offline: 2, ok: 3 };
 const DEFAULT_CENTER = [39.8, -98.6];
 const lmap = createMap(document.getElementById("map"), { center: DEFAULT_CENTER, zoom: 4 });
@@ -63,6 +64,7 @@ function renderDetail() {
       ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
     </dl>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
+      ${s.lat != null ? '<button class="btn btn-sm btn-primary" type="button" data-globe title="Fly into a 3D aerial view of this site">3D view</button>' : ""}
       <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all">Alarm history</a>
       ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">Edit site</a>` : ""}
     </div>`;
@@ -135,6 +137,7 @@ function fitToSites() {
 function renderAll() {
   renderStats(); renderSites(); renderDetail(); renderFeed();
   for (const s of sites.values()) upsertMarker(s);
+  globe?.update();
 }
 
 function select(id, pan = true) {
@@ -142,7 +145,60 @@ function select(id, pan = true) {
   renderAll();
   const s = sites.get(id);
   if (pan && s?.lat != null) lmap.flyTo([s.lat, s.lng], Math.max(lmap.getZoom(), 15), { duration: 0.8 });
+  if (pan && globe) globe.flyTo(s);
 }
+
+// ---------------------------------------------------------------- 3D view (over the map pane)
+const globeEl = document.getElementById("globe"), globeBar = document.getElementById("globe-bar"), globeMsg = document.getElementById("globe-msg");
+const globePins = () => [...sites.values()].map((s) => {
+  const { c, marker } = stateOf(s);
+  return { id: s.id, name: s.name, lat: s.lat, lng: s.lng, state: marker, count: c[1] + c[2] + c[3], disarmed: s.arming?.armed === false };
+});
+
+async function openGlobeView(site) {
+  if (globe) { globe.flyTo(site); return; }
+  if (globeOpening) return;
+  globeOpening = true;
+  globeEl.hidden = false; globeBar.hidden = false;
+  globeMsg.textContent = "Loading 3D view…"; globeMsg.hidden = false;
+  try {
+    const { openGlobe } = await import("./globe.js");
+    globe = await openGlobe(globeEl, {
+      pins: globePins, onPick: (id) => select(id),
+      onTooSlow: (why) => {
+        closeGlobeView();
+        toast(`3D view closed to keep alarms fast: ${esc(why)}. The 2D map is back.`, { kind: "warn", timeout: 10000 });
+      },
+    });
+    window.__globeStats = globe.stats;
+    window.__globe = globe.viewer;   // for tools/e2e/globe.py and debugging
+    globeMsg.hidden = true;
+    globe.flyTo(sites.get(selectedId) || site, { fromSpace: true });
+  } catch (err) {
+    console.error("3D view failed", err);
+    closeGlobeView();
+    toast(`3D view isn't available on this screen (${esc(err.message || String(err))}). The 2D map and alarms are unaffected.`, { kind: "error", timeout: 8000 });
+  } finally {
+    globeOpening = false;
+  }
+}
+
+function closeGlobeView() {
+  try { globe?.destroy(); } catch (err) { console.error(err); }
+  globe = null; delete window.__globe; delete window.__globeStats;
+  globeEl.hidden = true; globeBar.hidden = true; globeMsg.hidden = true;
+  globeEl.replaceChildren();
+}
+
+globeBar.addEventListener("click", (e) => {
+  if (e.target.id === "globe-close") return closeGlobeView();
+  if (e.target.id === "globe-recenter") return globe?.flyTo(sites.get(selectedId));
+  const kind = e.target.dataset.imagery;
+  if (kind && globe) {
+    globe.setImagery(kind);
+    globeBar.querySelectorAll("[data-imagery]").forEach((b) => b.classList.toggle("active", b === e.target));
+  }
+});
 
 function focusAlarm(a) {
   if (sites.has(a.site_id)) select(a.site_id);
@@ -158,6 +214,7 @@ siteList.addEventListener("keydown", (e) => {
 });
 document.getElementById("site-detail").addEventListener("click", async (e) => {
   if (e.target.id === "close-detail") { selectedId = null; renderAll(); return; }
+  if (e.target.closest("[data-globe]") && sites.has(selectedId)) { openGlobeView(sites.get(selectedId)); return; }
   const op = e.target.dataset.arm;
   if (op && sites.has(selectedId)) { e.target.disabled = true; await setArmed(sites.get(selectedId), op === "arm"); e.target.disabled = false; }
 });
