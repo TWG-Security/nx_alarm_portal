@@ -56,17 +56,25 @@ async def config() -> Smtp | None:
     return Smtp(row.smtp_host, row.smtp_port, row.smtp_tls, row.smtp_user, password, row.smtp_from)
 
 
-def render(subject: str, heading: str, paragraphs: list[str], *, button: tuple[str, str] | None = None,
-           footnote: str = "", preview: str = "") -> tuple[str, str]:
-    """(html, plain text). paragraphs and footnote are plain text (escaped here)."""
+def render(subject: str, heading: str, paragraphs: list[str], *, details: list[tuple[str, str]] | None = None,
+           button: tuple[str, str] | None = None, footnote: str = "", preview: str = "") -> tuple[str, str]:
+    """(html, plain text). Plain-text inputs (escaped here). The first paragraph is the grey summary
+    under the heading, `details` the label/value rows, and the rest of the paragraphs follow them."""
     from app.deps import templates
-    body = Markup("").join(Markup('<p style="margin:0 0 12px;">{}</p>').format(p) for p in paragraphs)
+    intro, rest = (paragraphs[0], paragraphs[1:]) if paragraphs else ("", [])
+    body = Markup("").join(Markup('<p style="margin:0 0 12px;">{}</p>').format(p) for p in rest)
     html = templates.env.get_template("email/layout.html").render(
-        subject=subject, heading=heading, body=body, footnote=footnote, preview=preview or paragraphs[0][:120],
-        button={"label": button[0], "url": button[1]} if button else None)
-    text = "\n\n".join([heading, *paragraphs, *([f"{button[0]}: {button[1]}"] if button else []), *([footnote] if footnote else []),
-                        "-- \nTWG Security Alarm Portal"])
+        subject=subject, heading=heading, intro=intro, details=details or [], body=body, footnote=footnote,
+        preview=preview or intro[:120], button={"label": button[0], "url": button[1]} if button else None)
+    text = "\n\n".join([heading, *([intro] if intro else []),
+                         *(["\n".join(f"{k}: {v}" for k, v in details)] if details else []), *rest,
+                         *([f"{button[0]}: {button[1]}"] if button else []), *([footnote] if footnote else []),
+                         "-- \nTWG Security Alarm Portal"])
     return html, text
+
+
+def _when() -> str:
+    return utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
 
 def _deliver(cfg: Smtp, msg: EmailMessage) -> None:
@@ -156,26 +164,28 @@ def invite(email: str, company: str, url: str, invited_by: str) -> tuple[str, st
     subject = f"You're invited to the {company} alarm portal"
     html, text = render(subject, "You're invited", [
         f"{invited_by} has given you an account on the {company} alarm portal"
-        + ("." if company == "TWG Security" else ", run by TWG Security."),
-        f"Your sign-in is {email}. Choose your password to finish setting it up.",
-    ], button=("Set up your account", url), footnote="The link works once and expires in 7 days.")
+        + ("." if company == "TWG Security" else ", run by TWG Security.")
+        + " Choose your password to finish setting it up.",
+    ], details=[("Company", company), ("Sign-in", email), ("Invited by", invited_by), ("Sent", _when())],
+        button=("Set up your account", url), footnote="The link works once and expires in 7 days.")
     return subject, html, text
 
 
-def reset(url: str, minutes: int = 30) -> tuple[str, str, str]:
+def reset(url: str, minutes: int = 30, *, email: str = "", company: str = "") -> tuple[str, str, str]:
     subject = "Reset your alarm portal password"
     html, text = render(subject, "Reset your password", [
-        "Someone (hopefully you) asked to reset the password for this alarm portal account.",
-        "If it wasn't you, ignore this email: your password stays as it is.",
-    ], button=("Choose a new password", url),
-        footnote=f"The link works once and expires in {minutes} minutes. Resetting signs this account out everywhere.")
+        "Someone (hopefully you) asked to reset the password for this alarm portal account."
+        " If it wasn't you, ignore this email: your password stays as it is.",
+    ], details=[*([("Account", email)] if email else []), *([("Company", company)] if company else []),
+                ("Requested", _when()), ("Expires", f"in {minutes} minutes")],
+        button=("Choose a new password", url),
+        footnote="The link works once. Resetting signs this account out everywhere.")
     return subject, html, text
 
 
 def test_message(by: str) -> tuple[str, str, str]:
     subject = "Alarm portal test email"
     html, text = render(subject, "Email works", [
-        f"{by} sent this test from the Platform page. Invites and password resets will arrive like this.",
-    ])
+        "This is a test from the Platform page. Invites and password resets will arrive like this.",
+    ], details=[("Sent by", by), ("When", _when()), ("From", "Platform page → Email")])
     return subject, html, text
-

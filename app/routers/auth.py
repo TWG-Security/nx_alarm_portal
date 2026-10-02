@@ -435,7 +435,7 @@ async def _forgot(addr: str, ip: str) -> None:
                 purpose = "invite"
             else:
                 token, _ = await tokens.mint(db, user, "reset")
-                subject, html, text = mail.reset(tokens.link("reset", token))
+                subject, html, text = mail.reset(tokens.link("reset", token), email=user.email, company=tenant.label)
                 purpose = "reset"
             await db.commit()
         await mail.send_now(user.email, subject, html, text, purpose=purpose, tenant_id=user.tenant_id, user_id=user.id)
