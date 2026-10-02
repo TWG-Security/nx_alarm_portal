@@ -46,6 +46,46 @@ One place where TWG Security operators see alarms from every NX Witness deployme
   - Other companies' alarms never sound on TWG's screens; TWG's own always do.
   - The **Companies** page creates companies and their first admin, shows each one's health, and turns sign-in on or off.
 
+## Account security
+
+- **Sign-in protection:** every sign-in attempt is recorded.
+  - 5 failures from one address in 10 minutes block it for 15 minutes. Each later block lasts 4× longer (capped at 7 days), and the 5th is permanent.
+  - 10 failures for one email from any addresses lock that account until the window passes.
+  - **Never blocked:** the office network (so `https://10.1.10.97` always works), the tunnel connector, the allowlist, and any address a signed-in user was active from in the last 15 minutes. A block only stops the sign-in page; it never signs anyone out or touches the live alarm feed.
+  - With a Cloudflare API token, each block is also pushed to Cloudflare so the attacker stops at the edge. That push is best-effort: the portal's own block holds even if Cloudflare is down.
+- **Two-step sign-in:** an authenticator app (with 10 single-use recovery codes) or **passkeys** (fingerprint, face, device PIN; they work at `https://alarmportal.twgsecurity.net`, not on the IP address).
+  - "Sign in with a passkey" needs no password.
+  - It can be required for TWG and for every company, or each company decides. Anyone required to use it is walked through set-up at their next sign-in.
+- **Sessions:** every signed-in browser is listed on your Account page, where you can sign it out, or sign out everywhere. Admins can do the same for their users.
+  - **A screen that's signed out is never quiet:** it shows a red **SIGNED OUT, not receiving alarms** banner and sounds the tone every 10 s until someone signs in again.
+- **Invites and password resets by email:** new users get a TWG-branded link (valid 7 days, single use) to choose their own password. "Forgot password?" emails a 30-minute link. With email off, the admin gets the link to pass on.
+- **Password rules:** 12+ characters with upper and lower case, a number and a symbol (editable), enforced everywhere a password is set. Optional expiry.
+- **Sign in with Google**, for existing accounts only (matched by the Google-verified email).
+
+### Where the settings are
+- **Platform** (top menu; TWG staff only, changes need *Manage companies*). Tabs:
+  - **Sign-in protection:** ban rules, allowlist, blocked addresses, locked accounts, recent sign-in attempts, trusted tunnel connector
+  - **Cloudflare**
+  - **Two-step sign-in**
+  - **Sessions**
+  - **Passwords**
+  - **Email** (SMTP, test email, recent emails)
+  - **Google sign-in**
+  Each tab with outside setup has click-level steps on the page.
+- **Your name** (top right) opens your **Account**: password, authenticator app, passkeys, where you're signed in.
+- **Settings → Sign-in security:** a company admin can require two-step sign-in for their company, unless TWG sets it for everyone.
+- **Users:** invite by email, two-step status, and per user **Sign-in security** (reset two-step, sign them out).
+
+### Break-glass commands (on the server)
+```bash
+docker compose exec -T app python -m app.cli unban --ip 203.0.113.7          # lift a sign-in block (and its Cloudflare rule)
+docker compose exec -T app python -m app.cli allow-ip --ip 198.51.100.10 --label "TWG office"
+docker compose exec -T app python -m app.cli clear-lock --email someone@example.com
+docker compose exec -T app python -m app.cli reset-mfa --email someone@example.com [--passkeys]
+docker compose exec -T app python -m app.cli trust-proxy --ip 10.0.2.58      # the Cloudflare Tunnel connector
+docker compose exec app python -m app.cli create-admin --email you@twgsecurity.com   # also resets that admin's password
+```
+
 ## How it works
 
 ```
@@ -147,6 +187,7 @@ Open `https://<PORTAL_HOST>`. Caddy serves it with its own internal certificate,
 - It keeps the newest 14 (`KEEP`), and cron runs it nightly.
 - To restore: `docker compose stop app`, then `docker compose exec -T db pg_restore -U portal -d portal --clean --if-exists < portal.dump`, then put `env.backup` back as `.env`.
 - The backups hold secrets (mode 700/600). Keep any off-server copy encrypted.
+- Everything is in the database: sites, alarms, users, sessions, two-step secrets, passkeys and Platform settings. The SMTP password, Cloudflare token, Google client secret and authenticator secrets are encrypted with `FERNET_KEY`, so restore `env.backup` together with the dump.
 
 ## Develop
 
@@ -160,8 +201,10 @@ uvicorn app.main:app --reload --port 8099
 pytest
 ```
 
+`tools/dev_up.sh` starts a fresh dev stack (fake NX on :8199, portal on :8099). The dev login is `admin@twgsecurity.com` / `Smoke-test-password-123!`. Browser tests live in `tools/e2e/` (see the file headers). Passkeys work on `localhost` in dev (`WEBAUTHN_RP_ID=localhost`).
+
 For browser testing without a real NX site, run the fake NX server in `tools/fake_nx.py`. It lets you fire panic, analytics and health events on demand; see the file header for how.
 
 ## Roadmap (not in this base)
 
-Cloudflare Access / Google Workspace SSO · per-company subdomains · claim/escalation workflow and SOPs per site · reports and CSV export · level rules by camera/keyword · multi-worker bus (Postgres LISTEN/NOTIFY) for zero-downtime deploys
+3D globe view based on [God's Eye View](https://github.com/bilawalsidhu/gods-eye-view) · SNMP · off-server backup copy · per-company subdomains · claim/escalation workflow and SOPs per site · reports and CSV export · level rules by camera/keyword · multi-worker bus (Postgres LISTEN/NOTIFY) for zero-downtime deploys
