@@ -26,18 +26,9 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Deploys: no need to ask (the user said so on 2026-10-02), but always say in the reply that you're deploying, and when it's back.** A restart once landed on their test press. Back up first (`tools/backup.sh`), then check health and "live push connected" for every site.
 
 ## Current production state (2026-10-02)
-- **Production runs `feature/base-portal` at `2bdee60`** (camera editor; deployed 2026-10-02 19:59 UTC, no migration, health back in 5 s, both sites push connected, backup `20261002-195904Z`). Before that **Production runs `feature/base-portal` at `d4275e9`** (camera list fix + imagery pre-load; deployed 2026-10-02 17:58 UTC, no migration; first pre-load pass fetched 52 + 77 NAIP tiles, 0 failed, in ~4.5 min). Before that **Production runs `feature/base-portal` at `2aa398e`** (3D cameras + HUD + siren fix; deployed 2026-10-02 17:53 UTC, migration 0012; health back in 5 s, both sites "live push connected"; pre-deploy backup `20261002-175246Z`; camera lists read fine from both NX sites: 33 and 7). Before that `85b7265` (3D site view v1, 12:36 UTC).
+- **Production runs `feature/base-portal` at `2bdee60`** (camera editor; deployed 2026-10-02 19:59 UTC). **Not yet deployed:** `74bee50` (Dismiss button + alarm delivery under bursts, 2026-10-12; no migration).
   - Tunnel connector `10.0.2.58` is trusted (Platform page / `trust-proxy`); tunnel visitors now show their real IP (verified: 24.245.109.40).
   - Not configured yet: email, Cloudflare, Google sign-in, 2FA requirement, office allowlist.
-- Before that it ran `4ec5b96` (2026-10-01 17:20 UTC). It includes:
-  - site arming and schedules
-  - NX rule health (effective delays)
-  - versioned assets
-  - incident export (PDF/ZIP)
-  - verdicts, groups and bulk edit
-  - live video beside the recorded clip
-  - follow-up notes
-  - **multiple companies**
 - **Companies:** only **TWG Security** exists (id 1, `kind=platform`). **No customer companies have been created yet.**
 - **Users** (all in TWG):
   - `msupczenski@twgsecurity.com`: admin, the user
@@ -45,6 +36,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
   - `e2e-probe@twgsecurity.com`: operator, **deactivated**
   Both admins hold every `platform.*` permission.
 - **Arming was verified on production:** a Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
+- **2026-10-12 alarm state:** 961 open alarms (71 site 1, 890 site 2; site 2 raised 890 in 10 days). The user wanted them cleared for a demo; a bulk SQL ack was blocked by the permission classifier, so the user was given a `!` command, and then asked for the Dismiss button to do it in the UI. Site 1 was **disarmed** that morning. Backup `20261012-112621Z` was taken first.
 - **Backups:** `tools/backup.sh` runs nightly at **03:15 UTC** (the user's crontab) into `~/backups/nx_alarm_portal/<timestamp>/`, keeping 14. Each run restores the dump into a scratch database to prove it.
   - First verified backup: `20261001-183149Z` (alarms=230, audit_log=510, sites=2, users=3).
   - Log: `~/backups/nx_alarm_portal/backup.log`.
@@ -74,7 +66,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Area | Files |
 |---|---|
 | Settings (all env/.env) | `app/config.py` |
-| Models: tenants, users, groups, sites, alarms, alarm_notes, audit_log | `app/models.py` (every table has `tenant_id`); migrations `migrations/versions/0001-0007` |
+| Models: tenants, users, groups, sites, alarms, alarm_notes, audit_log | `app/models.py` (every table has `tenant_id`); migrations `migrations/versions/0001-0012` |
 | Backups | `tools/backup.sh` (pg_dump + .env + checksums, restore-verified, rotation) |
 | Alarm levels (critical 1 / alarm 2 / warning 3 / ignore) | `app/services/alarm_filter.py` |
 | NX row → portal fields, captions | `app/services/nx_events.py` |
@@ -92,7 +84,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Invites, setup and reset links | `app/invites.py`, `app/tokens.py` (`user_tokens`: SHA-256 only, setup 7 d, reset 30 min); pages `/setup`, `/forgot`, `/reset`, `/login/password-expired` in `app/routers/auth.py`; `password_form.html`, `forgot.html`; tests `tests/test_email_invites.py` (aiosmtpd sink), e2e `tools/e2e/email.py` |
 | Google sign-in (OIDC + PKCE) | `app/routers/sso.py` (`/auth/google`, `/auth/google/callback`), settings on `platform_settings.google_*` (migration 0011); tests `tests/test_google_sso.py` |
 | Companies / tenancy | `app/scope.py` (`Scope`, `get_scope`), `app/routers/tenants.py` (`/api/scope`, `/api/tenants`, logo, `/branding/{id}/logo`), `templates/companies.html` + `js/companies.js`; tests `tests/test_tenancy.py`, e2e `tools/e2e/tenancy.py` |
-| Verdicts (real / false), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`) |
+| Verdicts (real / false / dismissed), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`; `dismissed` skips the NX bookmark but still clears forced-ack events), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`, ≤500 ids; `alarms.js` chunks); e2e `tools/e2e/dismiss.py` |
 | Groups & permissions | `app/permissions.py` (catalog, `require()`), `user_groups` / `user_group_members` (migration 0005), `/api/groups`; `deps.current_user` loads `user._perms`, pages get `CFG.perms` |
 | Live video | `GET /media/alarms/{id}/live.webm`: relays NX `/media/<dev>.webm?resolution=640x360` (≤6 per site, 20 min cap, commits the DB session first so no connection is pinned); `static/js/live.js` |
 | Incident report PDF / evidence ZIP | `app/services/report.py` (reportlab + Pillow; CPU work in `asyncio.to_thread`); `GET /api/alarms/{id}/export?format=pdf|zip&note&pre&post&quality` |
@@ -105,13 +97,13 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Frontend (no build step) | `app/templates/*.html`, `app/static/js/*.js`, `app/static/css/theme.css`, Leaflet vendored in `app/static/vendor/leaflet` |
 
 JS modules:
-- `common.js`: API, the open-alarm store, the SSE connection with reconnect, watchdog and fallback polling
+- `common.js`: API, the open-alarm store, the SSE connection with reconnect, watchdog and fallback polling. Acks/updates from the stream are applied to the store at once but redrawn at most every 100 ms (`queueChange`); `alarm.new` flushes first and is never batched. Store listeners get `{alarm}` or `{alarms}`.
 - `console.js`: entry point on every page
 - `sound.js`: siren/chime/tones, silence, mute, one "leader" tab plays
 - `critical.js`: the pop-up
 - `drawer.js`: alarm details
 - `player.js`: clip player, timeline and boxes
-- `map.js`: overview with sites, map and live feed
+- `map.js`: overview with sites, map and live feed (draws the top `FEED_MAX` = 100 cards, then "+N more")
 - `live.js`: live WebM view (drawer side pane, critical pop-up's Live button)
 - `globe.js`: the 3D site view (Cesium), imported by `map.js` only when "3D view" is clicked; software-WebGL refusal and frame watchdog
 - `companies.js`: TWG's Companies page
@@ -183,6 +175,7 @@ JS modules:
   While the stream is down the page polls open alarms every 2 s. After 10 s it shows a red "LIVE UPDATES LOST" banner and plays a tone every 10 s.
   Alarms found by any catch-up path are raised like live ones.
 - Single uvicorn worker (the pollers and bus live in-process), with `--timeout-graceful-shutdown 2`.
+- **Burst safety (measured 2026-10-12, dev, 500-600 alarm bursts):** never hold a DB session across slow work (clip builds, NX calls): the pool is 5+10 and a burst of loud alarms once took all of it, stalling ingest 30 s+. ffmpeg/ffprobe run under `nice -n 19` (`clips._run`): at normal priority they starved the app and alarms reached browsers 2-3 s late. After both fixes: critical pop-up 92-178 ms with 500 open alarms and 4 ffmpeg running; 232 ms during a 503-alarm bulk dismiss.
 
 ## NX 6.1 facts we verified (don't re-learn these)
 **Push (JSON-RPC)**
@@ -238,7 +231,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 142 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 147 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -250,6 +243,7 @@ tools/dev_up.sh && .venv/bin/python -m tools.e2e.twofactor /tmp   # authenticato
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.email /tmp       # SMTP sink on :8125: test email, invite -> setup link, forgot -> reset link
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.cameras /tmp # place cameras on the 3D view, live window, alarm turns a camera red
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.dismiss /tmp # Dismiss everywhere; 600-alarm burst, bulk dismiss, critical latency meanwhile
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.globe /tmp   # 3D view: software-GL refusal, forced open + watchdog, alarm latency while open, failed load
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
@@ -270,8 +264,6 @@ tools/dev_down.sh
 1. **Cloudflare Tunnel follow-ups:**
    - put **Cloudflare Access** in front, since the portal is on the internet behind a password only. Click-level steps (one-time PIN, policy, 1-week session) were given to the user on 2026-09-30; they haven't confirmed it's done.
      **A policy limited to `@twgsecurity.com` would lock out customer companies**: add their domains, or allow one-time PIN for any email.
-   - audit IPs show the connector's LAN IP: trust it in Caddy and read `CF-Connecting-IP`
-   - item 11 below (a real certificate) is moot for the tunnel path
    - optional: the user can set Cloudflare *Browser Cache TTL* to "Respect Existing Headers" (the portal no longer depends on it)
 2. **First customer company**: nothing to build. Check with the user when they onboard one (Companies → New company); also check Cloudflare Access (item 1).
 3. **Off-server backup copy**: encrypted, e.g. to Google Drive via the TWG gateway, or another host.
@@ -285,9 +277,10 @@ tools/dev_down.sh
    - replace the classic PAT with the deploy key `~/.ssh/nx_alarm_portal_deploy` (the `Host github-nx-portal` alias is in `~/.ssh/config`; the key isn't added on GitHub yet) or a fine-grained token
    - remove `/etc/sudoers.d/90-twg-claude` when setup is done
    - the user changes the admin password and deletes the temp file
-11. A DNS name and a real certificate (drop `tls internal` in the `Caddyfile`).
+11. A real certificate for the LAN address (drop `tls internal` in the `Caddyfile`); the tunnel path already has one.
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
-13. Merge PR #1 once the user is happy.
+13. Merge PR #1 once the user is happy. **Push first:** 10+ commits were unpushed as of 2026-10-12.
+15. **Large backlogs** (follow-ups to 2026-10-12): `loadOpenAlarms` fetches at most 500, so with more open the store and badge undercount; the Alarms page loads 100 per "Load more", so a big bulk dismiss needs many clicks (a "Dismiss all matching" server-side action would fix it). Exports still hold a DB connection while waiting up to 90 s for the clip.
 14. **3D site view ("God's Eye View")**: v1 deployed 2026-10-02 (`85b7265`). The user then said the flat free imagery looked bad ("crap 3d map") and asked for the look of gods-eye-view, "where I can add the cameras in". v2 deployed 17:53 UTC (`2aa398e`): HUD, cameras, Google 3D buildings support (waiting on a key).
    - Where: map page → site panel → **3D view** replaces the map pane (feed and site list stay). `static/js/globe.js` (Cesium), wired in `map.js`; HUD markup in `map.html`, styles under "3D site view" in `theme.css`.
    - **Camera editor** (user feedback 2026-10-02: fixed distance and preset widths were bad): `globe.editCamera` places by click-spot then aim-with-mouse (direction and distance follow it), then drag handles (white centre = move, orange tip = aim + distance, yellow sides = any width up to a 360° dome); the panel shows Aim/Width/Distance number boxes and saves every finished change. Clicking a camera while Place cameras is open edits it. Limits: width 5-360°, distance 2-500 m.
