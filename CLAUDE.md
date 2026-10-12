@@ -26,8 +26,8 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Deploys: no need to ask (the user said so on 2026-10-02), but always say in the reply that you're deploying, and when it's back.** A restart once landed on their test press. Back up first (`tools/backup.sh`), then check health and "live push connected" for every site.
 
 ## Current production state (2026-10-02)
-- **Built but NOT deployed: `a3725be` (top-down site view, see Open items 14b).** The deploy on 2026-10-12 was blocked by the permission classifier ("Production Deploy"); the user has to run it or add a permission rule.
-- **Production runs `feature/base-portal` at `74bee50`** (Dismiss button + alarm delivery under bursts; deployed 2026-10-12 12:03 UTC, no migration, health back in 4 s; push connected: site 2 after 1 s, **site 1 after 30 s** (slower than before, likely the relay; polling covered it); backups `20261012-120203Z` before, `20261012-120649Z` after). Before that `2bdee60` (camera editor, 2026-10-02).
+- **Production runs `feature/base-portal` at `ac037e8`** (top-down site view, Open items 14b). Deployed 2026-10-12 13:31 UTC by the user (backup `20261012-133115Z` first); health 200, push connected: site 2 after 9 s, site 1 after 21 s.
+- Before that: `74bee50` (Dismiss button + alarm delivery under bursts; deployed 2026-10-12 12:03 UTC, no migration, health back in 4 s; push connected: site 2 after 1 s, **site 1 after 30 s** (slower than before, likely the relay; polling covered it); backups `20261012-120203Z` before, `20261012-120649Z` after). Before that `2bdee60` (camera editor, 2026-10-02).
   - Tunnel connector `10.0.2.58` is trusted (Platform page / `trust-proxy`); tunnel visitors now show their real IP (verified: 24.245.109.40).
   - Not configured yet: email, Cloudflare, Google sign-in, 2FA requirement, office allowlist.
 - **Companies:** only **TWG Security** exists (id 1, `kind=platform`). **No customer companies have been created yet.**
@@ -264,7 +264,7 @@ tools/dev_down.sh
 - Commits end with the attribution lines from the session's system reminder. Branch `feature/base-portal`.
 
 ## Open items / backlog (roughly in priority order)
-14b. **Top-down site view** (the user asked 2026-10-12 for an NX-style flat map "where we can add cameras, not in 3d mode", with a screenshot of NX's map: drone photo, blue cones). Built `a3725be`, **not deployed** (see production state).
+14b. **Top-down site view** (the user asked 2026-10-12 for an NX-style flat map "where we can add cameras, not in 3d mode", with a screenshot of NX's map: drone photo, blue cones). Deployed 2026-10-12 13:31 UTC (`ac037e8`).
    - Map page → site panel → **Top-down view** (now the primary button; 3D view stays). `plan.js` swaps the map's tile layer for aerial (`/tiles/sat`, native z19, overzoom to z21), adds cones (pane `planCones`) and camera dots, and reuses the Place cameras panel and editor. Same `camera_places` as 3D. Exit restores the street map. Opening one view closes the other.
    - Alarm safety (dev, measured): alarms on screen 16-92 ms with the view open + live video; 44-61 ms while panning. No WebGL, so no watchdog needed.
    - Likely next ask: **their own background image** (drone orthomosaic or floor plan, like the NX screenshot), since NAIP is 0.3 m/px and blurry past z19. Design idea: upload per site, pin it to the map by its corners (or GeoTIFF bounds), keep cameras in lat/lng so both views keep working.
