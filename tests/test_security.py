@@ -164,6 +164,15 @@ async def test_sat_tile_proxy_tiled_then_hires(client, admin, tmp_path, monkeypa
     assert (await client.get("/tiles/sat/20/1/1.jpg")).status_code == 404   # deeper than NAIP goes
 
 
+@respx.mock
+async def test_sat_tile_upstream_timeout_is_a_502(client, admin, tmp_path, monkeypatch):
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "tile_cache_dir", str(tmp_path / "tiles"))
+    respx.get(url__startswith="https://imagery.nationalmap.gov/").mock(side_effect=httpx.ReadTimeout("slow"))
+    await login(client, admin[1].email)
+    assert (await client.get("/tiles/sat/18/76057/98686.jpg")).status_code == 502
+
+
 def test_tile_bbox_is_web_mercator():
     from app.routers.tiles import tile_bbox
     assert tile_bbox(0, 0, 0) == "-20037508.343,-20037508.343,20037508.343,20037508.343"

@@ -6,6 +6,8 @@ const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
 let selectedId = null, feedPriority = "";
 let globe = null, globeOpening = false;   // the 3D view (globe.js), loaded on first use
+let plan = null;                           // the top-down view (plan.js): the 2D map on aerial imagery with cameras
+const view = () => globe || plan;          // whichever camera view is open; both have the same editor API
 const SEVERITY = { alarm: 0, warn: 1, offline: 2, ok: 3 };
 const DEFAULT_CENTER = [39.8, -98.6];
 const lmap = createMap(document.getElementById("map"), { center: DEFAULT_CENTER, zoom: 4 });
@@ -64,7 +66,8 @@ function renderDetail() {
       ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
     </dl>
     <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${s.lat != null ? '<button class="btn btn-sm btn-primary" type="button" data-globe title="Fly into a 3D aerial view of this site">3D view</button>' : ""}
+      ${s.lat != null ? `<button class="btn btn-sm btn-primary" type="button" data-plan title="Aerial view from straight above, with this site's cameras">Top-down view</button>
+        <button class="btn btn-sm" type="button" data-globe title="Fly into a 3D aerial view of this site">3D view</button>` : ""}
       <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all">Alarm history</a>
       ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">Edit site</a>` : ""}
     </div>`;
@@ -141,20 +144,21 @@ function fitToSites() {
 function renderAll() {
   renderStats(); renderSites(); renderDetail(); renderFeed();
   for (const s of sites.values()) upsertMarker(s);
-  globe?.update(); renderHud();
+  globe?.update(); plan?.update(); renderHud();
 }
 
 function select(id, pan = true) {
   selectedId = id;
   renderAll();
   const s = sites.get(id);
-  if (pan && s?.lat != null) lmap.flyTo([s.lat, s.lng], Math.max(lmap.getZoom(), 15), { duration: 0.8 });
+  if (pan && s?.lat != null && plan) plan.flyTo(s);
+  else if (pan && s?.lat != null) lmap.flyTo([s.lat, s.lng], Math.max(lmap.getZoom(), 15), { duration: 0.8 });
   if (pan && globe) globe.flyTo(s);
 }
 
 // ---------------------------------------------------------------- 3D view (over the map pane)
 const $id = (x) => document.getElementById(x);
-const globeEl = $id("globe"), globeBar = $id("globe-bar"), globeMsg = $id("globe-msg"), hud = $id("hud");
+const mapCanvas = document.querySelector(".map-canvas"), globeEl = $id("globe"), globeBar = $id("globe-bar"), globeMsg = $id("globe-msg"), hud = $id("hud");
 const camPanel = $id("cam-panel"), camPlace = $id("cam-place"), camsBtn = $id("globe-cams");
 let hudClock = null, camLive = null, camOpen = null;   // camOpen = { siteId, deviceId }
 
@@ -194,6 +198,7 @@ const tickClock = () => { $id("hud-clock").textContent = new Date().toISOString(
 async function openGlobeView(site) {
   if (globe) { globe.flyTo(site); return; }
   if (globeOpening) return;
+  closePlanView();
   globeOpening = true;
   globeEl.hidden = false; globeBar.hidden = false;
   globeMsg.textContent = "Loading 3D view…"; globeMsg.hidden = false;
@@ -202,10 +207,7 @@ async function openGlobeView(site) {
     globe = await openGlobe(globeEl, {
       pins: globePins, cameras: globeCams,
       onPick: (id) => select(id),
-      onPickCamera: (siteId, dev) => {
-        if (placingSite === siteId) return startCamEdit(dev, sites.get(siteId)?.camera_places?.[dev]?.name || "Camera");
-        openCamPanel(siteId, dev);
-      },
+      onPickCamera: pickCamera,
       onView: renderCoords,
       onTooSlow: (why) => {
         closeGlobeView();
@@ -216,7 +218,9 @@ async function openGlobeView(site) {
     window.__globe = globe.viewer;   // for tools/e2e/globe.py and debugging
     globeMsg.hidden = true;
     hud.hidden = false; camsBtn.hidden = !CFG.isAdmin;
+    $id("globe-close").textContent = "2D map";
     $id("imagery-3d").textContent = globe.hasBuildings ? "3D" : "Satellite";
+    showImagery("sat");
     tickClock(); hudClock = setInterval(tickClock, 1000);
     renderHud();
     globe.flyTo(sites.get(selectedId) || site, { fromSpace: true });
@@ -238,7 +242,47 @@ function closeGlobeView() {
   globeEl.replaceChildren();
 }
 
-// ---- live camera window: click a camera on the 3D view
+// ---- top-down view: the 2D map itself, on aerial imagery and zoomed into the site, with cameras
+// drawn flat (no WebGL, so no graphics check or watchdog needed; see plan.js)
+async function openPlanView(site) {
+  if (plan) { plan.flyTo(site); return; }
+  if (globe) closeGlobeView();
+  try {
+    const { openPlan } = await import("./plan.js");
+    if (plan) return;
+    plan = openPlan(lmap, { cameras: globeCams, onPickCamera: pickCamera });
+    window.__plan = plan;   // for tools/e2e/topdown.py
+  } catch (err) {
+    console.error("top-down view failed", err);
+    toast(`Top-down view didn't open (${esc(err.message || String(err))}). The map and alarms are unaffected.`, { kind: "error", timeout: 8000 });
+    return;
+  }
+  mapCanvas.classList.add("plan-open");
+  globeBar.hidden = false; camsBtn.hidden = !CFG.isAdmin;
+  $id("globe-close").textContent = "Exit top-down";
+  $id("imagery-3d").textContent = "Satellite";
+  showImagery("sat");
+  plan.flyTo(sites.get(selectedId) || site);
+}
+
+function closePlanView() {
+  if (!plan) return;
+  closeCamPanel(); closePlacing();
+  try { plan.destroy(); } catch (err) { console.error(err); }
+  plan = null; delete window.__plan;
+  mapCanvas.classList.remove("plan-open");
+  globeBar.hidden = true;
+}
+
+const showImagery = (kind) => globeBar.querySelectorAll("[data-imagery]").forEach((b) => b.classList.toggle("active", b.dataset.imagery === kind));
+
+// A camera was clicked on either view: edit it while placing that site's cameras, else watch it live.
+function pickCamera(siteId, dev) {
+  if (placingSite === siteId) return startCamEdit(dev, sites.get(siteId)?.camera_places?.[dev]?.name || "Camera");
+  openCamPanel(siteId, dev);
+}
+
+// ---- live camera window: click a camera on the 3D or top-down view
 async function openCamPanel(siteId, deviceId) {
   const s = sites.get(siteId), p = s?.camera_places?.[deviceId];
   if (!p) return;
@@ -265,7 +309,7 @@ camPanel.addEventListener("click", (e) => {
   if (id) { const a = openAlarms.get(Number(id)); if (a) focusAlarm(a); }
 });
 
-// ---- place and edit cameras (admins). The editor in globe.js does the mouse work; this panel
+// ---- place and edit cameras (admins). The editor in globe.js / plan.js does the mouse work; this panel
 // lists the site's cameras and shows/edits the numbers. Every finished change is saved at once.
 let placingSite = null, editing = null;      // editing = { dev, name }
 const MODE_HINT = {
@@ -276,7 +320,7 @@ const MODE_HINT = {
 const camRow = (c) => `<li data-dev="${esc(c.device_id)}" data-name="${esc(c.name)}">
   <span class="nm" title="${esc(c.name)}">${esc(c.name)}${c.place ? ' <span class="placed">✓ placed</span>' : ""}</span>
   <button type="button" class="go" data-edit>${c.place ? "Edit" : "Place"}</button>
-  ${c.place ? '<button type="button" data-unplace title="Take it off the 3D view">Remove</button>' : ""}</li>`;
+  ${c.place ? '<button type="button" data-unplace title="Take it off the map">Remove</button>' : ""}</li>`;
 
 async function openPlacing() {
   const s = sites.get(selectedId);
@@ -302,11 +346,11 @@ function closePlacing() {
   camPlace.hidden = true; camPlace.replaceChildren();
 }
 
-function renderEditor(st = globe?.editing && editing ? editing.st : null, saveState = "") {
+function renderEditor(st = view()?.editing && editing ? editing.st : null, saveState = "") {
   const box = $id("cam-editor");
   if (!box || !editing) return;
   box.hidden = false;
-  const mode = globe?.editing?.mode || "spot";
+  const mode = view()?.editing?.mode || "spot";
   box.innerHTML = `<div class="ed-name"><b>${esc(editing.name)}</b><button type="button" data-ed-done>Done</button></div>
     <div class="ed-hint">${esc(MODE_HINT[mode](editing.name))}</div>
     ${st && mode !== "spot" ? `<div class="ed-nums">
@@ -342,11 +386,11 @@ async function saveCam(siteId, dev, place) {
 
 function startCamEdit(dev, name) {
   const site = sites.get(placingSite);
-  if (!site || !globe) return;
+  if (!site || !view()) return;
   stopCamEdit();
   const place = site.camera_places?.[dev];
   editing = { dev, name, st: place ? { ...place } : null };
-  globe.editCamera({ siteId: site.id, deviceId: dev, name, ...(place || {}) }, {
+  view().editCamera({ siteId: site.id, deviceId: dev, name, ...(place || {}) }, {
     onMode: (mode, st) => { editing.st = st; renderEditor(st); },
     onChange: (st) => { editing.st = st; paintNumbers(st); },
     onCommit: (place) => saveCam(site.id, dev, place),
@@ -355,7 +399,7 @@ function startCamEdit(dev, name) {
   camPlace.querySelectorAll("li[data-dev]").forEach((li) => li.classList.toggle("editing", li.dataset.dev === dev));
 }
 function stopCamEdit() {
-  globe?.stopEditing();
+  view()?.stopEditing();
   editing = null;
   const box = $id("cam-editor");
   if (box) { box.hidden = true; box.replaceChildren(); }
@@ -364,7 +408,7 @@ function stopCamEdit() {
 async function saveSite(data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); }
 
 camPlace.addEventListener("click", async (e) => {
-  if (!globe || placingSite == null) return;
+  if (!view() || placingSite == null) return;
   if (e.target.closest("[data-ed-done]")) return stopCamEdit();
   if (e.target.closest("[data-ed-dome]") && editing?.st) return editorSet({ fov: editing.st.fov >= 360 ? 90 : 360 });
   const li = e.target.closest("li[data-dev]");
@@ -378,7 +422,7 @@ camPlace.addEventListener("click", async (e) => {
   if (e.target.closest("[data-edit]")) startCamEdit(dev, name);
 });
 // Typing a number applies it (and saves) when the field is left or Enter is pressed.
-const editorSet = (values) => { if (editing) globe?.currentEditor()?.set(values); };
+const editorSet = (values) => { if (editing) view()?.currentEditor()?.set(values); };
 camPlace.addEventListener("change", (e) => {
   const k = e.target.dataset?.ed;
   if (!k) return;
@@ -387,19 +431,16 @@ camPlace.addEventListener("change", (e) => {
   editorSet({ [k]: k === "heading" ? ((v % 360) + 360) % 360 : v });
 });
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && editing && globe?.editing?.mode !== "edit") stopCamEdit();
+  if (e.key === "Escape" && editing && view()?.editing?.mode !== "edit") stopCamEdit();
 });
 
 globeBar.addEventListener("click", (e) => {
   const t = e.target;
-  if (t.id === "globe-close") return closeGlobeView();
-  if (t.id === "globe-recenter") return globe?.flyTo(sites.get(selectedId));
+  if (t.id === "globe-close") return plan ? closePlanView() : closeGlobeView();
+  if (t.id === "globe-recenter") return view()?.flyTo(sites.get(selectedId));
   if (t.id === "globe-cams") return placingSite == null ? openPlacing() : closePlacing();
   const kind = t.dataset.imagery;
-  if (kind && globe) {
-    globe.setImagery(kind);
-    globeBar.querySelectorAll("[data-imagery]").forEach((b) => b.classList.toggle("active", b === t));
-  }
+  if (kind && view()) { view().setImagery(kind); showImagery(kind); }
 });
 
 function focusAlarm(a) {
@@ -417,6 +458,7 @@ siteList.addEventListener("keydown", (e) => {
 document.getElementById("site-detail").addEventListener("click", async (e) => {
   if (e.target.id === "close-detail") { selectedId = null; renderAll(); return; }
   if (e.target.closest("[data-globe]") && sites.has(selectedId)) { openGlobeView(sites.get(selectedId)); return; }
+  if (e.target.closest("[data-plan]") && sites.has(selectedId)) { openPlanView(sites.get(selectedId)); return; }
   const op = e.target.dataset.arm;
   if (op && sites.has(selectedId)) { e.target.disabled = true; await setArmed(sites.get(selectedId), op === "arm"); e.target.disabled = false; }
 });

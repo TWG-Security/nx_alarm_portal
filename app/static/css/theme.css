@@ -282,6 +282,24 @@ tr:last-child td { border-bottom: 0; }
 :root[data-theme="light"] .leaflet-control-attribution { background: rgba(255, 255, 255, .8) !important; color: #333; }
 .leaflet-control-attribution a { color: var(--orange); }
 
+/* top-down view (plan.js): the 2D map on aerial imagery, cameras as view cones */
+.plan-sat .leaflet-tile-pane { filter: none !important; }
+.plan-placing, .plan-placing .leaflet-interactive { cursor: crosshair !important; }
+.plan-open .cam-place { top: 90px; max-height: calc(100% - 170px); }
+.plan-open .cam-panel { top: 16px; right: 16px; }
+.plan-cam { background: none; border: 0; }
+.plan-cam i { display: block; width: 14px; height: 14px; border-radius: 50%; background: #E08A30; border: 2px solid #fff; box-sizing: border-box;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .6); cursor: pointer; }
+.plan-cam span { position: absolute; top: 17px; left: 50%; transform: translateX(-50%); white-space: nowrap; pointer-events: none;
+  padding: 1px 5px; border-radius: 3px; background: rgba(13, 13, 13, .78); color: #fff; font: 600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.plan-cam--alarm i { width: 18px; height: 18px; margin: -2px; background: var(--red); animation: plan-alarm 1.4s ease-out infinite; }
+@keyframes plan-alarm { 0% { box-shadow: 0 0 0 0 rgba(192, 57, 43, .85); } 100% { box-shadow: 0 0 0 16px rgba(192, 57, 43, 0); } }
+.plan-cam--alarm span { background: var(--red); }
+.plan-handle { border-radius: 50%; border: 2px solid #0D0D0D; box-sizing: border-box; box-shadow: 0 1px 4px rgba(0, 0, 0, .6); cursor: grab; }
+.plan-handle.move { background: #fff; }
+.plan-handle.aim { background: #E08A30; }
+.plan-handle.left, .plan-handle.right { background: #FFD54A; transform-origin: center; }
+
 /* map pins (Leaflet divIcon, anchored at the pin tip) */
 .pin-icon { background: none; border: 0; }
 .pin { position: absolute; left: 0; top: 0; transform: translate(-50%, -36px); display: flex; flex-direction: column; align-items: center; cursor: pointer; }

@@ -11,6 +11,18 @@ BOX_PIXELS = """(sel) => { const c = document.querySelector(sel + ' .player-boxe
                    let n = 0; for (let i = 3; i < d.length; i += 4) if (d[i]) n++; return n; }"""
 
 
+def stub_aerial_tiles(pg) -> None:
+    """Serve plain stand-in aerial tiles. Uncached USGS tiles can take 30 s+ each (production pre-loads
+    them around every site), and on dev's HTTP/1.1 they tie up the browser's 6 connections, so API
+    calls queue behind them. The camera views are what's under test, not USGS."""
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (256, 256), (70, 92, 60)).save(buf, "JPEG")
+    tile = buf.getvalue()
+    pg.route("**/tiles/sat/**", lambda r: r.fulfill(body=tile, content_type="image/jpeg"))
+
+
 def inject(kind: str) -> None:
     """kind: panic (critical soft trigger) | line (analytics alarm) | dock (camera-disconnected warning)"""
     urllib.request.urlopen(urllib.request.Request(f"{FAKE_NX}/_inject/{kind}", method="POST"))

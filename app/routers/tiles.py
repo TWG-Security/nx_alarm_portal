@@ -38,7 +38,10 @@ def _http() -> httpx.AsyncClient:
 
 async def _download(url: str, slots: asyncio.Semaphore) -> bytes:
     async with slots:
-        r = await _http().get(url)
+        try:
+            r = await _http().get(url)
+        except httpx.HTTPError as exc:      # slow or unreachable upstream: a clean 502, not a 500 traceback
+            raise HTTPException(502, f"Tile server unreachable: {type(exc).__name__}") from None
     if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/"):
         raise HTTPException(502, f"Tile server returned {r.status_code}")
     return r.content
