@@ -20,7 +20,7 @@ def stub_aerial_tiles(pg) -> None:
     buf = io.BytesIO()
     Image.new("RGB", (256, 256), (70, 92, 60)).save(buf, "JPEG")
     tile = buf.getvalue()
-    pg.route("**/tiles/sat/**", lambda r: r.fulfill(body=tile, content_type="image/jpeg"))
+    pg.context.route("**/tiles/sat/**", lambda r: r.fulfill(body=tile, content_type="image/jpeg"))   # every page of the test
 
 
 def inject(kind: str) -> None:
@@ -29,6 +29,7 @@ def inject(kind: str) -> None:
 
 
 def login_and_add_site(pg) -> None:
+    stub_aerial_tiles(pg)          # picking a site opens its aerial top-down view
     pg.goto(f"{PORTAL}/login")
     pg.fill("#email", LOGIN[0]); pg.fill("#password", LOGIN[1])
     pg.click("button[type=submit]"); pg.wait_for_url(f"{PORTAL}/")

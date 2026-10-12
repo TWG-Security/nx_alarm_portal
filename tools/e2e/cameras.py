@@ -7,7 +7,7 @@ frame watchdog) to drive the UI; tools/e2e/globe.py covers the safety checks.
 import sys
 import time
 from playwright.sync_api import sync_playwright
-from tools.e2e.common import COUNT_TONES, inject, login_and_add_site, stub_aerial_tiles
+from tools.e2e.common import COUNT_TONES, inject, login_and_add_site
 
 out = sys.argv[1] if len(sys.argv) > 1 else "/tmp"
 
@@ -18,7 +18,6 @@ with sync_playwright() as p:
     pg = ctx.new_page()
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))
-    stub_aerial_tiles(pg)
     login_and_add_site(pg); pg.wait_for_timeout(2500)
     pg.evaluate("localStorage.setItem('twg-3d-force', '2')")
     pg.click(".site-item"); pg.click("[data-globe]")

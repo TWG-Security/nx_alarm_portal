@@ -7,7 +7,7 @@ No WebGL involved, so unlike tools/e2e/cameras.py this needs no test switches. A
 import sys
 import time
 from playwright.sync_api import sync_playwright
-from tools.e2e.common import COUNT_TONES, inject, login_and_add_site, stub_aerial_tiles
+from tools.e2e.common import COUNT_TONES, inject, login_and_add_site
 
 out = sys.argv[1] if len(sys.argv) > 1 else "/tmp"
 SAVED = "document.getElementById('ed-save')?.textContent.includes('Saved')"
@@ -19,9 +19,8 @@ with sync_playwright() as p:
     pg = ctx.new_page()
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))
-    stub_aerial_tiles(pg)
     login_and_add_site(pg); pg.wait_for_timeout(2500)
-    pg.click(".site-item"); pg.click("[data-plan]")
+    pg.click(".site-item")          # clicking a site goes straight to its top-down view
     pg.wait_for_function("!!window.__plan && document.querySelector('#map.plan-sat')", timeout=10000)
     pg.wait_for_function("[...document.querySelectorAll('.leaflet-tile-pane img')].every(e => e.complete)", timeout=20000)
     sat = pg.eval_on_selector_all(".leaflet-tile-pane img", "els => els.filter(e => e.src.includes('/tiles/sat/') && e.complete && e.naturalWidth).length")
@@ -168,8 +167,19 @@ with sync_playwright() as p:
     print("after exit: plan-sat", pg.evaluate("!!document.querySelector('#map.plan-sat')"), "| cameras drawn", pg.locator(".plan-cam").count(),
           "| bar hidden", pg.evaluate("document.getElementById('globe-bar').hidden"),
           "| street tiles", pg.eval_on_selector_all(".leaflet-tile-pane img", "els => els.filter(e => !e.src.includes('/tiles/sat/')).length"))
-    # 3D and top-down don't stack: opening one closes the other
-    pg.click("[data-plan]"); pg.wait_for_function("!!window.__plan", timeout=5000)
-    print("re-opened top-down, cameras drawn:", pg.locator(".plan-cam").count())
+    # Clicking the site's pin on the street map: straight into top-down again
+    pg.locator(".pin-icon .pin-head").first.click(); pg.wait_for_function("!!window.__plan", timeout=5000)
+    pg.wait_for_timeout(1200)
+    print("pin clicked -> top-down:", pg.evaluate("!!document.querySelector('#map.plan-sat')"), "| cameras drawn:", pg.locator(".plan-cam").count())
+    # ✕ on the site panel (back to all sites) leaves the top-down view
+    pg.click("#close-detail"); pg.wait_for_timeout(800)
+    print("site closed -> overview:", pg.evaluate("!window.__plan && !document.querySelector('#map.plan-sat')"))
+    # Clicking an alarm in the feed: details open, and behind them the map is top-down at the alarm's camera
+    n = pg.locator(".feed-item").count(); inject("line")
+    pg.wait_for_function(f"document.querySelectorAll('.feed-item').length > {n}", timeout=10000)
+    pg.locator(".feed-item").first.click()
+    pg.wait_for_function("!!window.__plan && !!document.querySelector('#map .plan-cam--alarm')", timeout=10000)
+    print("alarm clicked from the overview -> main map top-down with the camera red:", pg.locator("#map .plan-cam--alarm").count() == 1)
+    pg.click("#drawer-close")
     print("page errors:", errors or "none")
     b.close()

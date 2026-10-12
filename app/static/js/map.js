@@ -130,7 +130,7 @@ function upsertMarker(site) {
     return;
   }
   const m = L.marker([site.lat, site.lng], { icon, title, zIndexOffset: z, keyboard: true, alt: site.name }).addTo(lmap);
-  m.on("click", () => select(site.id, false));
+  m.on("click", () => select(site.id));
   markers.set(site.id, m);
 }
 
@@ -147,13 +147,22 @@ function renderAll() {
   globe?.update(); plan?.update(); renderHud();
 }
 
+// Picking a site (list or pin) goes straight to its top-down view with the cameras (the user's ask,
+// 2026-10-12); in the 3D view it flies there instead. A site without a location is only selected.
 function select(id, pan = true) {
   selectedId = id;
   renderAll();
   const s = sites.get(id);
-  if (pan && s?.lat != null && plan) plan.flyTo(s);
-  else if (pan && s?.lat != null) lmap.flyTo([s.lat, s.lng], Math.max(lmap.getZoom(), 15), { duration: 0.8 });
-  if (pan && globe) globe.flyTo(s);
+  if (!pan || s?.lat == null) return;
+  if (globe) globe.flyTo(s);
+  else openPlanView(s);
+}
+
+// Back to all sites: leave the top-down view for the street-map overview.
+function deselect() {
+  selectedId = null;
+  if (plan) { closePlanView(); fitToSites(); }
+  renderAll();
 }
 
 // ---------------------------------------------------------------- 3D view (over the map pane)
@@ -244,12 +253,14 @@ function closeGlobeView() {
 
 // ---- top-down view: the 2D map itself, on aerial imagery and zoomed into the site, with cameras
 // drawn flat (no WebGL, so no graphics check or watchdog needed; see plan.js)
-async function openPlanView(site) {
-  if (plan) { plan.flyTo(site); return; }
+// deviceId: centre on that camera instead of the whole site (opening an alarm).
+async function openPlanView(site, deviceId = null) {
+  const go = () => (deviceId ? plan.focusCamera(site, deviceId) : plan.flyTo(site));
+  if (plan) { go(); return; }
   if (globe) closeGlobeView();
   try {
     const { openPlan } = await import("./plan.js");
-    if (plan) return;
+    if (plan || globe || globeOpening) return;     // 3D was picked while this loaded: it wins
     plan = openPlan(lmap, { cameras: globeCams, onPickCamera: pickCamera, onHoverCamera: hoverCamera });
     window.__plan = plan;   // for tools/e2e/topdown.py
   } catch (err) {
@@ -262,7 +273,7 @@ async function openPlanView(site) {
   $id("globe-close").textContent = "Exit top-down";
   $id("imagery-3d").textContent = "Satellite";
   showImagery("sat");
-  plan.flyTo(sites.get(selectedId) || site);
+  go();
 }
 
 function closePlanView() {
@@ -485,16 +496,21 @@ document.addEventListener("keydown", (e) => {
 
 globeBar.addEventListener("click", (e) => {
   const t = e.target;
-  if (t.id === "globe-close") return plan ? closePlanView() : closeGlobeView();
+  if (t.id === "globe-close") { if (plan) { closePlanView(); fitToSites(); } else closeGlobeView(); return; }
   if (t.id === "globe-recenter") return view()?.flyTo(sites.get(selectedId));
   if (t.id === "globe-cams") return placingSite == null ? openPlacing() : closePlacing();
   const kind = t.dataset.imagery;
   if (kind && view()) { view().setImagery(kind); showImagery(kind); }
 });
 
+// An alarm opens its details, with the map behind on that site's top-down view at the alarm's camera.
 function focusAlarm(a) {
-  if (sites.has(a.site_id)) select(a.site_id, !plan);
-  if (plan && sites.has(a.site_id)) plan.focusCamera(sites.get(a.site_id), a.device_id);   // top-down open: go to the camera
+  const s = sites.get(a.site_id);
+  if (s) {
+    select(s.id, false);
+    if (s.lat != null && !globe) openPlanView(s, a.device_id);
+    else if (globe) globe.flyTo(s);
+  }
   openDrawer(a.id, a);
 }
 
@@ -506,7 +522,7 @@ siteList.addEventListener("keydown", (e) => {
   if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(Number(li.dataset.id)); }
 });
 document.getElementById("site-detail").addEventListener("click", async (e) => {
-  if (e.target.id === "close-detail") { selectedId = null; renderAll(); return; }
+  if (e.target.id === "close-detail") { deselect(); return; }
   if (e.target.closest("[data-globe]") && sites.has(selectedId)) { openGlobeView(sites.get(selectedId)); return; }
   if (e.target.closest("[data-plan]") && sites.has(selectedId)) { openPlanView(sites.get(selectedId)); return; }
   const op = e.target.dataset.arm;
@@ -516,7 +532,7 @@ document.getElementById("feed-tabs").addEventListener("click", (e) => {
   const b = e.target.closest("button"); if (!b) return;
   feedPriority = b.dataset.p; renderFeed();
 });
-document.getElementById("feed-site-filter").addEventListener("click", (e) => { if (e.target.id === "clear-site") { selectedId = null; renderAll(); } });
+document.getElementById("feed-site-filter").addEventListener("click", (e) => { if (e.target.id === "clear-site") deselect(); });
 const feed = document.getElementById("feed-list");
 feed.addEventListener("click", async (e) => {
   const ack = e.target.dataset.ack;
