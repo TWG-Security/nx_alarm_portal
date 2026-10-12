@@ -87,6 +87,30 @@ with sync_playwright() as p:
                                      " return r.left >= m.left && r.right <= m.right && r.top >= m.top && r.bottom <= m.bottom; })")
     print("after Re-center, cameras on screen:", inside)
 
+    # Mouse over a camera: a live preview beside it, gone when the mouse leaves
+    dot = pg.locator(".plan-cam i").first.bounding_box()
+    dx, dy = dot["x"] + dot["width"] / 2, dot["y"] + dot["height"] / 2
+    pg.mouse.move(dx - 300, dy + 200); pg.wait_for_timeout(300)
+    for i in range(1, 11): pg.mouse.move(dx - 300 + 60 * i, dy + 200 - 40 * i)   # a quick sweep across the cameras
+    pg.wait_for_timeout(100)
+    print("quick sweep across the map opened a preview:", pg.evaluate("!document.getElementById('cam-hover').hidden"))
+    pg.mouse.move(dx - 300, dy + 200); pg.wait_for_timeout(400)
+    t = time.time(); pg.mouse.move(dx, dy)
+    pg.wait_for_selector("#cam-hover:not([hidden]) .live-still", state="attached", timeout=5000)
+    pg.wait_for_function("""(() => { const v = document.querySelector('#cam-hover video'), s = document.querySelector('#cam-hover .live-still');
+        return (v && v.readyState >= 2) || (s && !s.hidden && s.complete && s.naturalWidth > 0); })()""", timeout=10000, polling=20)
+    shown = round((time.time() - t) * 1000)
+    pg.wait_for_function("(() => { const v = document.querySelector('#cam-hover video'); return v && v.readyState >= 2; })()", timeout=10000, polling=20)
+    print(f"hover preview: picture after {shown} ms, live video after {round((time.time() - t) * 1000)} ms:", pg.inner_text("#cam-hover .cam-head"),
+          "| inside the map:", pg.evaluate("""(() => { const r = document.getElementById('cam-hover').getBoundingClientRect(), m = document.getElementById('map').getBoundingClientRect();
+            return r.left >= m.left && r.right <= m.right && r.top >= m.top && r.bottom <= m.bottom; })()"""))
+    pg.screenshot(path=f"{out}/topdown_hover.png")
+    n = pg.locator(".feed-item").count(); t = time.time(); inject("line")
+    pg.wait_for_function(f"document.querySelectorAll('.feed-item').length > {n}", timeout=10000, polling=10)
+    print(f"alarm on screen with the hover preview playing: {round((time.time() - t) * 1000)} ms")
+    pg.mouse.move(dx - 300, dy + 200); pg.wait_for_timeout(500)
+    print("mouse left: preview hidden", pg.evaluate("document.getElementById('cam-hover').hidden"), "| video elements left", pg.locator("#cam-hover video").count())
+
     # Click the first camera -> live window
     pg.locator(".plan-cam i").first.click()
     pg.wait_for_selector("#cam-panel:not([hidden]) video", timeout=10000)
@@ -105,6 +129,8 @@ with sync_playwright() as p:
     pg.wait_for_timeout(500)
     print("red cameras:", pg.eval_on_selector_all(".plan-cam--alarm span", "els => els.map(e => e.textContent)"))
     # ...and while an operator is panning the map
+    print("live window with an alarm: header above the video:", pg.evaluate("""(() => { const h = document.querySelector('#cam-panel .cam-head').getBoundingClientRect(),
+        v = document.querySelector('#cam-panel .cam-live').getBoundingClientRect(); return h.bottom <= v.top + 1 && h.width > 300; })()"""))
     pg.click("#cam-panel [data-cam-close]")
     lat = []
     for k in range(3):

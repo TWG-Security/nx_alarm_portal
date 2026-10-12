@@ -34,10 +34,11 @@ function cone(c) {                   // [[lat, lng], ...] outline of the view co
  * normal street map back.
  *   cameras: () => [{ siteId, deviceId, name, lat, lng, heading, fov, range_m, alarm }]
  *   onPickCamera(siteId, deviceId): a camera (its dot or cone) was clicked (optional)
+ *   onHoverCamera(siteId, deviceId, containerPoint | null): the mouse went onto (or off) a camera's dot or cone
  * The editor API matches globe.js (editCamera, stopEditing, editing, currentEditor), so map.js
  * drives both views the same way.
  */
-export function openPlan(lmap, { cameras, onPickCamera }) {
+export function openPlan(lmap, { cameras, onPickCamera, onHoverCamera }) {
   const cfg = CFG.map || {};
   const base = [];
   lmap.eachLayer((l) => { if (l instanceof L.TileLayer) base.push(l); });
@@ -64,9 +65,11 @@ export function openPlan(lmap, { cameras, onPickCamera }) {
       let d = drawn.get(key);
       if (!d) {
         const pick = () => { if (!editor || editor.mode === "edit") onPickCamera?.(c.siteId, c.deviceId); };
+        const over = (e) => { if (!editor) onHoverCamera?.(c.siteId, c.deviceId, e.containerPoint); };
+        const out = () => onHoverCamera?.(c.siteId, c.deviceId, null);
         d = {
-          cone: L.polygon([], { pane: "planCones", weight: 2 }).on("click", pick),
-          marker: L.marker([c.lat, c.lng], { zIndexOffset: 5000, keyboard: true, title: c.name || "Camera" }).on("click", pick),
+          cone: L.polygon([], { pane: "planCones", weight: 2 }).on("click", pick).on("mouseover", over).on("mouseout", out),
+          marker: L.marker([c.lat, c.lng], { zIndexOffset: 5000, keyboard: true }).on("click", pick).on("mouseover", over).on("mouseout", out),
           sig: "",
         };
         drawn.set(key, d);

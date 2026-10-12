@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Live preview on hover (top-down view):** rest the mouse on a camera's dot or cone and a small live window opens beside it: a still at once, live video about 0.4 s later. It closes, and its stream stops, when the mouse leaves. Sweeping across the map doesn't open any (0.25 s delay); none while placing cameras. Click still pins the bigger live window.
 - **Where the alarm is, from above:** the alarm details now show the site's top-down map beside the details, centred on the alarm's camera with its cone **red and flashing** (other cameras orange, red if they have open alarms too). If the camera isn't placed yet, it says so and where to place it. Opening an alarm while the Map page's top-down view is open also jumps that view to the camera. Placed cameras with an open alarm flash red on the top-down view.
 - **Top-down site view** (map page → click a site → **Top-down view**): the 2D map switches to aerial imagery looking straight down and zooms into the site (up to z21; imagery is sharpest at z19). Placed cameras show as a dot, a name tag and a view cone on the ground; an open alarm from a camera turns its cone and tag red. **Click a camera** for its live window. Admins use **Place cameras** with the same editor as the 3D view (click the spot, aim with the mouse, then drag the white/orange/yellow handles or type Aim/Width/Distance). Placements are shared with the 3D view. **Satellite / Street**, **Re-center** (fits the site's cameras), **Exit top-down**. Plain Leaflet, no WebGL: works on any screen. Measured in dev: alarms on screen in 16-92 ms with the view open and live video playing, 44-61 ms while panning it. e2e: `tools/e2e/topdown.py`.
 - **Dismiss** beside Real event / False alarm: in the critical pop-up, alarm details, the feed's Acknowledge dialog and Alarms-page bulk edit. Closes the alarm with no NX bookmark (an NX rule that forces acknowledgement is still cleared in NX). Shown as a "Dismissed" chip, with its own verdict filter. Bulk edit now handles more than 500 selected alarms.
@@ -12,6 +13,7 @@
 - **Real 3D buildings when a Google key is set** (`GOOGLE_MAP_TILES_KEY`, a Map Tiles API browser key): Google Photorealistic 3D Tiles replace the flat aerial view; pins and cameras sit on the buildings and ground. Without the key, nothing changes. The map page now sends its origin (never the path) as Referer so a key restricted to the portal's addresses works.
 
 ### Fixed
+- The pinned camera live window fell apart (title squeezed beside the video, close button covered) whenever that camera had an open alarm: its "alarm" style clashed with the Alarms page's. 3D and top-down.
 - Placing a camera for the first time cleared the "Saved ✓" confirmation at once (3D and top-down).
 - An aerial tile that timed out upstream logged a server error (500 traceback); it's now a clean 502 and the map shows the coarser level.
 - **A burst of loud alarms could stall new ones for 30 s or more:** building each alarm's clip held a database connection, and about 15 at once used them all, so new alarms couldn't be stored. Clips no longer hold one.

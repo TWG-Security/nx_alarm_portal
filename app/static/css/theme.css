@@ -247,7 +247,7 @@ tr:last-child td { border-bottom: 0; }
 .cam-panel, .cam-place { position: absolute; z-index: 3; background: rgba(13, 13, 13, .9); border: 1px solid rgba(224, 138, 48, .6); border-radius: 6px;
   color: #fff; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; box-shadow: 0 6px 24px rgba(0, 0, 0, .5); }
 .cam-panel { top: 96px; right: 26px; width: min(380px, calc(100% - 52px)); }
-.cam-panel.alarm { border-color: #ff6b5b; }
+.cam-panel.cam-alarm { border-color: #ff6b5b; }
 .cam-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 10px; border-bottom: 1px solid rgba(224, 138, 48, .35); letter-spacing: .05em; }
 .cam-head b { text-transform: uppercase; }
 .cam-head .muted { color: #bbb; }
@@ -287,6 +287,9 @@ tr:last-child td { border-bottom: 0; }
 .plan-placing, .plan-placing .leaflet-interactive { cursor: crosshair !important; }
 .plan-open .cam-place { top: 90px; max-height: calc(100% - 170px); }
 .plan-open .cam-panel { top: 16px; right: 16px; }
+/* live preview while the mouse is over a camera (top-down view); never takes the mouse itself */
+.cam-panel.cam-hover, .plan-open .cam-panel.cam-hover { top: 0; right: auto; width: 320px; pointer-events: none; box-shadow: 0 6px 20px rgba(0, 0, 0, .55); }
+.cam-hover .player-msg { font-size: 12px; }
 .plan-cam { background: none; border: 0; }
 .plan-cam i { display: block; width: 14px; height: 14px; border-radius: 50%; background: #E08A30; border: 2px solid #fff; box-sizing: border-box;
   box-shadow: 0 1px 4px rgba(0, 0, 0, .6); cursor: pointer; }

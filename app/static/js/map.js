@@ -159,7 +159,7 @@ function select(id, pan = true) {
 // ---------------------------------------------------------------- 3D view (over the map pane)
 const $id = (x) => document.getElementById(x);
 const mapCanvas = document.querySelector(".map-canvas"), globeEl = $id("globe"), globeBar = $id("globe-bar"), globeMsg = $id("globe-msg"), hud = $id("hud");
-const camPanel = $id("cam-panel"), camPlace = $id("cam-place"), camsBtn = $id("globe-cams");
+const camPanel = $id("cam-panel"), camPlace = $id("cam-place"), camsBtn = $id("globe-cams"), camHover = $id("cam-hover");
 let hudClock = null, camLive = null, camOpen = null;   // camOpen = { siteId, deviceId }
 
 const globePins = () => [...sites.values()].map((s) => {
@@ -250,7 +250,7 @@ async function openPlanView(site) {
   try {
     const { openPlan } = await import("./plan.js");
     if (plan) return;
-    plan = openPlan(lmap, { cameras: globeCams, onPickCamera: pickCamera });
+    plan = openPlan(lmap, { cameras: globeCams, onPickCamera: pickCamera, onHoverCamera: hoverCamera });
     window.__plan = plan;   // for tools/e2e/topdown.py
   } catch (err) {
     console.error("top-down view failed", err);
@@ -267,7 +267,7 @@ async function openPlanView(site) {
 
 function closePlanView() {
   if (!plan) return;
-  closeCamPanel(); closePlacing();
+  hideHover(); closeCamPanel(); closePlacing();
   try { plan.destroy(); } catch (err) { console.error(err); }
   plan = null; delete window.__plan;
   mapCanvas.classList.remove("plan-open");
@@ -278,9 +278,55 @@ const showImagery = (kind) => globeBar.querySelectorAll("[data-imagery]").forEac
 
 // A camera was clicked on either view: edit it while placing that site's cameras, else watch it live.
 function pickCamera(siteId, dev) {
+  hideHover();
   if (placingSite === siteId) return startCamEdit(dev, sites.get(siteId)?.camera_places?.[dev]?.name || "Camera");
   openCamPanel(siteId, dev);
 }
+
+// ---- live preview on hover (top-down view). A short delay so sweeping the mouse across the map
+// doesn't open streams; leaving the camera closes it (and its stream) after a moment, so moving
+// from the dot to the cone doesn't flicker. Not while placing cameras or for the pinned one.
+const HOVER_DELAY_MS = 250, HOVER_GRACE_MS = 200;
+let hover = null;     // { key, siteId, deviceId, pt, showTimer, hideTimer, live }
+function hoverCamera(siteId, deviceId, pt) {
+  const key = `${siteId}:${deviceId}`;
+  if (!pt) {
+    if (hover?.key === key) { clearTimeout(hover.hideTimer); hover.hideTimer = setTimeout(hideHover, HOVER_GRACE_MS); }
+    return;
+  }
+  if (hover?.key === key) { clearTimeout(hover.hideTimer); return; }
+  hideHover();
+  if (placingSite != null || (camOpen?.siteId === siteId && camOpen?.deviceId === deviceId)) return;
+  hover = { key, siteId, deviceId, pt, showTimer: setTimeout(showHover, HOVER_DELAY_MS) };
+}
+async function showHover() {
+  const h = hover, s = sites.get(h?.siteId), p = s?.camera_places?.[h?.deviceId];
+  if (!p) return hideHover();
+  const a = camAlarm(h.siteId, h.deviceId);
+  camHover.classList.toggle("cam-alarm", !!a);
+  camHover.innerHTML = `<div class="cam-head"><span><b>${esc(p.name || "Camera")}</b> <span class="muted">· ${a ? "ALARM" : "click to keep open"}</span></span></div>
+    <div class="cam-live"></div>`;
+  // Beside the mouse, flipped to stay inside the map.
+  const W = 320, H = 222, M = 8, box = mapCanvas.getBoundingClientRect();
+  let x = h.pt.x + 18, y = h.pt.y - H - 12;
+  if (x + W > box.width - M) x = h.pt.x - 18 - W;
+  if (y < M) y = h.pt.y + 18;
+  camHover.style.left = `${Math.max(M, Math.min(x, box.width - W - M))}px`;
+  camHover.style.top = `${Math.max(M, Math.min(y, box.height - H - M))}px`;
+  camHover.hidden = false;
+  const { mountLive } = await import("./live.js");
+  if (hover !== h) return;
+  h.live = mountLive(camHover.querySelector(".cam-live"), { id: 0, device_id: h.deviceId },
+    { label: false, poster: true, base: `/media/sites/${h.siteId}/cameras/${encodeURIComponent(h.deviceId)}` });
+}
+function hideHover() {
+  if (!hover) return;
+  clearTimeout(hover.showTimer); clearTimeout(hover.hideTimer);
+  try { hover.live?.destroy(); } catch (err) { console.error(err); }
+  hover = null;
+  camHover.hidden = true; camHover.replaceChildren();
+}
+lmap.on("movestart zoomstart", hideHover);
 
 // ---- live camera window: click a camera on the 3D or top-down view
 async function openCamPanel(siteId, deviceId) {
@@ -289,7 +335,7 @@ async function openCamPanel(siteId, deviceId) {
   closeCamPanel();
   camOpen = { siteId, deviceId };
   const a = camAlarm(siteId, deviceId);
-  camPanel.classList.toggle("alarm", !!a);
+  camPanel.classList.toggle("cam-alarm", !!a);
   camPanel.innerHTML = `<div class="cam-head"><span><b>${esc(p.name || "Camera")}</b> <span class="muted">· ${esc(s.name)}</span></span>
       <span>${a ? `<button type="button" data-cam-alarm="${a.id}" title="Open this alarm">ALARM ▸</button>` : ""}<button type="button" data-cam-close aria-label="Close">✕</button></span></div>
     <div class="cam-live"></div>`;
@@ -323,6 +369,7 @@ const camRow = (c) => `<li data-dev="${esc(c.device_id)}" data-name="${esc(c.nam
   ${c.place ? '<button type="button" data-unplace title="Take it off the map">Remove</button>' : ""}</li>`;
 
 async function openPlacing() {
+  hideHover();
   const s = sites.get(selectedId);
   if (!s) { toast("Select a site first.", { kind: "warn" }); return; }
   placingSite = s.id;
@@ -388,6 +435,7 @@ async function saveCam(siteId, dev, place) {
 function startCamEdit(dev, name) {
   const site = sites.get(placingSite);
   if (!site || !view()) return;
+  hideHover();
   stopCamEdit();
   const place = site.camera_places?.[dev];
   editing = { dev, name, st: place ? { ...place } : null };

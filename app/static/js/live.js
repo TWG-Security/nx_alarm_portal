@@ -1,12 +1,12 @@
 // Live view of an alarm's camera: NX's live WebM relayed by the portal (/media/alarms/<id>/live.webm,
 // ~0.8 Mbit/s). Kept near real time, paused while the tab is hidden, and falling back to a still
-// every 1.5 s if the stream fails.
+// every 1.5 s if the stream fails. `poster`: show a still at once while the video connects (hover previews).
 
 const MAX_BEHIND_S = 1.5;        // jump to the newest frame if playback falls this far behind
 const STALL_MS = 8000;           // no new frames this long = treat the stream as dead
 const STILL_EVERY_MS = 1500;
 
-export function mountLive(root, alarm, { label = true, base = `/media/alarms/${alarm.id}` } = {}) {
+export function mountLive(root, alarm, { label = true, base = `/media/alarms/${alarm.id}`, poster = false } = {}) {
   root.innerHTML = `
     <div class="live-pane">
       <div class="live-stage">
@@ -41,6 +41,7 @@ export function mountLive(root, alarm, { label = true, base = `/media/alarms/${a
     say("Connecting to the camera…"); state("Connecting…");
     $('[data-l="retry"]')?.setAttribute("hidden", "");
     lastProgress = Date.now();
+    if (poster) { still.hidden = false; still.src = `${base}/live.jpg?t=${Date.now()}`; still.onload = () => { if (mode === "video") say(""); }; }
     video.src = `${base}/live.webm?t=${Date.now()}`;
     video.play().catch(() => {});
   }
@@ -55,7 +56,7 @@ export function mountLive(root, alarm, { label = true, base = `/media/alarms/${a
     tick(); stillTimer = setInterval(tick, STILL_EVERY_MS);
   }
 
-  video.addEventListener("playing", () => { say(""); state("Live video"); lastProgress = Date.now(); });
+  video.addEventListener("playing", () => { say(""); state("Live video"); lastProgress = Date.now(); if (mode === "video") still.hidden = true; });
   video.addEventListener("timeupdate", () => {
     lastProgress = Date.now();
     const b = video.buffered;
