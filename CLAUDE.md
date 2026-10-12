@@ -307,7 +307,7 @@ tools/dev_down.sh
    - the user changes the admin password and deletes the temp file
 11. A real certificate for the LAN address (drop `tls internal` in the `Caddyfile`); the tunnel path already has one.
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
-13. Merge PR #1 once the user is happy. Pushed up to `d3914b5` on 2026-10-12; later commits are unpushed.
+13. Merge PR #1 once the user is happy. Pushed up to the latest commit on 2026-10-12.
 15. **Large backlogs** (follow-ups to 2026-10-12): `loadOpenAlarms` fetches at most 500, so with more open the store and badge undercount; the Alarms page loads 100 per "Load more", so a big bulk dismiss needs many clicks (a "Dismiss all matching" server-side action would fix it). Exports still hold a DB connection while waiting up to 90 s for the clip.
 14. **3D site view ("God's Eye View")**: v1 deployed 2026-10-02 (`85b7265`). The user then said the flat free imagery looked bad ("crap 3d map") and asked for the look of gods-eye-view, "where I can add the cameras in". v2 deployed 17:53 UTC (`2aa398e`): HUD, cameras, Google 3D buildings support (waiting on a key).
    - Where: map page → site panel → **3D view** replaces the map pane (feed and site list stay). `static/js/globe.js` (Cesium), wired in `map.js`; HUD markup in `map.html`, styles under "3D site view" in `theme.css`.
