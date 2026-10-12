@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Text message terms{% endblock %}
+{% block content %}
+<div class="page link-page terms-page">
+  <div class="link-head">
+    <span class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="110" height="34"></span>
+    <span class="brand-title">Alarm Portal</span>
+  </div>
+  <article class="card">
+    <h1>Alarm alert text messages: terms and privacy</h1>
+    <p class="muted">TWG Security Alarm Portal · Last updated {{ updated }}</p>
+
+    <h2>The program</h2>
+    <p><b>TWG Security Alarm Portal alarm alerts</b> are text messages sent by TWG Security (The Wire Guys, <a href="https://twgsecurity.com">twgsecurity.com</a>)
+      to staff and authorized contacts of the organizations whose security systems TWG Security monitors. Each message reports one security alarm
+      (what happened, the site, the camera and the time) with a link to view that alarm. They are operational alerts, never marketing.</p>
+
+    <h2>How you sign up (opt in)</h2>
+    <ol>
+      <li>An administrator of your organization adds your mobile number to your user account in the TWG Security Alarm Portal and chooses which alarms you should receive.</li>
+      <li>You receive one text{% if sender %} from {{ sender }}{% endif %}: <i>"TWG Security Alarm Portal: … added this number to get alarm alerts for … Reply YES to sign up. Msg frequency varies. Msg &amp; data rates may apply. Reply HELP for help, STOP to opt out at any time. Terms: {{ portal }}/sms-terms"</i></li>
+      <li><b>Nothing else is sent unless you reply YES.</b> When you do, you get a confirmation text and alarm alerts start.</li>
+    </ol>
+    <p>Consent is not a condition of any purchase. Your reply and its date are recorded.</p>
+
+    <h2>How you stop (opt out)</h2>
+    <p>Reply <b>STOP</b> to any message at any time (STOPALL, UNSUBSCRIBE, CANCEL, END and QUIT work too). You get one confirmation and no further messages.
+      To sign up again, reply <b>START</b> or <b>YES</b>. You can also ask your organization's administrator, or TWG Security, to remove your number.</p>
+
+    <h2>Help</h2>
+    <p>Reply <b>HELP</b> to any message, or contact TWG Security: <b>{{ contact }}</b>.</p>
+
+    <h2>Message frequency and costs</h2>
+    <p>Message frequency varies: you receive a text for each alarm at the sites and levels your organization chose for you, which can be several a day
+      or none for weeks. Flood protection limits how many arrive in a short time. <b>Message and data rates may apply</b> under your mobile plan.</p>
+
+    <h2>Delivery</h2>
+    <p>Mobile carriers are not liable for delayed or undelivered messages. Text alerts are a convenience on top of the portal's monitoring screens,
+      not a replacement for them: don't rely on a text alone for life-safety decisions.</p>
+
+    <h2>Alarm links</h2>
+    <p>Each alert includes a private link that opens that one alarm (details, recorded clip and live camera) without signing in, for a limited time.
+      Anyone with the link can see that alarm, so please don't forward it.</p>
+
+    <h2>Privacy</h2>
+    <ul>
+      <li>Your mobile number is used only to send these alarm alerts and to handle your replies (YES, STOP, HELP).</li>
+      <li><b>Mobile numbers and text-message consent are not sold, rented or shared with third parties or affiliates for marketing or promotional purposes.</b>
+        They are shared only with the text-message provider (Twilio) that delivers the messages, and with mobile carriers as needed to deliver them.</li>
+      <li>We keep a record of each message sent (number, time, result) and of your opt-in and opt-out, for compliance and support. Message links are not stored.</li>
+      <li>To have your number removed, reply STOP or contact TWG Security: {{ contact }}.</li>
+    </ul>
+  </article>
+</div>
+{% endblock %}

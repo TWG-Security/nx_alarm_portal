@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Companies{% endblock %}
+{% block content %}
+<div class="page">
+  <div class="page-head"><h1>Companies</h1>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn" id="view-all" type="button">View all companies</button>
+      <a class="btn" href="/platform">Platform settings</a>
+      {% if user.can('platform.manage') %}<button class="btn btn-primary" id="new-company" type="button">+ New company</button>{% endif %}
+    </div>
+  </div>
+  <p class="muted" style="margin-top:-6px">Each company sees only its own sites, alarms, users and settings. Open a company to support it;
+    what you change there is recorded in its audit log under your name. Other companies' alarms never sound on your screen.</p>
+  <div id="c-link"></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Company</th><th>Sites</th><th>Open alarms</th><th>Users</th><th>Last alarm</th><th>Sign-in</th><th></th></tr></thead>
+      <tbody id="company-rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<dialog id="company-dialog">
+  <form method="dialog" id="company-form">
+    <h2>New company</h2>
+    <div class="field"><label for="c-name">Company name</label><input id="c-name" type="text" required maxlength="200" placeholder="e.g. Acme Security"></div>
+    <div class="field"><label for="c-display">Name shown in their portal <span class="muted">(optional)</span></label><input id="c-display" type="text" maxlength="200"></div>
+    <h3>Their first admin</h3>
+    <div class="row">
+      <div class="field"><label for="c-email">Email</label><input id="c-email" type="email" required maxlength="320"></div>
+      <div class="field"><label for="c-admin">Name</label><input id="c-admin" type="text" maxlength="200"></div>
+    </div>
+    <div class="field">
+      <label class="radio"><input type="radio" name="c-how" value="invite" checked><span><b>Invite them by email</b>
+        <small>They get a link to choose their own password (valid 7 days). You also get the link to pass on yourself.</small></span></label>
+      <label class="radio"><input type="radio" name="c-how" value="password"><span><b>Set a temporary password</b>
+        <small>Send it to them separately; they should change it on their Account page.</small></span></label>
+    </div>
+    <div class="field" id="c-pass-row" hidden><label for="c-pass">Temporary password</label><input id="c-pass" type="password" autocomplete="new-password">
+      <small>At least 12 characters, with upper and lower case, a number and a symbol.</small></div>
+    <div id="c-error"></div>
+    <div class="dialog-actions"><button class="btn" type="button" id="c-cancel">Cancel</button><button class="btn btn-primary" type="submit">Create company</button></div>
+  </form>
+</dialog>
+<dialog id="edit-dialog">
+  <form method="dialog" id="edit-form">
+    <h2 id="e-title">Edit company</h2>
+    <div class="field"><label for="e-display">Name shown in their portal</label><input id="e-display" type="text" maxlength="200"></div>
+    <div class="field"><label>Logo</label>
+      <div class="logo-edit"><span class="logo-chip" id="e-logo-box"><img id="e-logo" alt="" hidden></span>
+        <input type="file" id="e-file" accept="image/png,image/jpeg,image/webp">
+        <button class="btn btn-sm" type="button" id="e-remove-logo">Remove logo</button></div>
+      <small>PNG, JPEG or WebP, up to 2 MB. It's resized to fit 600×160 and shown in their top bar and on their incident reports.</small></div>
+    <label class="check" id="e-active-row"><input type="checkbox" id="e-active"> Their users can sign in
+      <small class="muted" style="display:block">Turning this off signs everyone out. Their sites keep being monitored.</small></label>
+    <div id="e-error"></div>
+    <div class="dialog-actions"><button class="btn" type="button" id="e-cancel">Close</button><button class="btn btn-primary" type="submit">Save</button></div>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/companies.js') }}"></script>{% endblock %}

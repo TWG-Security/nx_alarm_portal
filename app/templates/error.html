@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Error{% endblock %}
+{% block content %}
+<div class="page"><div class="card">
+  <h1>{{ status }}</h1>
+  <p>{{ message if message is string else "Something went wrong." }}</p>
+  <a class="btn" href="/">Back to map</a>
+</div></div>
+{% endblock %}

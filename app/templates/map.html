@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Overview{% endblock %}
+{% block content %}
+<div class="map-layout">
+  <aside class="map-side">
+    <div class="map-side-section">
+      <div class="stat-row">
+        <div class="stat stat--critical"><b id="stat-critical">–</b><span>Critical</span></div>
+        <div class="stat stat--alarm"><b id="stat-alarm">–</b><span>Alarms</span></div>
+        <div class="stat stat--warn"><b id="stat-warn">–</b><span>Warnings</span></div>
+        <div class="stat"><b id="stat-offline">–</b><span>Offline</span></div>
+      </div>
+    </div>
+    <div class="map-side-section" id="site-detail" hidden></div>
+    <div class="map-side-section" style="padding-bottom:6px"><h3>Sites</h3></div>
+    <ul class="site-list" id="site-list"><li class="empty">Loading…</li></ul>
+  </aside>
+  <section class="map-canvas">
+    <div id="map"></div>
+    <div id="globe" hidden></div>
+    <div class="hud" id="hud" hidden aria-hidden="true">
+      <i class="hud-c tl"></i><i class="hud-c tr"></i><i class="hud-c bl"></i><i class="hud-c br"></i>
+      <div class="hud-tl">
+        <div class="hud-title"><span class="hud-eye">◉</span> GOD'S EYE VIEW</div>
+        <div class="hud-sub">TWG SECURITY // ALARM OPERATIONS</div>
+        <div class="hud-site" id="hud-site"></div>
+      </div>
+      <div class="hud-tr"><div id="hud-clock"></div><div class="hud-sub" id="hud-counts"></div></div>
+      <div class="hud-bl" id="hud-coords"></div>
+    </div>
+    <div class="cam-panel" id="cam-panel" hidden></div>
+    <div class="cam-panel cam-hover" id="cam-hover" hidden aria-hidden="true"></div>
+    <div class="cam-place" id="cam-place" hidden></div>
+    <div class="globe-bar" id="globe-bar" hidden>
+      <button class="btn btn-sm" type="button" id="globe-close" title="Back to the flat map">2D map</button>
+      <div class="seg" role="group" aria-label="Imagery">
+        <button type="button" data-imagery="sat" class="active" id="imagery-3d">Satellite</button>
+        <button type="button" data-imagery="street">Street</button>
+      </div>
+      <button class="btn btn-sm" type="button" id="globe-recenter" title="Fly back to the selected site">Re-center</button>
+      <button class="btn btn-sm" type="button" id="plan-cones" hidden aria-pressed="true" title="Show or hide the cameras' view cones (a camera with an open alarm always shows its cone)">Cones: on</button>
+      <button class="btn btn-sm" type="button" id="globe-cams" hidden title="Put this site's cameras on the map">Place cameras</button>
+    </div>
+    <div class="globe-msg" id="globe-msg" hidden></div>
+  </section>
+  <aside class="feed" aria-label="Live alarms">
+    <div class="feed-head">
+      <h2>Live alarms</h2>
+      <div class="seg feed-tabs" id="feed-tabs" role="group" aria-label="Filter by level">
+        <button type="button" data-p="" class="active">All <span></span></button>
+        <button type="button" data-p="1">Critical <span></span></button>
+        <button type="button" data-p="2">Alarm <span></span></button>
+        <button type="button" data-p="3">Warning <span></span></button>
+      </div>
+      <div class="feed-filter" id="feed-site-filter" hidden></div>
+    </div>
+    <ul class="feed-list" id="feed-list"><li class="empty">Loading…</li></ul>
+  </aside>
+</div>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/map.js') }}"></script>{% endblock %}

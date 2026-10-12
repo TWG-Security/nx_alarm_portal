@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Your account{% endblock %}
+{% block content %}
+<div class="page account-page">
+  <div class="page-head"><h1>Your account</h1></div>
+  <p class="muted" style="margin-top:-6px" id="acct-who">Loading…</p>
+  <div class="platform-grid">
+    <div class="card">
+      <h2>Two-step sign-in</h2>
+      <div id="mfa-box"><span class="muted">Loading…</span></div>
+    </div>
+    <div class="card" id="pk-card">
+      <h2>Passkeys</h2>
+      <p class="muted" style="margin-top:0">Sign in with your fingerprint, face or device PIN instead of a password and code.
+        A passkey also works as the second step after your password.</p>
+      <div id="pk-box"><span class="muted">Loading…</span></div>
+    </div>
+  </div>
+  <div class="platform-grid">
+    <form class="card" id="pw-form">
+      <h2>Change password</h2>
+      <div class="field"><label for="pw-current">Current password</label><input id="pw-current" type="password" autocomplete="current-password" required></div>
+      <div class="field"><label for="pw-new">New password</label><input id="pw-new" type="password" autocomplete="new-password" required><small id="pw-hint"></small></div>
+      <div class="field"><label for="pw-new2">New password again</label><input id="pw-new2" type="password" autocomplete="new-password" required></div>
+      <div id="pw-error"></div>
+      <button class="btn btn-primary" type="submit">Change password</button>
+      <small class="muted" style="display:block;margin-top:8px">Your other signed-in browsers are signed out; this one stays.</small>
+    </form>
+    <div class="card">
+      <div class="card-head"><h2>Where you're signed in</h2>
+        <button class="btn btn-sm" type="button" id="sign-out-all">Sign out everywhere</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Browser</th><th>Address</th><th>Last active</th><th></th></tr></thead>
+        <tbody id="sess-rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+      <small class="muted" style="display:block;margin-top:8px">A screen that's signed out shows a red "SIGNED OUT" banner and stops receiving alarms until someone signs in again.</small>
+    </div>
+  </div>
+</div>
+<dialog id="totp-dialog">
+  <form method="dialog" id="totp-form" class="enroll-card">
+    <h2>Set up the authenticator app</h2>
+    <ol class="steps">
+      <li>Open an authenticator app on your phone (Google Authenticator, Microsoft Authenticator, 1Password, Authy…).</li>
+      <li>Add an account and scan this code:</li>
+    </ol>
+    <div class="qr-box"><img id="totp-qr" alt="QR code for your authenticator app" width="200" height="200"></div>
+    <p class="muted small-print">Can't scan? Enter this key by hand: <span class="mono" id="totp-secret"></span></p>
+    <div class="field"><label for="totp-code">3. Type the 6-digit code the app shows</label>
+      <input id="totp-code" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="7" class="code-input" required></div>
+    <div id="totp-error"></div>
+    <div class="dialog-actions"><button class="btn" type="button" id="totp-cancel">Cancel</button><button class="btn btn-primary" type="submit">Turn on</button></div>
+  </form>
+</dialog>
+<dialog id="codes-dialog">
+  <div class="enroll-card">
+    <h2>Save your recovery codes</h2>
+    <p>Each code signs you in once if you lose your phone. <b>They're shown only now.</b> Print them or keep them in a password manager.</p>
+    <ul class="recovery-codes mono" id="codes-list"></ul>
+    <div class="dialog-actions"><button class="btn" type="button" id="codes-copy">Copy</button><button class="btn" type="button" onclick="window.print()">Print</button>
+      <button class="btn btn-primary" type="button" id="codes-done">I've saved them</button></div>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/account.js') }}"></script>{% endblock %}

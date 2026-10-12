@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}Recovery code{% endblock %}
+{% block content %}
+<div class="login-wrap">
+  <form class="card login-card" method="post" action="/login/recovery">
+    <div class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="182" height="56"></div>
+    <h1 style="text-align:center">Use a recovery code</h1>
+    <p class="muted" style="text-align:center;margin-top:0">{{ email }}</p>
+    {% if error %}<div class="alert alert-error">{{ error }}</div>{% endif %}
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="field"><label for="code">Recovery code</label>
+      <input id="code" name="code" type="text" autocomplete="off" spellcheck="false" maxlength="40" required autofocus class="code-input" placeholder="xxxx-xxxx-xxxx-xxxx">
+      <small>One of the codes you saved when you set up two-step sign-in. Each works once.</small></div>
+    <button class="btn btn-primary" style="width:100%" type="submit">Sign in</button>
+    <p class="login-links"><a href="/login/2fa">Use the authenticator app instead</a> · <a href="/login">Start over</a></p>
+  </form>
+</div>
+{% endblock %}
