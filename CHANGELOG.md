@@ -14,6 +14,7 @@
 - **Real 3D buildings when a Google key is set** (`GOOGLE_MAP_TILES_KEY`, a Map Tiles API browser key): Google Photorealistic 3D Tiles replace the flat aerial view; pins and cameras sit on the buildings and ground. Without the key, nothing changes. The map page now sends its origin (never the path) as Referer so a key restricted to the portal's addresses works.
 
 ### Fixed
+- **Bounding boxes said "person · False":** the tag showed the first attribute's value without its name, and CVEDIA's first person attribute is usually "Is smoking: False". Tags now show yes/no attributes only when true, by name ("Person · Face covered"), drop the false ones, and keep descriptive values ("Vehicle · White · Truck", "Animal · Dog").
 - The pinned camera live window fell apart (title squeezed beside the video, close button covered) whenever that camera had an open alarm: its "alarm" style clashed with the Alarms page's. 3D and top-down.
 - Placing a camera for the first time cleared the "Saved ✓" confirmation at once (3D and top-down).
 - An aerial tile that timed out upstream logged a server error (500 traceback); it's now a clean 502 and the map shows the coarser level.
