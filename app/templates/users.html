@@ -42,6 +42,10 @@
       <div class="field"><label for="u-sms">Text them</label><select id="u-sms">
         <option value="alarm">Critical + Alarm</option><option value="critical">Critical only</option><option value="off">No texts</option></select></div>
     </div>
+    <div class="field sites-pick" data-prefix="u"><label>Sites that text them</label>
+      <label class="radio inline"><input type="radio" name="u-scope" value="all" checked><span>All sites <small>(and any added later)</small></span></label>
+      <label class="radio inline"><input type="radio" name="u-scope" value="some"><span>Only these sites</span></label>
+      <div class="member-grid" id="u-sites" hidden></div></div>
     <p class="muted small-print" style="margin-top:-6px">Adding a number texts them once: "Reply YES to get alarm texts". Alarm texts start only after they reply YES;
       they can reply STOP at any time (<a href="/sms-terms" target="_blank" rel="noopener">terms</a>).</p>
     <h3>Sign-in</h3>
@@ -71,6 +75,10 @@
       <div class="field"><label for="ed-sms">Text them</label><select id="ed-sms">
         <option value="off">No texts</option><option value="critical">Critical only</option><option value="alarm">Critical + Alarm</option></select></div>
     </div>
+    <div class="field sites-pick" data-prefix="ed"><label>Sites that text them</label>
+      <label class="radio inline"><input type="radio" name="ed-scope" value="all" checked><span>All sites <small>(and any added later)</small></span></label>
+      <label class="radio inline"><input type="radio" name="ed-scope" value="some"><span>Only these sites</span></label>
+      <div class="member-grid" id="ed-sites" hidden></div></div>
     <div id="ed-texts"></div>
     <h3>Account</h3>
     <div id="ed-account"></div>

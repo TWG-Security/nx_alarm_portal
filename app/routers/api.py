@@ -579,6 +579,7 @@ class UserIn(BaseModel):
     role: str = Field(default="operator", pattern="^(admin|operator)$")
     phone: str = Field(default="", max_length=30)
     sms_level: str = Field(default="off", pattern="^(off|critical|alarm)$")
+    sms_sites: list[int] | None = Field(default=None, max_length=1000)     # None = all sites
 
 
 class UserUpdate(BaseModel):
@@ -588,6 +589,21 @@ class UserUpdate(BaseModel):
     password: str | None = Field(default=None, min_length=1, max_length=200)
     phone: str | None = Field(default=None, max_length=30)                       # "" = remove
     sms_level: str | None = Field(default=None, pattern="^(off|critical|alarm)$")
+    sms_all_sites: bool | None = None                                     # True = every site (clears sms_sites)
+    sms_sites: list[int] | None = Field(default=None, max_length=1000)    # only these sites
+
+
+async def _site_choice(db: AsyncSession, tenant_id: int, ids: list[int] | None) -> list[int] | None:
+    """Validate "only these sites": the company's own sites, at least one. None = every site."""
+    if ids is None:
+        return None
+    own = set((await db.scalars(select(Site.id).where(Site.tenant_id == tenant_id, Site.archived_at.is_(None)))).all())
+    picked = sorted(set(ids) & own)
+    if len(picked) != len(set(ids)):
+        raise HTTPException(400, "Unknown site")
+    if not picked:
+        raise HTTPException(400, "Pick at least one site, or choose All sites")
+    return picked
 
 
 def _ask_consent(target: User) -> bool:
@@ -617,7 +633,7 @@ def _check_password(pw: str) -> None:
 
 def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | None = None, text: dict | None = None) -> dict:
     return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
-            "phone": u.phone, "sms_level": u.sms_level, "last_text": text, "sms_consent": u.sms_consent,
+            "phone": u.phone, "sms_level": u.sms_level, "sms_sites": u.sms_sites, "last_text": text, "sms_consent": u.sms_consent,
             "sms_consent_at": u.sms_consent_at.isoformat() if u.sms_consent_at else None,
             "sms_optin_sent_at": u.sms_optin_sent_at.isoformat() if u.sms_optin_sent_at else None,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
@@ -666,8 +682,9 @@ async def create_user(body: UserIn, request: Request, user: User = Depends(requi
         _check_password(body.password)
     now = sessions.utcnow()
     phone = _phone(body.phone)
+    sites = await _site_choice(db, tid, body.sms_sites)
     new = User(tenant_id=tid, email=body.email.strip().lower(), display_name=body.display_name.strip(),
-               phone=phone, sms_level=body.sms_level if phone else "off",
+               phone=phone, sms_level=body.sms_level if phone else "off", sms_sites=sites,
                password_hash=hash_password(body.password) if body.password else "", role=body.role,
                password_changed_at=now if body.password else None, invited_at=None if body.password else now)
     db.add(new)
@@ -727,6 +744,11 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
         if value is not None and getattr(target, name) != value:
             setattr(target, name, value)
             fields.append(name)
+    if body.sms_all_sites or body.sms_sites is not None:
+        sites = None if body.sms_all_sites else await _site_choice(db, target.tenant_id, body.sms_sites)
+        if sites != target.sms_sites:
+            target.sms_sites = sites
+            fields.append("sms_sites")
     if "phone" in fields:                     # consent belongs to a number: a new one is asked again
         target.sms_consent, target.sms_consent_at, target.sms_optin_sent_at = "none", None, None
     ask = bool({"phone", "sms_level"} & set(fields)) and _ask_consent(target)

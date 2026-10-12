@@ -7,7 +7,8 @@ and never hold a connection while talking to Twilio (10 s timeout; 3 attempts on
 5xx, 2 s and 6 s apart). A slow, failing or misconfigured Twilio never touches ingest or the live feed.
 
 Who gets a text: active users of the alarm's own company with a mobile number, "Alarm texts" set to
-critical (critical alarms only) or alarm (critical and alarm), who have opted in by replying YES. Warnings never text, and other companies'
+critical (critical alarms only) or alarm (critical and alarm), who have opted in by replying YES, and
+whose sites (users.sms_sites: None = every site, else a list of site ids) include the alarm's site. Warnings never text, and other companies'
 alarms never text (the same rule as sound and pop-ups). Invited people who haven't signed in yet count:
 someone can get texts without ever using the portal.
 
@@ -505,6 +506,7 @@ async def _handle(alarm_id: int, arrived: float) -> None:
             users = (await db.scalars(select(User).where(User.tenant_id == alarm.tenant_id, User.is_active.is_(True),
                                                          User.phone != "", User.sms_level.in_(levels),
                                                          User.sms_consent == "yes"))).all()
+            users = [u for u in users if u.sms_sites is None or alarm.site_id in u.sms_sites]   # "Only these sites"
             for u in users:
                 if _allow(u.id, cfg.max_per_window):
                     token = await alarm_links.mint(db, alarm, u, cfg.link_hours)

@@ -668,6 +668,8 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .user-dialog h2 { margin-top: 0; }
 .user-dialog h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 18px 0 8px;
   padding-top: 12px; border-top: 1px solid var(--border); }
+.user-dialog .radio.inline { display: inline-flex; margin-right: 16px; }
+.user-dialog .sites-pick .member-grid { margin-top: 6px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; max-height: 180px; overflow-y: auto; }
 .user-dialog .ed-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
 @media (max-width: 560px) { .user-dialog .row { flex-direction: column; gap: 0; } }
 .text-failed { color: var(--red-text); font-weight: 600; }

@@ -532,3 +532,36 @@ async def test_background_texts_have_a_time_limit_and_stop_at_shutdown(monkeypat
     assert time.perf_counter() - t0 < 2
     await asyncio.sleep(0)
     assert not sms._tasks and not sms._flushers
+
+
+# ---------------------------------------------------------------- which sites text whom
+@respx.mock
+async def test_only_these_sites(session, client):
+    t, site, p = await world(session)
+    other_site = await make_site(session, t, name="Warehouse")
+    acme_site = await make_site(session, await session.get(Tenant, p["acme"].tenant_id), name="Acme HQ")
+    await texts_on(session)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMs"}))
+    await login(client, "admin@twgsecurity.com")
+    uid = p["all"].id
+
+    r = await client.put(f"/api/users/{uid}", json={"sms_sites": [other_site.id]})
+    assert r.status_code == 200 and r.json()["sms_sites"] == [other_site.id]
+    sms.notify([await make_alarm(session, site)])                 # TWG Security Office: not theirs now
+    await sms.drain()
+    assert "+15705551111" not in sent_to(twilio)
+    sms.notify([await make_alarm(session, other_site)])           # Warehouse: theirs
+    await sms.drain()
+    assert sent_to(twilio).count("+15705551111") == 1
+
+    assert (await client.put(f"/api/users/{uid}", json={"sms_sites": []})).status_code == 400            # none picked
+    assert (await client.put(f"/api/users/{uid}", json={"sms_sites": [acme_site.id]})).status_code == 400  # another company's
+    r = await client.put(f"/api/users/{uid}", json={"sms_all_sites": True})
+    assert r.json()["sms_sites"] is None
+    sms.notify([await make_alarm(session, site)])
+    await sms.drain()
+    assert sent_to(twilio).count("+15705551111") == 2
+
+    r = await client.post("/api/users", json={"email": "gate@twgsecurity.com", "password": "A-long-password-1!",
+                                             "phone": "5705550199", "sms_level": "alarm", "sms_sites": [site.id]})
+    assert r.status_code == 200 and r.json()["sms_sites"] == [site.id]

@@ -52,12 +52,34 @@ function lastText(u) {
   const [word, cls] = TEXTED[t.outcome] || [t.outcome, ""];
   return `<span class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : t.purpose === "optin" ? "opt-in " : ""}${esc(word)} ${esc(relTime(t.ts))}</span>`;
 }
+// ---------------------------------------------------------------- which sites text them
+let sites = [];
+const siteName = (id) => sites.find((x) => x.id === id)?.name || `Site ${id}`;
+const sitesLabel = (u) => (u.sms_sites == null ? "All sites" : u.sms_sites.length === 1 ? siteName(u.sms_sites[0]) : `${u.sms_sites.length} sites`);
+// prefix "u" (Add) or "ed" (Edit): radio All / Only these, with a checkbox per site.
+function paintSites(prefix, chosen) {
+  const some = chosen != null;
+  document.querySelector(`input[name="${prefix}-scope"][value="${some ? "some" : "all"}"]`).checked = true;
+  $(`${prefix}-sites`).hidden = !some;
+  $(`${prefix}-sites`).innerHTML = sites.map((x) => `<label class="member"><input type="checkbox" value="${x.id}" ${some && chosen.includes(x.id) ? "checked" : ""}>
+    ${esc(x.name)}</label>`).join("") || '<span class="muted">No sites yet.</span>';
+}
+function readSites(prefix) {
+  if (document.querySelector(`input[name="${prefix}-scope"]:checked`).value === "all") return null;
+  return [...$(`${prefix}-sites`).querySelectorAll("input:checked")].map((c) => Number(c.value));
+}
+document.querySelectorAll(".sites-pick").forEach((box) => box.addEventListener("change", (e) => {
+  if (e.target.type === "radio") $(`${box.dataset.prefix}-sites`).hidden = e.target.value !== "some";
+}));
+const sameSites = (a, b) => (a == null || b == null ? a == b : a.length === b.length && a.every((x, i) => x === b[i]));
+
 // Table cell: number, then what they get and whether they've opted in. Editing happens in the Edit dialog.
 function textSummary(u) {
   if (!u.phone) return '<span class="muted">No number</span>';
   const [cWord, cCls] = CONSENT[u.sms_consent] || CONSENT.none;
   return `<div class="nowrap">${esc(fmtPhone(u.phone))}</div>
     <div class="chips"><span class="chip">${LEVEL[u.sms_level] || u.sms_level}</span>
+      ${u.sms_level === "off" ? "" : `<span class="chip" title="${esc(u.sms_sites == null ? "Every site, including ones added later" : u.sms_sites.map(siteName).join(", "))}">${esc(sitesLabel(u))}</span>`}
       <span class="chip ${cCls}" title="${esc(consentNote(u))}">${cWord}</span></div>
     ${u.last_text?.outcome === "failed" ? lastText(u) : ""}`;
 }
@@ -75,7 +97,7 @@ function render() {
 }
 
 async function load() {
-  users = await api("/api/users");
+  [users, sites] = await Promise.all([api("/api/users"), sites.length ? sites : api("/api/sites").catch(() => [])]);
   render();
   if (groupData.groups.length) renderGroups();
   if (edDlg.open && edUser) { edUser = users.find((u) => u.id === edUser.id) || edUser; paintEditExtras(); }
@@ -97,6 +119,7 @@ function openEdit(u) {
   $("ed-email").textContent = u.email;
   $("ed-name").value = u.display_name; $("ed-role").value = u.role;
   $("ed-phone").value = fmtPhone(u.phone); $("ed-sms").value = u.sms_level;
+  paintSites("ed", u.sms_sites);
   $("ed-link").innerHTML = "";
   paintEditExtras();
   if (!edDlg.open) edDlg.showModal();
@@ -135,6 +158,8 @@ $("edit-form").addEventListener("submit", async (e) => {
   // A first number with "No texts" picked defaults to Critical + Alarm (that's why it was added).
   const lvl = !u.phone && phone && level === "off" ? "alarm" : level;
   if (lvl !== u.sms_level) body.sms_level = lvl;
+  const picked = readSites("ed");
+  if (!sameSites(picked, u.sms_sites)) Object.assign(body, picked == null ? { sms_all_sites: true } : { sms_sites: picked });
   if (!Object.keys(body).length) { edDlg.close(); return; }
   try {
     const r = await api(`/api/users/${u.id}`, { method: "PUT", body });
@@ -173,6 +198,7 @@ $("edit-dialog").addEventListener("click", async (e) => {
 const addDlg = $("add-dialog");
 $("add-user").addEventListener("click", () => {
   $("user-form").reset(); $("u-pass-row").hidden = true; $("u-link").innerHTML = ""; $("u-submit").hidden = false;
+  paintSites("u", null);
   addDlg.showModal(); $("u-email").focus();
 });
 $("u-cancel").addEventListener("click", () => addDlg.close());
@@ -186,7 +212,7 @@ $("user-form").addEventListener("submit", async (e) => {
   try {
     const r = await api("/api/users", { method: "POST", body: { email: $("u-email").value, display_name: $("u-name").value,
       password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value,
-      phone: $("u-phone").value, sms_level: $("u-sms").value } });
+      phone: $("u-phone").value, sms_level: $("u-sms").value, sms_sites: readSites("u") } });
     toast(r.setup_link ? "User invited" : "User created");
     if (r.setup_link) { $("u-link").innerHTML = linkBox(r); $("u-submit").hidden = true; }     // keep it open: the admin may copy the link
     else addDlg.close();

@@ -63,6 +63,7 @@ class User(Base):
     # Text messages (app/sms.py): E.164 mobile number and which alarms text them (off | critical | alarm)
     phone: Mapped[str] = mapped_column(String(20), default="")
     sms_level: Mapped[str] = mapped_column(String(10), default="off")
+    sms_sites: Mapped[list | None] = mapped_column(JSONType, nullable=True)     # site ids that text them; None = every site
     # Consent (carrier rules): none | pending (opt-in request sent) | yes (replied YES) | stopped (replied STOP)
     sms_consent: Mapped[str] = mapped_column(String(10), default="none")
     sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
