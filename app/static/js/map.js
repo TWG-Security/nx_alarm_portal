@@ -346,7 +346,7 @@ function closePlacing() {
   camPlace.hidden = true; camPlace.replaceChildren();
 }
 
-function renderEditor(st = view()?.editing && editing ? editing.st : null, saveState = "") {
+function renderEditor(st = view()?.editing && editing ? editing.st : null, saveState = editing?.saved || "") {
   const box = $id("cam-editor");
   if (!box || !editing) return;
   box.hidden = false;
@@ -374,7 +374,8 @@ function paintNumbers(st) {
 }
 
 async function saveCam(siteId, dev, place) {
-  const say = (t) => { const el = $id("ed-save"); if (el) el.textContent = t; };
+  // Kept on `editing` too: the list refresh after a first placement redraws the editor.
+  const say = (t) => { if (editing?.dev === dev) editing.saved = t; const el = $id("ed-save"); if (el) el.textContent = t; };
   say("Saving…");
   try {
     await saveSite(await api(`/api/sites/${siteId}/cameras/${encodeURIComponent(dev)}`, { method: "PUT", body: place }));
@@ -444,7 +445,8 @@ globeBar.addEventListener("click", (e) => {
 });
 
 function focusAlarm(a) {
-  if (sites.has(a.site_id)) select(a.site_id);
+  if (sites.has(a.site_id)) select(a.site_id, !plan);
+  if (plan && sites.has(a.site_id)) plan.focusCamera(sites.get(a.site_id), a.device_id);   // top-down open: go to the camera
   openDrawer(a.id, a);
 }
 

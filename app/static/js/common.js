@@ -478,7 +478,9 @@ export function createMap(el, opts = {}) {
   const cfg = CFG.map || {};
   const map = L.map(el, { worldCopyJump: true, ...opts });
   L.tileLayer(cfg.tileUrl, { maxZoom: cfg.maxZoom || 19, attribution: cfg.attribution }).addTo(map);
-  new ResizeObserver(() => map.invalidateSize()).observe(el);
+  const ro = new ResizeObserver(() => map.invalidateSize());
+  ro.observe(el);
+  map.on("unload", () => ro.disconnect());
   return map;
 }
 

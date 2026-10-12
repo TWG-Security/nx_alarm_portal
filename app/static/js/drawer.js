@@ -1,7 +1,7 @@
 // Alarm detail drawer: the recorded clip and live video side by side, details, acknowledge with a
 // verdict (real event / false alarm / dismissed). Used on every page.
 
-import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine } from "./common.js";
+import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView } from "./common.js";
 import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
 
@@ -12,11 +12,13 @@ const LEVEL_SOURCE = {
 const drawer = document.getElementById("drawer");
 const backdrop = document.getElementById("drawer-backdrop");
 let current = null, player = null, live = null, notes = [];
+let where = null;    // { map, plan, site }: the top-down map of where the alarm's camera is
 
 export function closeDrawer() {
   current = null;
   player?.destroy(); player = null;
   live?.destroy(); live = null;
+  closeWhere();
   drawer.hidden = true;
   backdrop.hidden = true;
 }
@@ -87,6 +89,40 @@ function render(a) {
   renderNotes();
 }
 
+// ---------------------------------------------------------------- where: the site from straight above
+// The alarm's camera is drawn red and flashing, other placed cameras orange (red if they have an open
+// alarm too). Shown when the site has a location or the camera is placed; it's only a picture, so
+// any failure just leaves it hidden.
+async function mountWhere(a) {
+  const section = drawer.querySelector(".drawer-where");
+  if (!section) return;
+  const site = (await api("/api/sites")).find((s) => s.id === a.site_id);
+  if (current?.id !== a.id || !site) return;
+  const placed = !!(a.device_id && site.camera_places?.[a.device_id]);
+  if (site.lat == null && !placed) return;
+  const { openPlan } = await import("./plan.js");
+  if (current?.id !== a.id) return;
+  section.hidden = false;
+  const map = createMap(section.querySelector(".where-mount"), { scrollWheelZoom: false, center: [site.lat ?? 0, site.lng ?? 0], zoom: 18 });
+  const cameras = () => Object.entries(where?.site.camera_places || {}).map(([deviceId, p]) => ({
+    siteId: site.id, deviceId, ...p,
+    alarm: deviceId === a.device_id || [...openAlarms.values()].some((x) => x.site_id === site.id && x.device_id === deviceId && inView(x)),
+  }));
+  where = { map, site, plan: null };
+  where.plan = openPlan(map, { cameras });
+  where.plan.focusCamera(site, a.device_id);
+  const name = site.camera_places?.[a.device_id]?.name || a.source_name || "This camera";
+  section.querySelector(".where-note").innerHTML = placed ? `<b>${esc(name)}</b> is the red cone.`
+    : a.device_id ? `${esc(name)} isn't on the map yet.${CFG.isAdmin ? " Place it from Map → Top-down view → Place cameras." : " An admin can place it from the Map page."}`
+    : "This alarm isn't from a camera.";
+}
+function closeWhere() {
+  try { where?.plan?.destroy(); where?.map.remove(); } catch (err) { console.error(err); }
+  where = null;
+}
+on("store", () => where?.plan?.update());
+on("site.updated", (s) => { if (where && s.id === where.site.id) { where.site = { ...where.site, ...s }; where.plan.update(); } });
+
 // ---------------------------------------------------------------- follow-up notes (append-only)
 function renderNotes() {
   const ul = drawer.querySelector(".notes-list");
@@ -117,15 +153,21 @@ export async function openDrawer(id, fallback) {
   current = a;
   notes = [];
   player?.destroy(); live?.destroy(); live = null;
+  closeWhere();
   drawer.innerHTML = `<div class="drawer-top"></div>
     <div class="drawer-media${a.device_id ? "" : " single"}">
       <section><div class="media-label">Recorded <span class="muted">around the alarm</span></div><div class="player-mount"></div></section>
       ${a.device_id ? '<section><div class="media-label">Live <span class="muted">now</span></div><div class="live-mount"></div></section>' : ""}
     </div>
-    <div class="drawer-details"></div>`;
+    <div class="drawer-lower">
+      <div class="drawer-details"></div>
+      <section class="drawer-where" hidden><div class="media-label">Where <span class="muted">top-down</span></div>
+        <div class="where-mount"></div><div class="where-note muted"></div></section>
+    </div>`;
   render(a);
   player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
   if (a.device_id) live = mountLive(drawer.querySelector(".live-mount"), a);
+  mountWhere(a).catch((err) => console.error("top-down map in the alarm details failed", err));
   api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
   drawer.hidden = false;
   backdrop.hidden = false;

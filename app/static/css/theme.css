@@ -295,6 +295,9 @@ tr:last-child td { border-bottom: 0; }
 .plan-cam--alarm i { width: 18px; height: 18px; margin: -2px; background: var(--red); animation: plan-alarm 1.4s ease-out infinite; }
 @keyframes plan-alarm { 0% { box-shadow: 0 0 0 0 rgba(192, 57, 43, .85); } 100% { box-shadow: 0 0 0 16px rgba(192, 57, 43, 0); } }
 .plan-cam--alarm span { background: var(--red); }
+.plan-cone--alarm { animation: plan-cone-flash 1s ease-in-out infinite; }
+@keyframes plan-cone-flash { 50% { fill-opacity: .12; stroke-opacity: .5; } }
+@media (prefers-reduced-motion: reduce) { .plan-cone--alarm, .plan-cam--alarm i { animation: none; } }
 .plan-handle { border-radius: 50%; border: 2px solid #0D0D0D; box-sizing: border-box; box-shadow: 0 1px 4px rgba(0, 0, 0, .6); cursor: grab; }
 .plan-handle.move { background: #fff; }
 .plan-handle.aim { background: #E08A30; }
@@ -371,9 +374,14 @@ tr:last-child td { border-bottom: 0; }
 .drawer-media { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
 .drawer-media.single { grid-template-columns: minmax(0, 1fr); max-width: 620px; }
 .drawer-details { max-width: 880px; }
+/* under the videos: details (left) and where the camera is, top-down (right) */
+.drawer-lower { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; margin-top: 14px; }
+.drawer-lower .drawer-details { max-width: none; }
+.drawer-where .where-mount { height: 340px; border-radius: 6px; overflow: hidden; background: var(--surface-2); }
+.drawer-where .where-note { margin-top: 6px; font-size: 13px; }
 .media-label { font: 700 12px var(--font); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; }
 .media-label .muted { text-transform: none; letter-spacing: 0; font-weight: 400; }
-@media (max-width: 900px) { .drawer-media { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 900px) { .drawer-media, .drawer-lower { grid-template-columns: minmax(0, 1fr); } }
 .live-pane { margin: 4px 0 10px; }
 .live-stage { position: relative; background: #000; border-radius: 6px; overflow: hidden; aspect-ratio: 16 / 9; }
 .live-stage video, .live-stage img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; }

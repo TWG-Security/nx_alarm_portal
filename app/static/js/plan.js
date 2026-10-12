@@ -33,7 +33,7 @@ function cone(c) {                   // [[lat, lng], ...] outline of the view co
  * Turn the Leaflet map `lmap` into the top-down view. Returns a controller; destroy() puts the
  * normal street map back.
  *   cameras: () => [{ siteId, deviceId, name, lat, lng, heading, fov, range_m, alarm }]
- *   onPickCamera(siteId, deviceId): a camera (its dot or cone) was clicked
+ *   onPickCamera(siteId, deviceId): a camera (its dot or cone) was clicked (optional)
  * The editor API matches globe.js (editCamera, stopEditing, editing, currentEditor), so map.js
  * drives both views the same way.
  */
@@ -85,6 +85,7 @@ export function openPlan(lmap, { cameras, onPickCamera }) {
         if (hide && group.hasLayer(l)) group.removeLayer(l);
         if (!hide && !group.hasLayer(l)) group.addLayer(l);
       }
+      d.cone.getElement()?.classList.toggle("plan-cone--alarm", !!c.alarm);   // flashes (theme.css)
     }
     for (const [key, d] of drawn) {
       if (seen.has(key)) continue;
@@ -99,6 +100,14 @@ export function openPlan(lmap, { cameras, onPickCamera }) {
     const pts = cameras().filter((c) => c.siteId === site.id && c.lat != null).flatMap(cone);
     if (pts.length) lmap.flyToBounds(L.latLngBounds(pts), { padding: [40, 40], maxZoom: 20, duration: 0.8 });
     else lmap.flyTo([site.lat, site.lng], 19, { duration: 0.8 });
+  }
+
+  // Fit one camera's cone in view (the alarm details map). Unplaced: the site itself.
+  function focusCamera(site, deviceId) {
+    const c = cameras().find((x) => x.siteId === site.id && x.deviceId === deviceId && x.lat != null);
+    if (c) lmap.fitBounds(L.latLngBounds(cone(c)), { padding: [30, 30], maxZoom: 20, animate: false });
+    else if (site.lat != null) lmap.setView([site.lat, site.lng], 18, { animate: false });
+    return !!c;
   }
 
   function setImagery(kind) {
@@ -196,7 +205,7 @@ export function openPlan(lmap, { cameras, onPickCamera }) {
 
   update();
   return {
-    update, flyTo, setImagery, editCamera, stopEditing,
+    update, flyTo, focusCamera, setImagery, editCamera, stopEditing,
     get editing() { return editor ? { key: editKey, mode: editor.mode } : null; },
     currentEditor: () => editor,
     destroy() {

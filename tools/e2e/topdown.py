@@ -119,6 +119,24 @@ with sync_playwright() as p:
     print(f"alarm on screen while panning the top-down map: {lat} ms (includes the test's own mouse-move steps)")
     pg.screenshot(path=f"{out}/topdown_alarm.png")
 
+    # Open the alarm: its details show the site top-down, centred on the camera, cone red and flashing
+    t = time.time()
+    pg.locator(".feed-item").first.click()
+    pg.wait_for_selector(".drawer-where:not([hidden]) .plan-cone--alarm", timeout=10000)
+    print(f"alarm details: top-down map with the red cone after {round((time.time() - t) * 1000)} ms;",
+          "note:", pg.inner_text(".drawer-where .where-note"),
+          "| flashing:", pg.evaluate("getComputedStyle(document.querySelector('.drawer-where .plan-cone--alarm')).animationName"),
+          "| cone on screen:", pg.evaluate("""(() => { const r = document.querySelector('.drawer-where .plan-cone--alarm').getBoundingClientRect(),
+              m = document.querySelector('.where-mount').getBoundingClientRect(); return r.left >= m.left - 1 && r.right <= m.right + 1 && r.top >= m.top - 1 && r.bottom <= m.bottom + 1; })()"""))
+    print("main top-down jumped to the camera:", pg.evaluate("""(() => { const r = document.querySelector('#map .plan-cam--alarm')?.getBoundingClientRect(),
+              m = document.getElementById('map').getBoundingClientRect(); return !!r && r.left > m.left && r.right < m.right && r.top > m.top && r.bottom < m.bottom; })()"""))
+    pg.screenshot(path=f"{out}/topdown_drawer.png")
+    n = pg.locator(".feed-item").count(); t = time.time(); inject("line")
+    pg.wait_for_function(f"document.querySelectorAll('.feed-item').length > {n}", timeout=10000, polling=10)
+    print(f"alarm into the feed with the details + their map open: {round((time.time() - t) * 1000)} ms")
+    pg.click("#drawer-close"); pg.wait_for_timeout(300)
+    print("details closed, their map removed:", pg.locator(".drawer-where").count() == 0 or pg.locator(".where-mount .leaflet-container").count() == 0)
+
     # Exit: the street map comes back, cameras go away
     pg.click("#globe-close"); pg.wait_for_timeout(1200)
     print("after exit: plan-sat", pg.evaluate("!!document.querySelector('#map.plan-sat')"), "| cameras drawn", pg.locator(".plan-cam").count(),
