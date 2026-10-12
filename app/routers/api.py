@@ -577,6 +577,8 @@ class UserIn(BaseModel):
     display_name: str = Field(default="", max_length=200)
     password: str = Field(default="", max_length=200)          # "" = invite by email (a setup link)
     role: str = Field(default="operator", pattern="^(admin|operator)$")
+    phone: str = Field(default="", max_length=30)
+    sms_level: str = Field(default="off", pattern="^(off|critical|alarm)$")
 
 
 class UserUpdate(BaseModel):
@@ -584,6 +586,16 @@ class UserUpdate(BaseModel):
     role: str | None = Field(default=None, pattern="^(admin|operator)$")
     is_active: bool | None = None
     password: str | None = Field(default=None, min_length=1, max_length=200)
+    phone: str | None = Field(default=None, max_length=30)                       # "" = remove
+    sms_level: str | None = Field(default=None, pattern="^(off|critical|alarm)$")
+
+
+def _phone(raw: str) -> str:
+    from app import sms
+    try:
+        return sms.normalize_phone(raw)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
 
 
 def _check_password(pw: str) -> None:
@@ -593,8 +605,9 @@ def _check_password(pw: str) -> None:
         raise HTTPException(400, problem)
 
 
-def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | None = None) -> dict:
+def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | None = None, text: dict | None = None) -> dict:
     return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
+            "phone": u.phone, "sms_level": u.sms_level, "last_text": text,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
             "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
             "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
@@ -621,7 +634,15 @@ async def list_users(user: User = Depends(require_admin), scope: Scope = Depends
         for e in (await db.scalars(select(EmailLog).where(EmailLog.user_id.in_(invited), EmailLog.purpose == "invite")
                                    .order_by(EmailLog.ts))).all():
             mails[e.user_id] = {"outcome": e.outcome, "ts": e.ts.isoformat(), "error": e.error}
-    return [_user_dict(u, keys.get(u.id, 0), live.get(u.id, 0), mails.get(u.id)) for u in rows]
+    from app.models import SmsLog
+    texts: dict[int, dict] = {}
+    texted = [u.id for u in rows if u.phone]
+    if texted:
+        last = (select(SmsLog.user_id, func.max(SmsLog.id).label("id")).where(SmsLog.user_id.in_(texted))
+                .group_by(SmsLog.user_id).subquery())
+        for t in (await db.scalars(select(SmsLog).join(last, SmsLog.id == last.c.id))).all():
+            texts[t.user_id] = {"outcome": t.outcome, "ts": t.ts.isoformat(), "error": t.error, "purpose": t.purpose}
+    return [_user_dict(u, keys.get(u.id, 0), live.get(u.id, 0), mails.get(u.id), texts.get(u.id)) for u in rows]
 
 
 @router.post("/users")
@@ -632,7 +653,9 @@ async def create_user(body: UserIn, request: Request, user: User = Depends(requi
     if body.password:
         _check_password(body.password)
     now = sessions.utcnow()
+    phone = _phone(body.phone)
     new = User(tenant_id=tid, email=body.email.strip().lower(), display_name=body.display_name.strip(),
+               phone=phone, sms_level=body.sms_level if phone else "off",
                password_hash=hash_password(body.password) if body.password else "", role=body.role,
                password_changed_at=now if body.password else None, invited_at=None if body.password else now)
     db.add(new)
@@ -677,7 +700,13 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
     if target.id == user.id and (body.role == "operator" or body.is_active is False):
         raise HTTPException(400, "You can't demote or deactivate your own account")
     fields = []
-    for name in ("display_name", "role", "is_active"):
+    if body.phone is not None:
+        body.phone = _phone(body.phone)
+        if not body.phone:
+            body.sms_level = "off"
+    if body.sms_level not in (None, "off") and not (body.phone if body.phone is not None else target.phone):
+        raise HTTPException(400, "Add a mobile number first")
+    for name in ("display_name", "role", "is_active", "phone", "sms_level"):
         value = getattr(body, name)
         if value is not None and getattr(target, name) != value:
             setattr(target, name, value)
@@ -693,6 +722,23 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
     audit(db, target.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
     await db.commit()
     return _user_dict(target)
+
+
+@router.post("/users/{user_id}/test-text")
+async def test_text(user_id: int, request: Request, user: User = Depends(require_admin),
+                    scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Text this person a test message (checks the number before an alarm needs it)."""
+    from app import sms
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    if target is None:
+        raise HTTPException(404)
+    scope.require_write(target.tenant_id)
+    if not target.phone:
+        raise HTTPException(400, "Add a mobile number first")
+    audit(db, target.tenant_id, "user.test_text", user_id=user.id, ip=client_ip(request), target=target.email)
+    await db.commit()
+    outcome, error = await sms.send_test(target.phone, user.label, user=target)
+    return {"outcome": outcome, "error": error}
 
 
 # -------------------------------------------------------------------------- groups

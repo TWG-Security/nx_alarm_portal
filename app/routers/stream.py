@@ -83,6 +83,11 @@ async def _frame(alarm: Alarm, ts: int) -> bytes:
 @router.get("/media/alarms/{alarm_id}/snapshot.jpg")
 async def alarm_snapshot(alarm_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     alarm = await _alarm_for(db, scope, alarm_id)
+    return Response(await snapshot_bytes(alarm), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+
+
+async def snapshot_bytes(alarm: Alarm) -> bytes:
+    """The frame at the alarm moment (cached; also used by the texted alarm links)."""
     data = _SNAP_CACHE.get(alarm.id)
     if data is None:
         data = await _frame(alarm, alarm.event_ts_ms)
@@ -91,7 +96,7 @@ async def alarm_snapshot(alarm_id: int, scope: Scope = Depends(get_scope), db: A
             _SNAP_CACHE.popitem(last=False)
     else:
         _SNAP_CACHE.move_to_end(alarm.id)
-    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=3600"})
+    return data
 
 
 LIVE_MAX_PER_SITE = 6          # ~0.8 Mbit/s each through the relay

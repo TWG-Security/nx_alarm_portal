@@ -382,10 +382,12 @@ class PollerManager:
         return created, relevelled
 
     def _announce(self, created: list[Alarm]) -> None:
+        from app import sms
         from app.services import clips  # late import: clips uses this module's manager
         for a in created:
             bus.publish(a.tenant_id, "alarm.new", alarm_dict(a))
             clips.schedule_prefetch(a)
+        sms.notify(created)            # after the browsers have it; never waits (background texts)
 
     async def ingest_pushed(self, rt: SiteRuntime, rows: list[dict]) -> list[Alarm]:
         """Rows pushed by NX over the JSON-RPC websocket: store and announce immediately."""

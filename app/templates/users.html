@@ -5,8 +5,8 @@
   <div class="page-head"><h1>Users</h1></div>
   <div class="table-wrap" style="margin-bottom:20px">
     <table>
-      <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Two-step</th><th>Last sign-in</th><th></th></tr></thead>
-      <tbody id="user-rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+      <thead><tr><th>Email</th><th>Name</th><th>Role</th><th>Status</th><th>Alarm texts</th><th>Two-step</th><th>Last sign-in</th><th></th></tr></thead>
+      <tbody id="user-rows"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
   <div class="card groups-card" style="margin-bottom:20px">
@@ -35,7 +35,11 @@
     </div>
     <div class="row">
       <div class="field"><label for="u-role">Role</label><select id="u-role"><option value="operator">Operator</option><option value="admin">Admin</option></select></div>
+      <div class="field"><label for="u-phone">Mobile number (optional)</label><input id="u-phone" type="tel" maxlength="30" placeholder="(570) 555-1234" autocomplete="off"></div>
+      <div class="field"><label for="u-sms">Text them</label><select id="u-sms">
+        <option value="alarm">Critical + Alarm</option><option value="critical">Critical only</option><option value="off">No texts</option></select></div>
     </div>
+    <p class="muted small-print" id="u-sms-note" style="margin-top:-6px">Texts carry a link that opens the alarm without signing in. Someone can get texts without ever using the portal.</p>
     <div class="field">
       <label class="radio"><input type="radio" name="u-how" value="invite" checked><span><b>Invite by email</b>
         <small>They get a link to choose their own password (valid 7 days). You also get the link to pass on yourself.</small></span></label>

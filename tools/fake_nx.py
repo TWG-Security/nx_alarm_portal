@@ -11,6 +11,8 @@ Clips: /rest/v4/devices/{id}/media.mp4 returns an ffmpeg test pattern (MPEG-4 Pa
 NX secondary streams) tagged with NX's startTimeMs comment; set FAKE_NX_FFMPEG if ffmpeg isn't on PATH.
 Injected events are also pushed to JSON-RPC subscribers (wss /jsonrpc), like NX 6.1.
 Every injected event also gets an analytics object track with a box that moves across the frame.
+Also a fake Twilio (dev_up.sh points TWILIO_API_BASE here): texts land in GET /_twilio;
+POST /_twilio/mode/{ok|fail|hang} makes it accept, reject (400, code 30034) or hang for 30 s.
 """
 import json, os, subprocess, tempfile, time, uuid
 import asyncio
@@ -144,3 +146,26 @@ async def inject(kind: str):
         try: await ws.send_json({"jsonrpc": "2.0", "method": "rest.v4.events.log.update", "params": EVENTS[-1]})
         except Exception: SUBSCRIBERS.discard(ws)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- fake Twilio (alarm texts)
+TEXTS, TWILIO_MODE = [], {"mode": "ok"}
+
+@app.post("/2010-04-01/Accounts/{sid}/Messages.json")
+async def twilio_send(sid: str, request: Request):
+    form = await request.form()
+    if TWILIO_MODE["mode"] == "hang":
+        await asyncio.sleep(30)
+    if TWILIO_MODE["mode"] == "fail":
+        return JSONResponse({"code": 30034, "message": "Message from an unregistered number", "status": 400}, status_code=400)
+    TEXTS.append({"to": form.get("To"), "from": form.get("From") or form.get("MessagingServiceSid"), "body": form.get("Body"),
+                  "at_ms": int(time.time() * 1000)})
+    return JSONResponse({"sid": "SM" + uuid.uuid4().hex, "status": "queued"}, status_code=201)
+
+@app.get("/_twilio")
+async def twilio_texts(): return TEXTS
+
+@app.post("/_twilio/mode/{mode}")
+async def twilio_mode(mode: str):
+    TWILIO_MODE["mode"] = mode
+    return TWILIO_MODE

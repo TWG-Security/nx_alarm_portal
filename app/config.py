@@ -73,6 +73,7 @@ class Settings(BaseSettings):
     webauthn_origins: str = "https://alarmportal.twgsecurity.net"   # comma-separated
     webauthn_rp_name: str = "TWG Alarm Portal"
     cookie_secure: bool = True           # set False only for plain-http local dev
+    twilio_api_base: str = "https://api.twilio.com"   # text messages (app/sms.py); tests and dev point it at a fake
     start_pollers: bool = True           # tests turn this off
 
 

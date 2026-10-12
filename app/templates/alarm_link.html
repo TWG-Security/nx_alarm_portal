@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+{% block title %}{% if alarm %}{{ alarm.caption or alarm.event_type }} at {{ alarm.site_name }}{% else %}Alarm link{% endif %}{% endblock %}
+{% block content %}
+<div class="page link-page">
+  <div class="link-head">
+    <span class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="110" height="34"></span>
+    <span class="brand-title">Alarm Portal</span>
+  </div>
+  {% if state == "ok" %}
+  <div class="card link-card" id="link-alarm">
+    <div class="link-title">
+      <span class="chip p{{ alarm.priority }}">{{ {1: "Critical", 2: "Alarm", 3: "Warning"}[alarm.priority] }}</span>
+      {% if alarm.state == "acknowledged" %}<span class="chip online">Acknowledged{% if alarm.acked_by %} by {{ alarm.acked_by }}{% endif %}</span>{% endif %}
+      <h1>{{ alarm.caption or alarm.event_type }}</h1>
+    </div>
+    <dl class="link-facts">
+      <dt>Site</dt><dd>{{ alarm.site_name }}{% if alarm.site_address %}<div class="muted">{{ alarm.site_address }}</div>{% endif %}</dd>
+      {% if alarm.source_name %}<dt>Camera</dt><dd>{{ alarm.source_name }}</dd>{% endif %}
+      <dt>When</dt><dd id="link-when" data-ms="{{ alarm.event_ts_ms }}"></dd>
+      {% if alarm.description %}<dt>Details</dt><dd class="link-desc">{{ alarm.description }}</dd>{% endif %}
+    </dl>
+    <div id="link-player"></div>
+    <div class="link-actions">
+      <a class="btn btn-primary" href="/login?next={{ ('/?alarm=' ~ alarm.id) | urlencode }}">Sign in to acknowledge</a>
+    </div>
+    <p class="muted small-print">This link was texted{% if sent_to %} to {{ sent_to }}{% endif %} and works until <span id="link-expires" data-iso="{{ expires_at }}"></span>.
+      Anyone who has it can see this alarm and its camera, so please don't forward it.</p>
+  </div>
+  {% elif state == "expired" %}
+  <div class="card link-card">
+    <h1>This alarm link has expired</h1>
+    <p>Links in alarm texts work for a limited time. Sign in to the portal to see the alarm.</p>
+    <a class="btn btn-primary" href="/login{% if alarm_id %}?next={{ ('/?alarm=' ~ alarm_id) | urlencode }}{% endif %}">Sign in</a>
+  </div>
+  {% else %}
+  <div class="card link-card">
+    <h1>This link doesn't work</h1>
+    <p>Check that the whole link was copied. Links stop working when they expire or when access is removed.</p>
+    <a class="btn btn-primary" href="/login">Sign in</a>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}{% if state == "ok" %}
+<script>window.PORTAL = {{ {"clip": clip_config, "alarm": alarm, "token": token} | tojson }};</script>
+<script type="module" src="{{ asset('js/alarm_link.js') }}"></script>{% endif %}{% endblock %}

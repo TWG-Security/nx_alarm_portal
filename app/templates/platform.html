@@ -12,6 +12,7 @@
     <button type="button" data-tab="sessions">Sessions</button>
     <button type="button" data-tab="passwords">Passwords</button>
     <button type="button" data-tab="email">Email</button>
+    <button type="button" data-tab="sms">Text messages</button>
     <button type="button" data-tab="google">Google sign-in</button>
   </div>
 
@@ -248,6 +249,50 @@
         <thead><tr><th>When</th><th>To</th><th>What</th><th>Result</th><th>Company</th></tr></thead>
         <tbody id="mail-log"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
       </table></div>
+    </div>
+  </section>
+  <!-- ============================================================ text messages -->
+  <section data-panel="sms" hidden>
+    <form class="card" id="sms-form">
+      <h2>Alarm text messages (Twilio)</h2>
+      <p class="muted" style="margin-top:0">People with a mobile number on the <b>Users</b> page get a text when an alarm comes in, with a link that opens
+        that one alarm (details, clip, live camera) <b>without signing in</b>. Texts go out in the background: a slow or failing Twilio never holds up the alarm screen.</p>
+      <div id="sms-status"></div>
+      <label class="check"><input type="checkbox" id="tx-enabled"> Send alarm texts</label>
+      <div class="rules-grid">
+        <div class="field"><label for="tx-sid">Account SID</label><input id="tx-sid" type="text" maxlength="64" class="mono" autocomplete="off" placeholder="AC…"></div>
+        <div class="field"><label for="tx-token">Auth Token</label><input id="tx-token" type="password" maxlength="200" autocomplete="new-password"><small id="tx-token-hint"></small></div>
+        <div class="field"><label for="tx-from">Send from</label><input id="tx-from" type="text" maxlength="64" placeholder="+15705551234 or MG…">
+          <small>Your Twilio number, or a Messaging Service SID.</small></div>
+        <div class="field"><label for="tx-hours">Links work for</label><input id="tx-hours" type="number" min="1" max="168"><small>hours (1 to 168)</small></div>
+        <div class="field"><label for="tx-max">Most texts per person</label><input id="tx-max" type="number" min="1" max="100">
+          <small>in any 10 minutes. Past that, one summary text counts the rest.</small></div>
+      </div>
+      <label class="check" id="tx-clear-row" hidden><input type="checkbox" id="tx-clear"> Remove the saved Auth Token</label>
+      <p class="muted small-print">Links start with <b id="tx-url"></b> (Email tab → Portal address). It must open from a phone on mobile data.</p>
+      <div id="sms-error"></div>
+      <div class="row manage-only" style="align-items:flex-end">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto;margin-bottom:14px">Save</button>
+        <div class="field" style="flex:0 1 220px"><label for="tx-test-to">Send a test to</label><input id="tx-test-to" type="tel" maxlength="30" placeholder="(570) 555-1234"></div>
+        <button class="btn" type="button" id="tx-test" style="flex:0 0 auto;margin-bottom:14px">Send test text</button>
+      </div>
+      <details class="muted small-print"><summary>Setting up Twilio</summary>
+        <ol class="steps">
+          <li>Sign in at <b>console.twilio.com</b>. On the account home page, copy the <b>Account SID</b> and <b>Auth Token</b> into the boxes above.</li>
+          <li><b>Phone Numbers</b> → <b>Manage</b> → <b>Buy a number</b> with <b>SMS</b> ticked (a toll-free number is quickest to get approved). Put it in <b>Send from</b>.</li>
+          <li><b>US carriers block texts from unregistered numbers.</b> For a toll-free number: <b>Messaging</b> → <b>Regulatory compliance</b> → <b>Toll-free verification</b>.
+            For a local number: <b>A2P 10DLC</b> brand + campaign registration. Use case: security alarm notifications to staff who opted in. Approval takes days.</li>
+          <li>A <b>trial</b> account only texts numbers verified under <b>Phone Numbers</b> → <b>Verified Caller IDs</b>, and adds "Sent from your Twilio trial account".</li>
+          <li>Tick <b>Send alarm texts</b>, <b>Save</b>, then <b>Send test text</b>. Then add mobile numbers on the <b>Users</b> page.</li>
+        </ol></details>
+    </form>
+    <div class="card">
+      <div class="card-head"><h2>Recent texts</h2><button class="btn btn-sm" type="button" id="sms-log-refresh">Refresh</button></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>When</th><th>To</th><th>What</th><th>Result</th><th>Delay</th><th>Company</th></tr></thead>
+        <tbody id="sms-log"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+      <small class="muted">Delay = from the alarm reaching the portal to Twilio accepting the text. Delivery to the phone usually takes a few more seconds.</small>
     </div>
   </section>
   <!-- ============================================================ google -->

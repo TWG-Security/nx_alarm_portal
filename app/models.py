@@ -60,6 +60,9 @@ class User(Base):
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
     invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Text messages (app/sms.py): E.164 mobile number and which alarms text them (off | critical | alarm)
+    phone: Mapped[str] = mapped_column(String(20), default="")
+    sms_level: Mapped[str] = mapped_column(String(10), default="off")
 
     @property
     def is_invited(self) -> bool:
@@ -129,6 +132,43 @@ class EmailLog(Base):
     attempts: Mapped[int] = mapped_column(Integer, default=0)
     tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
     user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class SmsLog(Base):
+    """Every text the portal tried to send (never the link: it opens the alarm without signing in)."""
+
+    __tablename__ = "sms_log"
+    __table_args__ = (Index("ix_sms_log_ts", "ts"), Index("ix_sms_log_user", "user_id", "ts"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    to: Mapped[str] = mapped_column(String(20))
+    purpose: Mapped[str] = mapped_column(String(10))          # alarm | summary | test
+    outcome: Mapped[str] = mapped_column(String(20))          # sent | failed | disabled
+    error: Mapped[str] = mapped_column(String(500), default="")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    twilio_sid: Mapped[str] = mapped_column(String(64), default="")
+    delay_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)       # alarm reached the portal -> Twilio accepted
+    alarm_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id", ondelete="SET NULL"), nullable=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class AlarmLink(Base):
+    """A no-sign-in link to one alarm, sent by text. Only the SHA-256 of the token is stored."""
+
+    __tablename__ = "alarm_links"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    alarm_id: Mapped[int] = mapped_column(ForeignKey("alarms.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"))
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    open_count: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class WebAuthnCredential(Base):
@@ -373,6 +413,16 @@ class PlatformSettings(Base):
     google_client_id: Mapped[str] = mapped_column(String(300), default="")
     google_client_secret_enc: Mapped[str] = mapped_column(Text, default="")
     google_domains: Mapped[str] = mapped_column(String(500), default="")       # "" = any domain
+    # Text messages through Twilio (app/sms.py)
+    sms_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    twilio_sid: Mapped[str] = mapped_column(String(64), default="")
+    twilio_token_enc: Mapped[str] = mapped_column(Text, default="")
+    twilio_from: Mapped[str] = mapped_column(String(64), default="")           # +15705551234 or a Messaging Service SID (MG...)
+    sms_link_hours: Mapped[int] = mapped_column(Integer, default=24)           # alarm links work this long
+    sms_max_per_10min: Mapped[int] = mapped_column(Integer, default=10)        # per person; the rest go in one summary text
+    sms_last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sms_last_error: Mapped[str] = mapped_column(Text, default="")
+    sms_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 

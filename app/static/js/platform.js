@@ -217,6 +217,54 @@ async function loadMailLog() {
 }
 $("mail-log-refresh").addEventListener("click", () => loadMailLog().catch((e) => toast(esc(e.message), { kind: "error" })));
 
+// ---------------------------------------------------------------- text messages
+const TEXT_PURPOSE = { alarm: "Alarm", summary: "Summary (too many)", test: "Test" };
+function paintSms() {
+  const m = settings.sms;
+  $("tx-enabled").checked = m.enabled; $("tx-sid").value = m.sid; $("tx-from").value = m.sender; $("tx-token").value = "";
+  $("tx-hours").value = m.link_hours; $("tx-max").value = m.max_per_10min; $("tx-url").textContent = `${m.portal_url}/a/…`;
+  $("tx-token").placeholder = m.token_set ? "Saved. Leave blank to keep it." : "";
+  $("tx-token-hint").textContent = m.token_set ? "Stored encrypted; never shown again." : "Stored encrypted.";
+  $("tx-clear-row").hidden = !m.token_set || !MANAGE; $("tx-clear").checked = false;
+  const parts = [];
+  if (!m.enabled) parts.push('<div class="alert alert-warn">Alarm texts are off. Nobody gets texts, whatever their Users page setting.</div>');
+  if (m.last_error) parts.push(`<div class="alert alert-error"><b>Last error</b> ${esc(relTime(m.last_error_at))}: ${esc(m.last_error)}</div>`);
+  if (m.last_ok_at) parts.push(`<div class="alert alert-ok">Last text sent ${esc(relTime(m.last_ok_at))}.</div>`);
+  $("sms-status").innerHTML = parts.join("");
+}
+$("sms-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errBox("sms-error");
+  const body = { enabled: $("tx-enabled").checked, sid: $("tx-sid").value, sender: $("tx-from").value,
+    link_hours: Number($("tx-hours").value) || 24, max_per_10min: Number($("tx-max").value) || 10 };
+  if ($("tx-clear").checked) body.token = "";
+  else if ($("tx-token").value) body.token = $("tx-token").value;
+  try { settings = await api("/api/platform/settings/sms", { method: "PUT", body }); paintSms(); toast("Text message settings saved"); }
+  catch (err) { errBox("sms-error", err); }
+});
+$("tx-test").addEventListener("click", async () => {
+  errBox("sms-error");
+  const to = $("tx-test-to").value.trim();
+  if (!to) { $("tx-test-to").focus(); return; }
+  $("tx-test").disabled = true;
+  try {
+    const r = await api("/api/platform/sms/test", { method: "POST", body: { to } });
+    if (r.outcome === "sent") toast(`Test text sent to ${esc(to)}`); else errBox("sms-error", r.error || r.outcome);
+    settings = await api("/api/platform/settings"); paintSms(); await loadSmsLog();
+  } catch (err) { errBox("sms-error", err); } finally { $("tx-test").disabled = false; }
+});
+async function loadSmsLog() {
+  const rows = await api("/api/platform/sms-log");
+  $("sms-log").innerHTML = rows.map((m) => {
+    const [label, cls] = MAIL_OUT[m.outcome] || [m.outcome, ""];
+    return `<tr><td title="${esc(fmtTime(m.ts))}">${esc(relTime(m.ts))}</td><td>${esc(m.who || m.to)}${m.who ? `<div class="muted small-print">${esc(m.to)}</div>` : ""}</td>
+      <td>${esc(TEXT_PURPOSE[m.purpose] || m.purpose)}${m.alarm_id ? ` <span class="muted">#${m.alarm_id}</span>` : ""}</td>
+      <td><span class="chip ${cls}">${esc(label === "Not sent: email off" ? "Not sent: texts off" : label)}</span>${m.attempts > 1 ? ` <span class="muted small-print">${m.attempts} tries</span>` : ""}${m.error ? `<div class="muted small-print">${esc(m.error)}</div>` : ""}</td>
+      <td>${m.delay_ms != null ? `${(m.delay_ms / 1000).toFixed(1)} s` : ""}</td><td>${esc(m.company)}</td></tr>`;
+  }).join("") || '<tr><td colspan="6" class="empty">Nothing sent yet.</td></tr>';
+}
+$("sms-log-refresh").addEventListener("click", () => loadSmsLog().catch((e) => toast(esc(e.message), { kind: "error" })));
+
 // ---------------------------------------------------------------- google
 function paintGoogle() {
   const g = settings.google;
@@ -326,8 +374,8 @@ async function refresh() { await Promise.all([loadSecurity(), loadEvents()]); }
 
 try {
   settings = await api("/api/platform/settings");
-  paintRules(); paintProxies(); paintCloudflare(); paintTwoFactor(); paintSessions(); paintPasswords(); paintEmail(); paintGoogle();
-  loadMailLog().catch(() => {});
+  paintRules(); paintProxies(); paintCloudflare(); paintTwoFactor(); paintSessions(); paintPasswords(); paintEmail(); paintSms(); paintGoogle();
+  loadMailLog().catch(() => {}); loadSmsLog().catch(() => {});
   await refresh();
 } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }
 setInterval(() => { if (!document.hidden) refresh().catch(() => {}); }, 15000);

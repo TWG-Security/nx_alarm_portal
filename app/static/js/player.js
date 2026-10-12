@@ -14,7 +14,9 @@ const clockTenths = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit
 const offset = (ms) => `${ms < 0 ? "−" : "+"}${(Math.abs(ms) / 1000).toFixed(1)}s`;
 
 // liveToggle: show the "Live" button that swaps the clip for live video (the drawer shows live beside the clip instead).
-export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } = {}) {
+// apiBase/mediaBase: where the clip, boxes, snapshot and live video come from (the texted alarm link uses /api/a/<token>).
+export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true, apiBase = `/api/alarms/${alarm.id}`,
+  mediaBase = `/media/alarms/${alarm.id}` } = {}) {
   let pre = CFG.clip?.pre ?? 10, post = CFG.clip?.post ?? 20, quality = "sd";
   let info = null, tracks = [], showBoxes = true, live = false, destroyed = false;
   let pollTimer = null, liveCtl = null, raf = null;
@@ -22,7 +24,7 @@ export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } 
   root.innerHTML = `
     <div class="player">
       <div class="player-stage">
-        <img class="player-poster" alt="" src="/media/alarms/${alarm.id}/snapshot.jpg">
+        <img class="player-poster" alt="" src="${mediaBase}/snapshot.jpg">
         <video muted playsinline loop preload="auto" hidden></video>
         <div class="player-live" hidden></div>
         <canvas class="player-boxes"></canvas>
@@ -74,7 +76,7 @@ export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } 
     if (destroyed) return;
     let r;
     try {
-      r = await api(`/api/alarms/${alarm.id}/clip?pre=${pre}&post=${post}&quality=${quality}`);
+      r = await api(`${apiBase}/clip?pre=${pre}&post=${post}&quality=${quality}`);
     } catch (e) {
       return say(e.message, false);
     }
@@ -126,7 +128,7 @@ export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } 
 
   async function loadObjects() {
     try {
-      tracks = await api(`/api/alarms/${alarm.id}/objects?from_ms=${info.start_ms}&to_ms=${info.start_ms + info.duration_ms}`);
+      tracks = await api(`${apiBase}/objects?from_ms=${info.start_ms}&to_ms=${info.start_ms + info.duration_ms}`);
     } catch (e) { tracks = []; }
     if (destroyed) return;
     $('[data-c="boxes"]').hidden = !tracks.length;
@@ -201,7 +203,7 @@ export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } 
     liveBox.hidden = !on;
     if (on) {
       video.pause();
-      liveCtl = mountLive(liveBox, alarm, { label: false });
+      liveCtl = mountLive(liveBox, alarm, { label: false, base: mediaBase });
     } else if (info) {
       video.play().catch(() => {});
     }

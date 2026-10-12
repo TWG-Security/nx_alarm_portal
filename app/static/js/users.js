@@ -31,17 +31,30 @@ document.addEventListener("click", (e) => {
   if (e.target.dataset.copy) navigator.clipboard.writeText(e.target.dataset.copy).then(() => toast("Link copied"));
 });
 
+// ---------------------------------------------------------------- alarm texts
+const fmtPhone = (p) => (/^\+1\d{10}$/.test(p || "") ? `(${p.slice(2, 5)}) ${p.slice(5, 8)}-${p.slice(8)}` : p || "");
+const TEXTED = { sent: ["text sent", ""], failed: ["text FAILED", "text-failed"], disabled: ["texts are off", ""] };
+function textCell(u) {
+  const t = u.last_text, [word, cls] = t ? TEXTED[t.outcome] || [t.outcome, ""] : [];
+  return `<div class="text-cell"><input type="tel" data-phone="${u.id}" value="${esc(fmtPhone(u.phone))}" placeholder="Mobile number" maxlength="30" aria-label="Mobile number">
+    <select data-sms="${u.id}" aria-label="Which alarms text them" ${u.phone ? "" : "disabled"}>
+      ${[["off", "No texts"], ["critical", "Critical only"], ["alarm", "Critical + Alarm"]].map(([v, l]) => `<option value="${v}" ${u.sms_level === v ? "selected" : ""}>${l}</option>`).join("")}</select>
+    ${u.phone ? `<button class="btn btn-sm" type="button" data-test-text="${u.id}" title="Text them a test message">Test</button>` : ""}</div>
+    ${t ? `<div class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : ""}${esc(word)} ${esc(relTime(t.ts))}${t.error ? `: ${esc(t.error.slice(0, 80))}` : ""}</div>` : ""}`;
+}
+
 function render() {
   tbody.innerHTML = users.map((u) => `<tr>
     <td>${esc(u.email)}</td><td>${esc(u.display_name)}</td>
     <td><select data-role="${u.id}" aria-label="Role"><option value="operator" ${u.role === "operator" ? "selected" : ""}>Operator</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>Admin</option></select></td>
     <td>${!u.is_active ? '<span class="chip">Disabled</span>' : u.invited ? `<span class="chip disarmed">Invited</span>${inviteNote(u)}` : '<span class="chip online">Active</span>'}</td>
+    <td>${textCell(u)}</td>
     <td>${twoStep(u)}</td>
     <td>${relTime(u.last_login_at)}${u.sessions ? `<div class="muted small-print">${u.sessions} browser${u.sessions === 1 ? "" : "s"} signed in</div>` : ""}</td>
     <td style="white-space:nowrap"><button class="btn btn-sm" data-toggle="${u.id}">${u.is_active ? "Disable" : "Enable"}</button>
       ${u.invited ? `<button class="btn btn-sm" data-invite="${u.id}">New invite link</button>` : `<button class="btn btn-sm" data-reset="${u.id}">Reset password</button>`}
       <button class="btn btn-sm" data-security="${u.id}">Sign-in security</button></td></tr>`).join("")
-    || '<tr><td colspan="7" class="empty">No users.</td></tr>';
+    || '<tr><td colspan="8" class="empty">No users.</td></tr>';
 }
 
 async function load() {
@@ -56,7 +69,16 @@ async function update(id, body) {
   await load();
 }
 
-tbody.addEventListener("change", (e) => { if (e.target.dataset.role) update(e.target.dataset.role, { role: e.target.value }); });
+tbody.addEventListener("change", (e) => {
+  const d = e.target.dataset;
+  if (d.role) update(d.role, { role: e.target.value });
+  if (d.sms) update(d.sms, { sms_level: e.target.value });
+  if (d.phone) {
+    const u = users.find((x) => x.id === Number(d.phone)), phone = e.target.value.trim();
+    // A first number starts texting Critical + Alarm (change it in the box beside it); clearing it stops texts.
+    update(d.phone, !u.phone && phone && u.sms_level === "off" ? { phone, sms_level: "alarm" } : { phone });
+  }
+});
 tbody.addEventListener("click", (e) => {
   const d = e.target.dataset;
   if (d.toggle) update(d.toggle, { is_active: !users.find((u) => u.id === Number(d.toggle)).is_active });
@@ -71,6 +93,12 @@ tbody.addEventListener("click", (e) => {
     }).catch((err) => toast(esc(err.message), { kind: "error" }));
   }
   if (d.security) openSecurity(users.find((u) => u.id === Number(d.security)));
+  if (d.testText) {
+    e.target.disabled = true;
+    api(`/api/users/${d.testText}/test-text`, { method: "POST" }).then((r) => {
+      if (r.outcome === "sent") toast("Test text sent"); else toast(esc(r.error || r.outcome), { kind: "error", timeout: 12000 });
+    }).catch((err) => toast(esc(err.message), { kind: "error", timeout: 12000 })).finally(() => load());
+  }
 });
 
 const how = () => document.querySelector('input[name="u-how"]:checked').value;
@@ -82,7 +110,8 @@ $("user-form").addEventListener("submit", async (e) => {
   $("u-link").innerHTML = "";
   try {
     const r = await api("/api/users", { method: "POST", body: { email: $("u-email").value, display_name: $("u-name").value,
-      password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value } });
+      password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value,
+      phone: $("u-phone").value, sms_level: $("u-sms").value } });
     e.target.reset(); $("u-pass-row").hidden = true;
     if (r.setup_link) $("u-link").innerHTML = linkBox(r);
     toast(r.setup_link ? "User invited" : "User created");

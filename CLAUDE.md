@@ -85,6 +85,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Account page, admin user security, company 2FA switch | `app/routers/account.py`, `templates/account.html`, `js/account.js`; password rules `app/passwords.py` |
 | Email (SMTP, branded template, send log) | `app/mail.py` (`send_now` / `send_later`, 3 attempts), `templates/email/layout.html`, `email_log` (migration 0010) |
 | Invites, setup and reset links | `app/invites.py`, `app/tokens.py` (`user_tokens`: SHA-256 only, setup 7 d, reset 30 min); pages `/setup`, `/forgot`, `/reset`, `/login/password-expired` in `app/routers/auth.py`; `password_form.html`, `forgot.html`; tests `tests/test_email_invites.py` (aiosmtpd sink), e2e `tools/e2e/email.py` |
+| Alarm texts (Twilio) + no-sign-in alarm links | `app/sms.py` (`notify` from `poller._announce`: never waits; background tasks share 2 DB slots and 4 Twilio slots; per-person flood limit → summary text), `app/alarm_links.py` (`/a/<token>`, 18 random bytes, SHA-256 stored), `app/routers/links.py` (`/a/{t}`, `/api/a/{t}/clip|objects`, `/media/a/{t}/snapshot.jpg|live.jpg|live.webm|clips/…`), page `alarm_link.html` + `js/alarm_link.js` (reuses `player.js` with `apiBase`/`mediaBase`); `users.phone`/`sms_level`, `platform_settings.twilio_*`/`sms_*`, `sms_log`, `alarm_links` (migration 0013); Platform tab "Text messages" (field ids `tx-*`: **`s-*` belongs to the Sessions tab**), Users page "Alarm texts" column; `TWILIO_API_BASE` (dev points it at `tools/fake_nx.py`'s fake Twilio: `/_twilio`, `/_twilio/mode/{ok,fail,hang}`); tests `tests/test_sms.py`, e2e `tools/e2e/sms.py` |
 | Google sign-in (OIDC + PKCE) | `app/routers/sso.py` (`/auth/google`, `/auth/google/callback`), settings on `platform_settings.google_*` (migration 0011); tests `tests/test_google_sso.py` |
 | Companies / tenancy | `app/scope.py` (`Scope`, `get_scope`), `app/routers/tenants.py` (`/api/scope`, `/api/tenants`, logo, `/branding/{id}/logo`), `templates/companies.html` + `js/companies.js`; tests `tests/test_tenancy.py`, e2e `tools/e2e/tenancy.py` |
 | Verdicts (real / false / dismissed), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`; `dismissed` skips the NX bookmark but still clears forced-ack events), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`, ≤500 ids; `alarms.js` chunks); e2e `tools/e2e/dismiss.py` |
@@ -236,7 +237,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 148 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 160 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -250,6 +251,7 @@ tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companie
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.cameras /tmp # place cameras on the 3D view, live window, alarm turns a camera red
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.topdown /tmp # same on the top-down view, + alarm latency while open / panning, exit restores the street map
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.dismiss /tmp # Dismiss everywhere; 600-alarm burst, bulk dismiss, critical latency meanwhile
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.sms /tmp     # alarm texts: Platform tab, Users numbers, link on a phone (clip, live), Twilio failing/hanging + alarm latency
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.globe /tmp   # 3D view: software-GL refusal, forced open + watchdog, alarm latency while open, failed load
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
@@ -265,6 +267,10 @@ tools/dev_down.sh
 - Commits end with the attribution lines from the session's system reminder. Branch `feature/base-portal`.
 
 ## Open items / backlog (roughly in priority order)
+14d. **Alarm texts (Twilio)**, asked for 2026-10-12: "SMS when an alarm comes in, with a link to the alarm, connect without auth, unique id in the URL, Twilio"; then "a platform setting, and phone numbers in the user list". Built 2026-10-12 (see the Architecture row). Defaults chosen: link valid 24 h, 10 texts per person per 10 min then one summary, a newly added number texts Critical + Alarm, links are view-only (details, clip, live; acknowledging needs sign-in), only the alarm's own company is texted. Measured dev: alarm on screen 29-77 ms with Twilio OK / rejecting / hanging; Twilio accepted the text 0.1 s after the alarm reached the portal.
+   - **Waiting on the user:** Twilio Account SID, Auth Token and a number with SMS, **plus US carrier registration** (toll-free verification, or A2P 10DLC for a local number; days to approve; unregistered numbers get error 30034). Trial accounts only text verified numbers.
+   - If Cloudflare Access goes in front (item 1), add a **Bypass** policy for `/a/*`, `/api/a/*`, `/media/a/*` and `/static/*`, or the links stop working on phones.
+   - Possible next steps: acknowledge from the link; texting TWG on-call for customer companies' alarms; Twilio delivery-status callbacks.
 14c. **Site 1 "Repeat alarms delayed" (read 2026-10-12, the user said "not now"):** four enabled rules with Interval of action 60 s and no interval-0 rule for the same event: `32fac496` AXIS front-of-office (analytics `nx.axis.{c95466c7-…}`, cam `71241cb2`, desktopNotification), `44bfffa4` ObjectClass.Human (cam `1542c3fe`, push), `e0974f76` cvedia armed_person (cam `68512ea9`, **writeToLog**, caption filter "smoking" looks like a leftover), `bb23e5b2` Nx Training soft trigger (cam `2df009a1`, speak). Fix offered: untick the interval on `e0974f76`; add Write-to-log copies (interval off) of the other three. Needs the user's OK (writes to NX). The TWG gateway's NX connector withholds the rule list (2 password fields); read rules through the app container instead.
 14b. **Top-down site view** (the user asked 2026-10-12 for an NX-style flat map "where we can add cameras, not in 3d mode", with a screenshot of NX's map: drone photo, blue cones). Deployed 2026-10-12 13:31 UTC (`ac037e8`).
    - Map page → site panel → **Top-down view** (now the primary button; 3D view stays). `plan.js` swaps the map's tile layer for aerial (`/tiles/sat`, native z19, overzoom to z21), adds cones (pane `planCones`) and camera dots, and reuses the Place cameras panel and editor. Same `camera_places` as 3D. Exit restores the street map. Opening one view closes the other.

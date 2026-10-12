@@ -11,6 +11,8 @@
 - PUT  /api/platform/settings/passwords   password rules and expiry
 - PUT  /api/platform/settings/email       SMTP server (password encrypted, never returned), From, portal address
 - POST /api/platform/email/test, GET /api/platform/email-log
+- PUT  /api/platform/settings/sms         text messages: Twilio SID, auth token (encrypted), sender, link hours, flood limit
+- POST /api/platform/sms/test, GET /api/platform/sms-log
 - PUT  /api/platform/settings/google      Google sign-in: client ID, secret (encrypted), allowed domains, on/off
 - GET  /api/platform/security             your IP, bans, allowlist, locked accounts, untrusted connectors
 - GET  /api/platform/auth-events          recent sign-in attempts (filter by ip, email, outcome)
@@ -75,6 +77,10 @@ def _settings_dict(row) -> dict:
                   "user": row.smtp_user, "password_set": bool(row.smtp_password_enc), "sender": row.smtp_from,
                   "portal_url": row.portal_url, "last_ok_at": _iso(row.smtp_last_ok_at),
                   "last_error": row.smtp_last_error, "last_error_at": _iso(row.smtp_last_error_at)},
+        "sms": {"enabled": row.sms_enabled, "sid": row.twilio_sid, "token_set": bool(row.twilio_token_enc),
+                "sender": row.twilio_from, "link_hours": row.sms_link_hours, "max_per_10min": row.sms_max_per_10min,
+                "portal_url": row.portal_url, "last_ok_at": _iso(row.sms_last_ok_at),
+                "last_error": row.sms_last_error, "last_error_at": _iso(row.sms_last_error_at)},
         "google": {"enabled": row.google_enabled, "client_id": row.google_client_id,
                    "secret_set": bool(row.google_client_secret_enc), "domains": row.google_domains,
                    "redirect_uri": f"{(row.portal_url or '').rstrip('/')}/auth/google/callback",
@@ -304,6 +310,71 @@ async def email_log(limit: int = 100, user: User = Depends(VIEW), db: AsyncSessi
     names = {t.id: t.label for t in (await db.scalars(select(Tenant))).all()}
     return [{"ts": _iso(e.ts), "to": e.to, "subject": e.subject, "purpose": e.purpose, "outcome": e.outcome,
              "error": e.error, "attempts": e.attempts, "company": names.get(e.tenant_id, "")} for e in rows]
+
+
+class SmsIn(BaseModel):
+    enabled: bool
+    sid: str = Field(default="", max_length=64)
+    token: str | None = Field(default=None, max_length=200)          # None = keep, "" = remove
+    sender: str = Field(default="", max_length=64)
+    link_hours: int = Field(default=24, ge=1, le=168)
+    max_per_10min: int = Field(default=10, ge=1, le=100)
+
+
+@router.put("/api/platform/settings/sms")
+async def put_sms(body: SmsIn, request: Request, user: User = Depends(MANAGE), db: AsyncSession = Depends(get_db)):
+    from app import sms
+    sid = body.sid.strip()
+    if sid and not re.fullmatch(r"AC[0-9a-fA-F]{32}", sid):
+        raise HTTPException(400, "The Account SID starts with AC followed by 32 letters and numbers (Twilio Console home page).")
+    sender = body.sender.strip()
+    if sender and not re.fullmatch(r"MG[0-9a-fA-F]{32}", sender):
+        try:
+            sender = sms.normalize_phone(sender)
+        except ValueError:
+            raise HTTPException(400, "Send from a Twilio phone number (+15705551234) or a Messaging Service SID (MG...).") from None
+    row = await platform_settings.get_row(db)
+    token_set = bool(row.twilio_token_enc) if body.token is None else bool(body.token)
+    if body.enabled and not (sid and sender and token_set):
+        raise HTTPException(400, "Enter the Account SID, Auth Token and the number to send from before switching texts on.")
+    changed = []
+    for k, col, v in (("enabled", "sms_enabled", body.enabled), ("sid", "twilio_sid", sid), ("sender", "twilio_from", sender),
+                      ("link_hours", "sms_link_hours", body.link_hours), ("max_per_10min", "sms_max_per_10min", body.max_per_10min)):
+        if getattr(row, col) != v:
+            setattr(row, col, v)
+            changed.append(k)
+    if body.token is not None:
+        row.twilio_token_enc = encrypt(body.token.strip()) if body.token.strip() else ""
+        changed.append("token")
+    if {"sid", "token", "sender"} & set(changed):
+        row.sms_last_ok_at, row.sms_last_error, row.sms_last_error_at = None, "", None
+    return await _saved(db, request, user, row, "sms", changed)
+
+
+class TestSmsIn(BaseModel):
+    to: str = Field(min_length=7, max_length=30)
+
+
+@router.post("/api/platform/sms/test")
+async def test_sms(body: TestSmsIn, request: Request, user: User = Depends(MANAGE)):
+    from app import sms
+    try:
+        to = sms.normalize_phone(body.to)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    outcome, error = await sms.send_test(to, user.label)
+    return {"outcome": outcome, "error": error}
+
+
+@router.get("/api/platform/sms-log")
+async def sms_log(limit: int = 100, user: User = Depends(VIEW), db: AsyncSession = Depends(get_db)):
+    from app.models import SmsLog
+    rows = (await db.scalars(select(SmsLog).order_by(SmsLog.ts.desc(), SmsLog.id.desc()).limit(max(1, min(limit, 500))))).all()
+    names = {t.id: t.label for t in (await db.scalars(select(Tenant))).all()}
+    people = {u.id: u.label for u in (await db.scalars(select(User).where(User.id.in_({r.user_id for r in rows if r.user_id})))).all()}
+    return [{"ts": _iso(r.ts), "to": r.to, "who": people.get(r.user_id, ""), "purpose": r.purpose, "outcome": r.outcome,
+             "error": r.error, "attempts": r.attempts, "delay_ms": r.delay_ms, "alarm_id": r.alarm_id,
+             "company": names.get(r.tenant_id, "")} for r in rows]
 
 
 class GoogleIn(BaseModel):

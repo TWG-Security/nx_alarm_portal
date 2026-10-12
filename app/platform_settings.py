@@ -50,6 +50,7 @@ class Snapshot:
     pw_expiry_days: int = 0
     portal_url: str = "https://alarmportal.twgsecurity.net"
     google_ready: bool = False                   # switched on with a client ID and secret
+    sms_ready: bool = False                      # text messages switched on with a Twilio SID, token and sender
 
 
 def parse_networks(text: str) -> list[Network]:
@@ -146,7 +147,8 @@ async def refresh() -> Snapshot:
             password_policy=Policy(min_length=row.pw_min_length, upper=row.pw_upper, lower=row.pw_lower,
                                    number=row.pw_number, symbol=row.pw_symbol),
             pw_expiry_days=row.pw_expiry_days, portal_url=(row.portal_url or "").rstrip("/"),
-            google_ready=bool(row.google_enabled and row.google_client_id and row.google_client_secret_enc))
+            google_ready=bool(row.google_enabled and row.google_client_id and row.google_client_secret_enc),
+            sms_ready=bool(row.sms_enabled and row.twilio_sid and row.twilio_token_enc and row.twilio_from))
     _snap, _loaded_at = snap, time.monotonic()
     return snap
 

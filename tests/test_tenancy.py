@@ -87,6 +87,8 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("POST", f"/api/users/{world['b_op'].id}/reset-2fa", {}),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions", None),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions/x", None),
+        ("POST", f"/api/users/{world['b_op'].id}/test-text", None),
+        ("PUT", f"/api/users/{world['b_op'].id}", {"phone": "5705551234", "sms_level": "alarm"}),
         ("GET", f"/media/alarms/{ab.id}/snapshot.jpg", None), ("GET", f"/media/alarms/{ab.id}/live.jpg", None),
         ("GET", f"/media/alarms/{ab.id}/live.webm", None), ("GET", f"/api/alarms/{ab.id}/clip", None),
         ("GET", f"/api/alarms/{ab.id}/objects", None), ("GET", f"/api/alarms/{ab.id}/export", None),
