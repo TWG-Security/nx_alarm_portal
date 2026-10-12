@@ -350,8 +350,23 @@ def _parse_box(s: str) -> list[float] | None:
     return [round(x, 5), round(y, 5), round(w, 5), round(h, 5)]
 
 
+# What a box is called: just Person / Vehicle / Animal for the common kinds (the user's ask: no
+# attributes, no "Car" vs "Truck"), whatever the analytics plugin names them (CVEDIA
+# cvedia.rt.person, Axis nx.axis.object.Human / Car / Truck / HumanFace, ONVIF ObjectClass.Human).
+_KINDS = {
+    "Person": ("person", "human", "humanface", "face", "head", "people", "pedestrian"),
+    "Vehicle": ("vehicle", "car", "truck", "bus", "van", "motorcycle", "motorbike", "bike", "bicycle", "licenseplate", "train", "boat"),
+    "Animal": ("animal", "dog", "cat", "bird", "deer", "horse", "cow", "bear"),
+}
+
+
 def _label(type_id: str) -> str:
-    return (type_id or "object").rsplit(".", 1)[-1].replace("_", " ").title()
+    name = (type_id or "object").rsplit(".", 1)[-1]
+    key = name.lower().replace("_", "").replace(" ", "")
+    for kind, words in _KINDS.items():
+        if key in words:
+            return kind
+    return name.replace("_", " ").title()
 
 
 async def objects(alarm: Alarm, start_ms: int, end_ms: int) -> list[dict]:

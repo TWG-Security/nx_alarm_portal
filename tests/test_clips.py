@@ -165,3 +165,11 @@ async def test_objects_returns_per_frame_boxes(session, admin):
     t = tracks[0]
     assert t["primary"] and t["label"] == "Person" and t["attributes"] == {"Color": "Red"}
     assert t["boxes"][0] == [ts, 0, 0.1, 0.2, 0.3, 0.4]
+
+
+def test_box_labels_are_just_the_kind():
+    from app.services.clips import _label
+    assert [_label(t) for t in ("cvedia.rt.person", "nx.axis.object.Human", "nx.axis.object.HumanFace",
+                                "nx.onvif.VideoAnalytics.ObjectClass.Human", "cvedia.rt.vehicle", "nx.axis.object.Car",
+                                "nx.axis.object.Truck", "cvedia.rt.animal", "nx.base.Bicycle", "acme.Smoke_Plume", "")] == [
+        "Person", "Person", "Person", "Person", "Vehicle", "Vehicle", "Vehicle", "Animal", "Vehicle", "Smoke Plume", "Object"]

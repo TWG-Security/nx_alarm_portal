@@ -14,23 +14,6 @@ const clockTenths = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit
 const offset = (ms) => `${ms < 0 ? "−" : "+"}${(Math.abs(ms) / 1000).toFixed(1)}s`;
 
 // liveToggle: show the "Live" button that swaps the clip for live video (the drawer shows live beside the clip instead).
-
-// The tag on a bounding box: the object type plus what's worth reading at a glance. Analytics
-// plugins attach many yes/no attributes (CVEDIA: "Is smoking: False", "Face covered: False", ...):
-// a "true" one shows by name, "false" ones are dropped, anything else shows its value
-// ("Vehicle · White · Truck", "Animal · Dog"). At most three extras.
-const YES = /^(true|yes)$/i, NO = /^(false|no)$/i;
-function boxLabel(tr) {
-  const extras = [], flags = [];
-  for (const [name, value] of Object.entries(tr.attributes || {})) {
-    const v = String(value ?? "").trim();
-    if (!v || NO.test(v) || name === "Event") continue;
-    if (YES.test(v)) flags.push(name); else extras.push(v);
-  }
-  const parts = [...flags, ...extras].slice(0, 3);
-  return parts.length ? `${tr.label} · ${parts.join(" · ")}` : tr.label;
-}
-
 export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } = {}) {
   let pre = CFG.clip?.pre ?? 10, post = CFG.clip?.post ?? 20, quality = "sd";
   let info = null, tracks = [], showBoxes = true, live = false, destroyed = false;
@@ -200,7 +183,7 @@ export function mountPlayer(root, alarm, { autoplay = true, liveToggle = true } 
       const rx = ox + x * dw, ry = oy + y * dh, rw = w * dw, rh = h * dh;
       const color = tr.primary ? "#E74C3C" : "#E08A30";
       ctx.lineWidth = 2; ctx.strokeStyle = color; ctx.strokeRect(rx, ry, rw, rh);
-      const label = boxLabel(tr);
+      const label = tr.label;      // just the kind (Person / Vehicle / Animal), no attributes
       const tw = ctx.measureText(label).width + 8;
       const ly = ry > 18 ? ry - 18 : ry + rh;
       ctx.fillStyle = color; ctx.fillRect(rx - 1, ly, tw, 18);
