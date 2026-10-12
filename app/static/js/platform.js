@@ -220,6 +220,8 @@ $("mail-log-refresh").addEventListener("click", () => loadMailLog().catch((e) =>
 // ---------------------------------------------------------------- text messages
 const TEXT_PURPOSE = { alarm: "Alarm", summary: "Summary (too many)", test: "Test", optin: "Opt-in request", confirm: "Signed-up confirmation",
   help: "Help reply", inbound: "Reply received" };
+const TEXT_OUT = { sent: ["Sent (checking delivery)", ""], delivered: ["Delivered", "online"], failed: ["Failed", "offline"],
+  undelivered: ["Not delivered", "offline"], disabled: ["Not sent: texts off", ""] };
 const REPLY = { yes: ["YES: opted in", "online"], stop: ["STOP: opted out", "offline"], help: ["HELP", ""], other: ["Other text", ""] };
 function paintSms() {
   const m = settings.sms;
@@ -237,7 +239,7 @@ function paintSms() {
   const bg = m.background || {};
   if (bg.oldest_s > 60) parts.push(`<div class="alert alert-error"><b>A text has been in progress for ${Math.round(bg.oldest_s)} s</b>
     (${bg.in_flight} in progress). Texts are stopped after ${bg.max_s} s and logged; check Recent texts and the app log.</div>`);
-  else if (m.enabled) parts.push(`<div class="muted small-print">Background: ${bg.in_flight || 0} text${bg.in_flight === 1 ? "" : "s"} in progress${bg.summaries_waiting
+  else if (m.enabled) parts.push(`<div class="muted small-print">Background: ${bg.in_flight || 0} text${bg.in_flight === 1 ? "" : "s"} in progress, ${bg.checking_delivery || 0} awaiting a delivery report${bg.summaries_waiting
     ? `, ${bg.summaries_waiting} summary text${bg.summaries_waiting === 1 ? "" : "s"} waiting for the 10-minute window` : ""}.</div>`);
   if (m.enabled && !m.last_inbound_at) parts.push(`<div class="alert alert-warn">No replies received yet. People opt in by replying YES, so Twilio must send replies to
     <b>${esc(m.webhook_url)}</b> (see "Setting up Twilio" below).</div>`);
@@ -267,10 +269,11 @@ $("tx-test").addEventListener("click", async () => {
 async function loadSmsLog() {
   const rows = await api("/api/platform/sms-log");
   $("sms-log").innerHTML = rows.map((m) => {
-    const [label, cls] = (m.purpose === "inbound" ? REPLY[m.outcome.replace("?", "")] : MAIL_OUT[m.outcome]) || [m.outcome, ""];
+    let [label, cls] = (m.purpose === "inbound" ? REPLY[m.outcome.replace("?", "")] : TEXT_OUT[m.outcome]) || [m.outcome, ""];
+    if (m.outcome === "sent" && Date.now() - new Date(m.ts) > 5 * 60_000) label = "Sent (no delivery report)";
     return `<tr><td title="${esc(fmtTime(m.ts))}">${esc(relTime(m.ts))}</td><td>${esc(m.who || m.to)}${m.who ? `<div class="muted small-print">${esc(m.to)}</div>` : ""}</td>
       <td>${esc(TEXT_PURPOSE[m.purpose] || m.purpose)}${m.alarm_id ? ` <span class="muted">#${m.alarm_id}</span>` : ""}</td>
-      <td><span class="chip ${cls}">${esc(label === "Not sent: email off" ? "Not sent: texts off" : label)}</span>${m.attempts > 1 ? ` <span class="muted small-print">${m.attempts} tries</span>` : ""}${m.error ? `<div class="muted small-print">${esc(m.error)}</div>` : ""}</td>
+      <td><span class="chip ${cls}">${esc(label)}</span>${m.attempts > 1 ? ` <span class="muted small-print">${m.attempts} tries</span>` : ""}${m.error ? `<div class="muted small-print">${esc(m.error)}</div>` : ""}</td>
       <td>${m.delay_ms != null ? `${(m.delay_ms / 1000).toFixed(1)} s` : ""}</td><td>${esc(m.company)}</td></tr>`;
   }).join("") || '<tr><td colspan="6" class="empty">Nothing sent yet.</td></tr>';
 }

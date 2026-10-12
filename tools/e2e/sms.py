@@ -204,6 +204,23 @@ with sync_playwright() as p:
     m.screenshot(path=f"{out}/sms7-terms.png", full_page=True)
     phone.close()
 
+    # --- 4b. Twilio accepts the MMS, then fails it because it couldn't fetch the picture (production, alarm 1880)
+    twilio_mode("mediafail")
+    pg.goto(f"{PORTAL}/"); pg.wait_for_timeout(1000)
+    n0 = len(texts())
+    alarm_on_screen(pg, "line")
+    t = wait_texts(n0 + 2, timeout=15)
+    check(len(t) == n0 + 2 and t[n0]["media"] and not t[n0 + 1]["media"] and t[n0]["body"] == t[n0 + 1]["body"],
+          "picture failed after acceptance -> the same text resent without the picture")
+    twilio_mode("ok")
+    pg.goto(f"{PORTAL}/platform#sms"); pg.click('#tabs [data-tab="sms"]')
+    pg.wait_for_selector("#sms-log tr:has-text('Delivered')", timeout=8000)
+    log_text = pg.inner_text("#sms-log")
+    check("Failed" in log_text and "63019" in log_text and "resent without the picture" in log_text,
+          "Recent texts shows the failed MMS (63019) and the delivered resend")
+    pg.screenshot(path=f"{out}/sms8-mediafail.png", full_page=True)
+    pg.goto(f"{PORTAL}/"); pg.wait_for_timeout(1500)
+
     # --- 5. Twilio rejects texts: alarms still instant, the failure shows loudly
     twilio_mode("fail")
     ms = alarm_on_screen(pg, "panic")

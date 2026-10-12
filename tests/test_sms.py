@@ -23,6 +23,7 @@ TWILIO = f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages.json"
 def fresh_sms(monkeypatch):
     sms.reset()
     monkeypatch.setattr(sms, "RETRY_DELAYS_S", (0.01, 0.02))
+    monkeypatch.setattr(sms, "WATCH", False)                # the delivery follow-up has its own tests
     yield
     sms.reset()
 
@@ -565,3 +566,56 @@ async def test_only_these_sites(session, client):
     r = await client.post("/api/users", json={"email": "gate@twgsecurity.com", "password": "A-long-password-1!",
                                              "phone": "5705550199", "sms_level": "alarm", "sms_sites": [site.id]})
     assert r.status_code == 200 and r.json()["sms_sites"] == [site.id]
+
+
+
+# ---------------------------------------------------------------- delivery follow-up (production 2026-10-12, alarm 1880)
+@respx.mock
+async def test_a_picture_that_sinks_the_mms_is_resent_without_it(session, monkeypatch):
+    """Twilio accepted an MMS, then failed it (63019: couldn't download the picture): the words go again alone."""
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(sms, "WATCH", True)
+    monkeypatch.setattr(sms, "WATCH_AT_S", (0.05, 0.1))
+    nx_picture(1_760_282_602_000)
+    sids = iter(["SMpic", "SMtext"])
+    twilio = respx.post(TWILIO).mock(side_effect=lambda req: httpx.Response(201, json={"sid": next(sids)}))
+    respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMpic.json").mock(
+        return_value=httpx.Response(200, json={"sid": "SMpic", "status": "failed", "error_code": 63019, "num_media": "1"}))
+    respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMtext.json").mock(
+        return_value=httpx.Response(200, json={"sid": "SMtext", "status": "delivered", "error_code": None}))
+    alarm = await make_alarm(session, site)
+    sms.notify([alarm])
+    await sms.drain()
+    for _ in range(100):
+        if not sms._watchers:
+            break
+        await asyncio.sleep(0.05)
+    first, second = (parse_qs(c.request.content.decode()) for c in twilio.calls)
+    assert "MediaUrl" in first and "MediaUrl" not in second and first["Body"] == second["Body"]
+    rows = (await session.scalars(select(SmsLog).order_by(SmsLog.id))).all()
+    assert [(r.outcome, r.twilio_sid) for r in rows] == [("failed", "SMpic"), ("delivered", "SMtext")]
+    assert "63019" in rows[0].error and "resent without the picture" in rows[1].error
+    row = await session.get(PlatformSettings, 1)
+    await session.refresh(row)
+    assert "not delivered" in row.sms_last_error
+
+
+@respx.mock
+async def test_carrier_refusal_is_recorded(session, monkeypatch):
+    _, site, _ = await world(session)
+    await texts_on(session)
+    monkeypatch.setattr(sms, "WATCH", True)
+    monkeypatch.setattr(sms, "WATCH_AT_S", (0.05,))
+    respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMc"}))
+    respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMc.json").mock(
+        return_value=httpx.Response(200, json={"status": "undelivered", "error_code": 30007}))
+    sms.notify([await make_alarm(session, site)])
+    await sms.drain()
+    for _ in range(100):
+        if not sms._watchers:
+            break
+        await asyncio.sleep(0.05)
+    log = await session.scalar(select(SmsLog))
+    assert log.outcome == "undelivered" and "30007" in log.error and "spam" in log.error
+    assert len(respx.calls) == 2                                   # no resend: there was no picture to blame

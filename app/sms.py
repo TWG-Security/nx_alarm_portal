@@ -273,14 +273,15 @@ async def deliver(cfg: Twilio, to: str, body: str, *, retry: bool = True, media_
 
 
 async def _record(to: str, purpose: str, outcome: str, error: str, attempts: int, sid: str, *, alarm: Alarm | None = None,
-                  user: User | None = None, tenant_id: int | None = None, delay_ms: int | None = None) -> None:
+                  user: User | None = None, tenant_id: int | None = None, delay_ms: int | None = None) -> int | None:
     _, db_slots = _slots()
     try:
         async with db_slots, sessionmaker()() as db:
-            db.add(SmsLog(to=to, purpose=purpose, outcome=outcome, error=error, attempts=attempts, twilio_sid=sid,
-                          delay_ms=delay_ms, alarm_id=alarm.id if alarm else None,
-                          tenant_id=tenant_id if tenant_id is not None else (alarm.tenant_id if alarm else None),
-                          user_id=user.id if user else None))
+            entry = SmsLog(to=to, purpose=purpose, outcome=outcome, error=error, attempts=attempts, twilio_sid=sid,
+                           delay_ms=delay_ms, alarm_id=alarm.id if alarm else None,
+                           tenant_id=tenant_id if tenant_id is not None else (alarm.tenant_id if alarm else None),
+                           user_id=user.id if user else None)
+            db.add(entry)
             row = await db.get(PlatformSettings, 1)
             if row is not None and outcome in ("sent", "failed"):
                 if outcome == "sent":
@@ -288,8 +289,85 @@ async def _record(to: str, purpose: str, outcome: str, error: str, attempts: int
                 else:
                     row.sms_last_error, row.sms_last_error_at = f"{masked(to)}: {error}"[:500], utcnow()
             await db.commit()
+            return entry.id
     except Exception as e:  # noqa: BLE001
         log.error("sms: could not write the send log: %s", e)
+    return None
+
+
+# ---------------------------------------------------------------- did it arrive? (Twilio delivery status)
+# Twilio's 201 only means "accepted". Carriers can still refuse it, and an MMS whose picture Twilio can't
+# download fails as a whole (63019: seen on production 2026-10-12, alarm 1880). So every text is followed
+# up: its status is read back until it's final; a failed text that had a picture is sent again without it.
+WATCH_AT_S = (3, 10, 25, 60, 120, 240)       # seconds after sending
+FINAL = {"delivered", "undelivered", "failed", "read", "canceled"}
+TWILIO_ERRORS = {
+    "63019": "Twilio couldn't download the picture", "12300": "the picture's file type was refused",
+    "11200": "the picture couldn't be fetched", "30019": "the picture is too big for the carrier",
+    "30003": "the phone is off or unreachable", "30004": "the number blocks messages", "30005": "unknown or inactive number",
+    "30006": "landline or a carrier that can't take texts", "30007": "blocked by the carrier as spam",
+    "30008": "unknown carrier error", "30032": "the toll-free number isn't verified yet",
+    "30034": "the number isn't registered for texting (A2P 10DLC)", "21610": "they replied STOP",
+}
+_watchers: set[asyncio.Task] = set()
+WATCH = True                                  # tests switch the follow-up off unless they test it
+
+
+def explain(code) -> str:
+    code = str(code or "")
+    return f"Twilio {code}: {TWILIO_ERRORS.get(code, 'see the Twilio console')}" if code else "no reason given"
+
+
+async def _status(cfg: Twilio, message_sid: str) -> dict:
+    base = get_settings().twilio_api_base.rstrip("/")
+    async with httpx.AsyncClient(timeout=TIMEOUT_S) as client:
+        r = await client.get(f"{base}/2010-04-01/Accounts/{cfg.sid}/Messages/{message_sid}.json", auth=(cfg.sid, cfg.token))
+    return r.json() if r.status_code == 200 else {}
+
+
+async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str) -> None:
+    if log_id is None:
+        return
+    _, db_slots = _slots()
+    async with db_slots, sessionmaker()() as db:
+        entry = await db.get(SmsLog, log_id)
+        if entry is not None:
+            entry.outcome = outcome
+            entry.error = (f"{entry.error}; {error}" if entry.error and error else error or entry.error)[:500]
+        if outcome in ("failed", "undelivered"):
+            row = await db.get(PlatformSettings, 1)
+            if row is not None:
+                row.sms_last_error, row.sms_last_error_at = f"{masked(to)}: not delivered, {error}"[:500], utcnow()
+        await db.commit()
+
+
+async def _watch(cfg: Twilio, log_id: int | None, message_sid: str, user: User, body: str, purpose: str,
+                 alarm: Alarm | None, media_url: str) -> None:
+    waited = 0.0
+    for at in WATCH_AT_S:
+        await asyncio.sleep(at - waited)
+        waited = at
+        try:
+            m = await _status(cfg, message_sid)
+        except httpx.HTTPError:
+            continue
+        status = m.get("status") or ""
+        if status not in FINAL:
+            continue
+        if status in ("delivered", "read"):
+            await _set_outcome(log_id, "delivered", "", user.phone)
+            return
+        why = explain(m.get("error_code"))
+        log.error("sms %s for alarm %s to %s: %s (%s)", purpose, alarm.id if alarm else "-", masked(user.phone), status, why)
+        await _set_outcome(log_id, status if status in ("failed", "undelivered") else "failed", why, user.phone)
+        if str(m.get("error_code")) == "21610":
+            await _mark_stopped(user.phone)
+        elif media_url:
+            # The picture sank the whole message: send the words alone, now.
+            log.warning("sms: alarm %s to %s: sending again without the picture", alarm.id if alarm else "-", masked(user.phone))
+            await _send(cfg, user, body, purpose, alarm, time.time(), "", note=f"resent without the picture ({why})")
+        return
+    await _set_outcome(log_id, "sent", "no delivery report from the carrier within 4 min", user.phone)
 
 
 async def _mark_stopped(phone: str) -> None:
@@ -303,15 +381,20 @@ async def _mark_stopped(phone: str) -> None:
 
 
 async def _send(cfg: Twilio, user: User, body: str, purpose: str, alarm: Alarm | None, arrived: float,
-                media_url: str = "") -> None:
+                media_url: str = "", note: str = "") -> None:
     outcome, error, sid, attempts = await deliver(cfg, user.phone, body, media_url=media_url)
+    if "without the picture" in error:
+        media_url = ""                       # deliver() already dropped it
+    error = "; ".join(x for x in (note, error) if x)
     if "Twilio 21610" in error:
         await _mark_stopped(user.phone)
     delay_ms = int((time.time() - arrived) * 1000)
     (log.info if outcome == "sent" else log.error)("sms %s for alarm %s to %s: %s after %d ms%s", purpose, alarm.id if alarm else "-",
                                                    masked(user.phone), outcome, delay_ms, f" ({error})" if error else "")
-    await _record(user.phone, purpose, outcome, error, attempts, sid, alarm=alarm, user=user, tenant_id=user.tenant_id,
-                  delay_ms=delay_ms if outcome == "sent" and alarm is not None else None)
+    log_id = await _record(user.phone, purpose, outcome, error, attempts, sid, alarm=alarm, user=user, tenant_id=user.tenant_id,
+                           delay_ms=delay_ms if outcome == "sent" and alarm is not None else None)
+    if outcome == "sent" and sid and WATCH:
+        _spawn(_watch(cfg, log_id, sid, user, body, purpose, alarm, media_url), _watchers, limit_s=WATCH_AT_S[-1] + TASK_MAX_S)
 
 
 async def send_test(to: str, by: str, *, user: User | None = None) -> tuple[str, str]:
@@ -319,7 +402,11 @@ async def send_test(to: str, by: str, *, user: User | None = None) -> tuple[str,
     if cfg is None:
         return "disabled", "Text messages are switched off or not set up yet."
     outcome, error, sid, attempts = await deliver(cfg, to, test_text(by), retry=False)
-    await _record(to, "test", outcome, error, attempts, sid, user=user, tenant_id=user.tenant_id if user else None)
+    log_id = await _record(to, "test", outcome, error, attempts, sid, user=user, tenant_id=user.tenant_id if user else None)
+    if outcome == "sent" and sid and WATCH:
+        from types import SimpleNamespace
+        _spawn(_watch(cfg, log_id, sid, user or SimpleNamespace(phone=to), "", "test", None, ""), _watchers,
+               limit_s=WATCH_AT_S[-1] + TASK_MAX_S)
     return outcome, error
 
 
@@ -467,7 +554,7 @@ def status() -> dict:
     """For the Platform page: texts being prepared or sent now, and summaries waiting for the window."""
     now = time.monotonic()
     ages = [now - _started[t] for t in _tasks if t in _started]
-    return {"in_flight": len(_tasks), "summaries_waiting": len(_flushers),
+    return {"in_flight": len(_tasks), "summaries_waiting": len(_flushers), "checking_delivery": len(_watchers),
             "oldest_s": round(max(ages), 1) if ages else 0, "max_s": TASK_MAX_S}
 
 
@@ -475,7 +562,7 @@ async def shutdown(grace_s: float = 2.0) -> None:
     """App shutdown: let texts in flight finish for grace_s, then cancel the rest (a restart never hangs on them)."""
     if _tasks:
         await asyncio.wait(list(_tasks), timeout=grace_s)
-    pending = [t for t in [*_tasks, *_flushers] if not t.done()]
+    pending = [t for t in [*_tasks, *_flushers, *_watchers] if not t.done()]
     for t in pending:
         t.cancel()
     if pending:
@@ -639,10 +726,11 @@ async def drain() -> None:
 def reset() -> None:
     """Tests: forget flood-control state and per-loop semaphores."""
     global _send_slots, _db_slots
-    for t in [*_tasks, *_flushers]:
+    for t in [*_tasks, *_flushers, *_watchers]:
         t.cancel()
     _tasks.clear()
     _flushers.clear()
+    _watchers.clear()
     _started.clear()
     _sent.clear()
     _held.clear()

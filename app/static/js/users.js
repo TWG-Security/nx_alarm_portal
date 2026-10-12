@@ -36,7 +36,8 @@ document.addEventListener("click", (e) => {
 // ---------------------------------------------------------------- alarm texts
 const fmtPhone = (p) => (/^\+1\d{10}$/.test(p || "") ? `(${p.slice(2, 5)}) ${p.slice(5, 8)}-${p.slice(8)}` : p || "");
 const LEVEL = { off: "No texts", critical: "Critical only", alarm: "Critical + Alarm" };
-const TEXTED = { sent: ["text sent", ""], failed: ["text FAILED", "text-failed"], disabled: ["texts are off", ""] };
+const TEXTED = { sent: ["text sent", ""], delivered: ["text delivered", ""], failed: ["text FAILED", "text-failed"],
+  undelivered: ["text NOT DELIVERED", "text-failed"], disabled: ["texts are off", ""] };
 const CONSENT = {
   none: ["Not asked yet", ""], pending: ["Waiting for YES", "disarmed"], yes: ["Opted in", "online"], stopped: ["Replied STOP", "offline"],
 };
@@ -50,7 +51,7 @@ function lastText(u) {
   const t = u.last_text;
   if (!t) return "";
   const [word, cls] = TEXTED[t.outcome] || [t.outcome, ""];
-  return `<span class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : t.purpose === "optin" ? "opt-in " : ""}${esc(word)} ${esc(relTime(t.ts))}</span>`;
+  return `<span class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : t.purpose === "optin" ? "opt-in " : ""}${esc(word)} ${esc(relTime(t.ts))}${cls && t.error ? `: ${esc(t.error.slice(0, 90))}` : ""}</span>`;
 }
 // ---------------------------------------------------------------- which sites text them
 let sites = [];
@@ -81,7 +82,7 @@ function textSummary(u) {
     <div class="chips"><span class="chip">${LEVEL[u.sms_level] || u.sms_level}</span>
       ${u.sms_level === "off" ? "" : `<span class="chip" title="${esc(u.sms_sites == null ? "Every site, including ones added later" : u.sms_sites.map(siteName).join(", "))}">${esc(sitesLabel(u))}</span>`}
       <span class="chip ${cCls}" title="${esc(consentNote(u))}">${cWord}</span></div>
-    ${u.last_text?.outcome === "failed" ? lastText(u) : ""}`;
+    ${["failed", "undelivered"].includes(u.last_text?.outcome) ? lastText(u) : ""}`;
 }
 
 function render() {

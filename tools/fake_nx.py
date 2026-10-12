@@ -12,7 +12,8 @@ NX secondary streams) tagged with NX's startTimeMs comment; set FAKE_NX_FFMPEG i
 Injected events are also pushed to JSON-RPC subscribers (wss /jsonrpc), like NX 6.1.
 Every injected event also gets an analytics object track with a box that moves across the frame.
 Also a fake Twilio (dev_up.sh points TWILIO_API_BASE here): texts land in GET /_twilio;
-POST /_twilio/mode/{ok|fail|hang} makes it accept, reject (400, code 30034) or hang for 30 s.
+POST /_twilio/mode/{ok|fail|hang|mediafail} makes it accept, reject (400, code 30034), hang for 30 s, or accept
+an MMS and then report it failed (63019, picture not downloadable) on GET .../Messages/{sid}.json.
 """
 import json, os, subprocess, tempfile, time, uuid
 import asyncio
@@ -149,7 +150,7 @@ async def inject(kind: str):
 
 
 # ---------------------------------------------------------------- fake Twilio (alarm texts)
-TEXTS, TWILIO_MODE = [], {"mode": "ok"}
+TEXTS, TWILIO_MODE, STATUS = [], {"mode": "ok"}, {}
 
 @app.post("/2010-04-01/Accounts/{sid}/Messages.json")
 async def twilio_send(sid: str, request: Request):
@@ -161,7 +162,15 @@ async def twilio_send(sid: str, request: Request):
     TEXTS.append({"to": form.get("To"), "from": form.get("From") or form.get("MessagingServiceSid"), "body": form.get("Body"),
                   "media": form.get("MediaUrl") or "",
                   "at_ms": int(time.time() * 1000)})
-    return JSONResponse({"sid": "SM" + uuid.uuid4().hex, "status": "queued"}, status_code=201)
+    sid = "SM" + uuid.uuid4().hex
+    TEXTS[-1]["sid"] = sid
+    STATUS[sid] = ({"status": "failed", "error_code": 63019} if TWILIO_MODE["mode"] == "mediafail" and form.get("MediaUrl")
+                   else {"status": "delivered", "error_code": None})
+    return JSONResponse({"sid": sid, "status": "queued"}, status_code=201)
+
+@app.get("/2010-04-01/Accounts/{acct}/Messages/{sid}.json")
+async def twilio_status(acct: str, sid: str):
+    return {"sid": sid, **STATUS.get(sid, {"status": "sent", "error_code": None})}
 
 @app.get("/_twilio")
 async def twilio_texts(): return TEXTS
