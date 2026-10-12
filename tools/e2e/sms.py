@@ -98,30 +98,54 @@ with sync_playwright() as p:
           "text limit shows 10 and the Sessions tab's 'always sign out after' stays 0")
     pg.screenshot(path=f"{out}/sms1-platform.png", full_page=True)
 
-    # --- 2. Users page: mobile number, level, Test
+    # --- 2. Users page: compact table, Edit dialog (mobile number, level, opt-in, Test), Add user dialog
+    no_sideways = """() => document.documentElement.scrollWidth <= innerWidth
+        && [...document.querySelectorAll('.table-wrap')].every((w) => w.scrollWidth <= w.clientWidth + 1)"""
     pg.goto(f"{PORTAL}/users")
-    pg.wait_for_selector("[data-phone]")
-    pg.fill("[data-phone]", "(570) 555-0101")
-    pg.press("[data-phone]", "Tab")
-    pg.wait_for_function("document.querySelector('[data-sms]') && !document.querySelector('[data-sms]').disabled", timeout=5000)
-    check(pg.input_value("[data-phone]") == "(570) 555-0101" and pg.input_value("[data-sms]") == "alarm",
-          "adding a number saves it with Critical + Alarm")
-    pg.wait_for_selector(".chip:has-text('Waiting for YES')", timeout=5000)
+    pg.wait_for_selector("[data-edit]")
+    check(pg.evaluate(no_sideways), "Users table fits without sideways scrolling at 1500 px")
+    pg.click("[data-edit]")
+    pg.wait_for_selector("#edit-dialog[open]")
+    pg.fill("#ed-phone", "(570) 555-0101")
+    pg.click("#edit-form button[type=submit]")
+    pg.wait_for_selector("#edit-dialog[open]", state="detached", timeout=5000)
+    pg.wait_for_selector(".users-table .chip:has-text('Waiting for YES')", timeout=5000)
+    check("Critical + Alarm" in pg.inner_text(".users-table"), "Edit: adding a number saves it with Critical + Alarm")
     ask = wait_texts(2)[-1]
     check(ask["to"] == "+15705550101" and "Reply YES to sign up" in ask["body"] and "STOP to opt out at any time" in ask["body"]
           and "/sms-terms" in ask["body"], "adding a number texts the opt-in request (YES, STOP, terms)")
-    check(pg.locator("[data-test-text]").count() == 0, "no Test button until they reply YES")
-    pg.screenshot(path=f"{out}/sms2a-waiting.png")
+    pg.click("[data-edit]"); pg.wait_for_selector("#edit-dialog[open]")
+    check(pg.locator("#edit-dialog [data-test-text]").count() == 0 and pg.locator("#edit-dialog [data-opt-in]").count() == 1,
+          "Edit dialog: Resend opt-in, no Test until they reply YES")
+    pg.screenshot(path=f"{out}/sms2a-edit-waiting.png")
+    pg.click("#ed-cancel")
     check(twilio_reply("+15705550101", "Yes") == 200, "Twilio-signed YES reply accepted")
     confirm = wait_texts(3)[-1]
     check("you're signed up" in confirm["body"], "YES gets the signed-up confirmation")
-    pg.reload(); pg.wait_for_selector(".chip:has-text('Opted in')", timeout=5000)
+    pg.reload(); pg.wait_for_selector(".users-table .chip:has-text('Opted in')", timeout=5000)
     check(True, "Users page shows Opted in")
-    pg.click("[data-test-text]")
+    pg.click("[data-edit]"); pg.wait_for_selector("#edit-dialog[open]")
+    pg.click("#edit-dialog [data-test-text]")
     pg.wait_for_selector(".toast:has-text('Test text sent')", timeout=8000)
-    pg.wait_for_selector("td .small-print:has-text('test text sent')", timeout=5000)
-    check(wait_texts(4)[-1]["to"] == "+15705550101", "Users page Test texts that person")
+    pg.wait_for_selector("#edit-dialog .small-print:has-text('test text sent')", timeout=5000)
+    check(wait_texts(4)[-1]["to"] == "+15705550101", "Edit dialog: Send a test text texts that person")
+    pg.screenshot(path=f"{out}/sms2b-edit-optedin.png")
+    pg.click("#ed-cancel")
+    # Add user dialog: invite with a mobile number -> setup link shown, opt-in text sent
+    pg.click("#add-user"); pg.wait_for_selector("#add-dialog[open]")
+    pg.fill("#u-email", "nightshift@twgsecurity.com"); pg.fill("#u-name", "Night Shift"); pg.fill("#u-phone", "570 555 0102")
+    pg.screenshot(path=f"{out}/sms2c-add.png")
+    pg.click("#u-submit")
+    pg.wait_for_selector("#u-link .alert", timeout=8000)
+    check(pg.locator("#add-dialog[open]").count() == 1 and "Setup link" in pg.inner_text("#u-link"), "Add user: dialog shows the setup link")
+    pg.click("#u-cancel")
+    check(wait_texts(5)[-1]["to"] == "+15705550102", "Add user with a number texts them the opt-in request")
+    pg.wait_for_selector(".users-table td:has-text('Night Shift')", timeout=5000)
+    check(pg.evaluate(no_sideways), "still no sideways scrolling with two users")
     pg.screenshot(path=f"{out}/sms2-users.png")
+    pg.set_viewport_size({"width": 1280, "height": 800})
+    check(pg.evaluate(no_sideways), "no sideways scrolling at 1280 px")
+    pg.set_viewport_size({"width": 1500, "height": 950})
 
     # --- 3. An alarm → a text with a link; alarm timing unaffected
     pg.goto(f"{PORTAL}/")

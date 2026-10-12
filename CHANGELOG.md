@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Users page tidied:** a compact table (name and email together, role, status, alarm-text summary with opt-in state, two-step, last sign-in) with one **Edit** button per person; no more sideways scrolling. **Edit** opens a dialog with name, role, mobile number, which alarms text them, opt-in state with Send opt-in / Send a test text, and the account actions (Disable/Enable, Reset password or New invite link, Sign-in security). **+ Add user** opens the add form in a dialog (it stays open to show the setup link).
+
 ### Added
 - **Text-message consent, readable texts, alarm pictures** (migration 0014):
   - **Opt in by replying YES:** adding a mobile number (Users page) sends one text: "… Reply YES to sign up. Msg frequency varies. Msg & data rates may apply. Reply HELP for help, STOP to opt out at any time. Terms: …/sms-terms". **No alarm texts until they reply YES.** Users page shows *Not asked yet / Waiting for YES / Opted in / Replied STOP*, with **Send opt-in** (or **Resend**); **Test** only once opted in. A changed number is asked again.

@@ -19,6 +19,8 @@ function inviteNote(u) {
   const m = u.invite_email;
   return m ? `<div class="muted small-print" title="${esc(m.error || "")}">${esc(MAILED[m.outcome] || m.outcome)} ${esc(relTime(m.ts))}</div>` : "";
 }
+const statusChip = (u) => (!u.is_active ? '<span class="chip">Disabled</span>'
+  : u.invited ? '<span class="chip disarmed">Invited</span>' : '<span class="chip online">Active</span>');
 
 // The setup link, shown once so the admin can pass it on (also when email is off or failed).
 export function linkBox(r) {
@@ -33,90 +35,147 @@ document.addEventListener("click", (e) => {
 
 // ---------------------------------------------------------------- alarm texts
 const fmtPhone = (p) => (/^\+1\d{10}$/.test(p || "") ? `(${p.slice(2, 5)}) ${p.slice(5, 8)}-${p.slice(8)}` : p || "");
+const LEVEL = { off: "No texts", critical: "Critical only", alarm: "Critical + Alarm" };
 const TEXTED = { sent: ["text sent", ""], failed: ["text FAILED", "text-failed"], disabled: ["texts are off", ""] };
 const CONSENT = {
   none: ["Not asked yet", ""], pending: ["Waiting for YES", "disarmed"], yes: ["Opted in", "online"], stopped: ["Replied STOP", "offline"],
 };
-function textCell(u) {
-  const t = u.last_text, [word, cls] = t ? TEXTED[t.outcome] || [t.outcome, ""] : [];
+function consentNote(u) {
+  return u.sms_consent === "pending" ? `Opt-in request sent ${relTime(u.sms_optin_sent_at)}. Alarm texts start when they reply YES.`
+    : u.sms_consent === "yes" ? `Replied YES ${relTime(u.sms_consent_at)}.` : u.sms_consent === "stopped"
+    ? "They replied STOP. They can text START or YES to the portal's number to sign up again."
+    : "No texts until they reply YES to an opt-in request.";
+}
+function lastText(u) {
+  const t = u.last_text;
+  if (!t) return "";
+  const [word, cls] = TEXTED[t.outcome] || [t.outcome, ""];
+  return `<span class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : t.purpose === "optin" ? "opt-in " : ""}${esc(word)} ${esc(relTime(t.ts))}</span>`;
+}
+// Table cell: number, then what they get and whether they've opted in. Editing happens in the Edit dialog.
+function textSummary(u) {
+  if (!u.phone) return '<span class="muted">No number</span>';
   const [cWord, cCls] = CONSENT[u.sms_consent] || CONSENT.none;
-  const cTitle = u.sms_consent === "pending" ? `Opt-in request sent ${relTime(u.sms_optin_sent_at)}. Alarm texts start when they reply YES.`
-    : u.sms_consent === "yes" ? `Replied YES ${relTime(u.sms_consent_at)}` : u.sms_consent === "stopped"
-    ? "They replied STOP. They can text START or YES to the portal's number to sign up again." : "No texts until they reply YES to an opt-in request.";
-  const btn = !u.phone ? "" : u.sms_consent === "yes"
-    ? `<button class="btn btn-sm" type="button" data-test-text="${u.id}" title="Text them a test message">Test</button>`
-    : u.sms_consent === "stopped" ? "" : `<button class="btn btn-sm" type="button" data-opt-in="${u.id}" title="Text them: reply YES to get alarm texts">${u.sms_consent === "pending" ? "Resend opt-in" : "Send opt-in"}</button>`;
-  return `<div class="text-cell"><input type="tel" data-phone="${u.id}" value="${esc(fmtPhone(u.phone))}" placeholder="Mobile number" maxlength="30" aria-label="Mobile number">
-    <select data-sms="${u.id}" aria-label="Which alarms text them" ${u.phone ? "" : "disabled"}>
-      ${[["off", "No texts"], ["critical", "Critical only"], ["alarm", "Critical + Alarm"]].map(([v, l]) => `<option value="${v}" ${u.sms_level === v ? "selected" : ""}>${l}</option>`).join("")}</select>
-    ${btn}</div>
-    ${u.phone ? `<span class="chip ${cCls}" title="${esc(cTitle)}">${cWord}</span>` : ""}
-    ${t ? `<span class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : t.purpose === "optin" ? "opt-in " : ""}${esc(word)} ${esc(relTime(t.ts))}${t.error ? `: ${esc(t.error.slice(0, 80))}` : ""}</span>` : ""}`;
+  return `<div class="nowrap">${esc(fmtPhone(u.phone))}</div>
+    <div class="chips"><span class="chip">${LEVEL[u.sms_level] || u.sms_level}</span>
+      <span class="chip ${cCls}" title="${esc(consentNote(u))}">${cWord}</span></div>
+    ${u.last_text?.outcome === "failed" ? lastText(u) : ""}`;
 }
 
 function render() {
   tbody.innerHTML = users.map((u) => `<tr>
-    <td>${esc(u.email)}</td><td>${esc(u.display_name)}</td>
-    <td><select data-role="${u.id}" aria-label="Role"><option value="operator" ${u.role === "operator" ? "selected" : ""}>Operator</option><option value="admin" ${u.role === "admin" ? "selected" : ""}>Admin</option></select></td>
-    <td>${!u.is_active ? '<span class="chip">Disabled</span>' : u.invited ? `<span class="chip disarmed">Invited</span>${inviteNote(u)}` : '<span class="chip online">Active</span>'}</td>
-    <td>${textCell(u)}</td>
+    <td><b>${esc(u.display_name || u.email)}</b>${u.display_name ? `<div class="muted small-print">${esc(u.email)}</div>` : ""}</td>
+    <td>${u.role === "admin" ? "Admin" : "Operator"}</td>
+    <td>${statusChip(u)}${u.invited ? inviteNote(u) : ""}</td>
+    <td>${textSummary(u)}</td>
     <td>${twoStep(u)}</td>
-    <td>${relTime(u.last_login_at)}${u.sessions ? `<div class="muted small-print">${u.sessions} browser${u.sessions === 1 ? "" : "s"} signed in</div>` : ""}</td>
-    <td style="white-space:nowrap"><button class="btn btn-sm" data-toggle="${u.id}">${u.is_active ? "Disable" : "Enable"}</button>
-      ${u.invited ? `<button class="btn btn-sm" data-invite="${u.id}">New invite link</button>` : `<button class="btn btn-sm" data-reset="${u.id}">Reset password</button>`}
-      <button class="btn btn-sm" data-security="${u.id}">Sign-in security</button></td></tr>`).join("")
-    || '<tr><td colspan="8" class="empty">No users.</td></tr>';
+    <td class="nowrap">${relTime(u.last_login_at)}${u.sessions ? `<div class="muted small-print">${u.sessions} browser${u.sessions === 1 ? "" : "s"}</div>` : ""}</td>
+    <td class="actions"><button class="btn btn-sm" type="button" data-edit="${u.id}">Edit</button></td></tr>`).join("")
+    || '<tr><td colspan="7" class="empty">No users.</td></tr>';
 }
 
 async function load() {
   users = await api("/api/users");
   render();
   if (groupData.groups.length) renderGroups();
+  if (edDlg.open && edUser) { edUser = users.find((u) => u.id === edUser.id) || edUser; paintEditExtras(); }
 }
 
-async function update(id, body) {
-  try { await api(`/api/users/${id}`, { method: "PUT", body }); toast("Saved"); }
-  catch (e) { toast(esc(e.message), { kind: "error" }); }
-  await load();
-}
-
-tbody.addEventListener("change", (e) => {
-  const d = e.target.dataset;
-  if (d.role) update(d.role, { role: e.target.value });
-  if (d.sms) update(d.sms, { sms_level: e.target.value });
-  if (d.phone) {
-    const u = users.find((x) => x.id === Number(d.phone)), phone = e.target.value.trim();
-    // A first number defaults to Critical + Alarm and gets the opt-in request; clearing it stops texts.
-    update(d.phone, !u.phone && phone && u.sms_level === "off" ? { phone, sms_level: "alarm" } : { phone });
-  }
-});
 tbody.addEventListener("click", (e) => {
-  const d = e.target.dataset;
-  if (d.toggle) update(d.toggle, { is_active: !users.find((u) => u.id === Number(d.toggle)).is_active });
-  if (d.reset) {
+  const id = Number(e.target.dataset.edit);
+  if (id) openEdit(users.find((u) => u.id === id));
+});
+
+// ---------------------------------------------------------------- Edit user (dialog)
+const edDlg = $("edit-dialog");
+let edUser = null;
+$("ed-cancel").addEventListener("click", () => edDlg.close());
+
+function openEdit(u) {
+  edUser = u;
+  $("ed-title").textContent = u.display_name || u.email;
+  $("ed-email").textContent = u.email;
+  $("ed-name").value = u.display_name; $("ed-role").value = u.role;
+  $("ed-phone").value = fmtPhone(u.phone); $("ed-sms").value = u.sms_level;
+  $("ed-link").innerHTML = "";
+  paintEditExtras();
+  if (!edDlg.open) edDlg.showModal();
+}
+
+// The parts that change without Save: opt-in state and the account buttons.
+function paintEditExtras() {
+  const u = edUser;
+  const [cWord, cCls] = CONSENT[u.sms_consent] || CONSENT.none;
+  const btn = !u.phone ? "" : u.sms_consent === "yes"
+    ? `<button class="btn btn-sm" type="button" data-test-text="${u.id}">Send a test text</button>`
+    : u.sms_consent === "stopped" ? "" : `<button class="btn btn-sm" type="button" data-opt-in="${u.id}">${u.sms_consent === "pending" ? "Resend opt-in" : "Send opt-in"}</button>`;
+  $("ed-texts").innerHTML = u.phone ? `<div class="ed-line"><span class="chip ${cCls}">${cWord}</span><span class="muted small-print">${esc(consentNote(u))}</span></div>
+    <div class="ed-line">${btn}${lastText(u)}</div>` : '<p class="muted small-print">Add a mobile number to text them alarms. They get one text asking them to reply YES.</p>';
+  $("ed-account").innerHTML = `<div class="ed-line">${statusChip(u)}${u.invited ? inviteNote(u) : ""}
+      <span class="muted small-print">Last sign-in ${esc(relTime(u.last_login_at))}${u.sessions ? `, ${u.sessions} browser${u.sessions === 1 ? "" : "s"} signed in` : ""}</span></div>
+    <div class="ed-line">
+      <button class="btn btn-sm" type="button" data-toggle="${u.id}">${u.is_active ? "Disable" : "Enable"}</button>
+      ${u.invited ? `<button class="btn btn-sm" type="button" data-invite="${u.id}">New invite link</button>` : `<button class="btn btn-sm" type="button" data-reset="${u.id}">Reset password</button>`}
+      <button class="btn btn-sm" type="button" data-security="${u.id}">Sign-in security…</button></div>`;
+}
+
+async function act(promise, ok) {
+  try { const r = await promise; if (ok) toast(ok); return r; }
+  catch (err) { toast(esc(err.message), { kind: "error", timeout: 12000 }); }
+  finally { await load().catch(() => {}); }
+}
+
+$("edit-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const u = edUser, body = {};
+  const phone = $("ed-phone").value.trim(), level = $("ed-sms").value;
+  if ($("ed-name").value.trim() !== u.display_name) body.display_name = $("ed-name").value.trim();
+  if ($("ed-role").value !== u.role) body.role = $("ed-role").value;
+  if (phone !== fmtPhone(u.phone)) body.phone = phone;
+  // A first number with "No texts" picked defaults to Critical + Alarm (that's why it was added).
+  const lvl = !u.phone && phone && level === "off" ? "alarm" : level;
+  if (lvl !== u.sms_level) body.sms_level = lvl;
+  if (!Object.keys(body).length) { edDlg.close(); return; }
+  try {
+    const r = await api(`/api/users/${u.id}`, { method: "PUT", body });
+    toast(r.sms_consent === "pending" && u.sms_consent !== "pending" ? "Saved. Opt-in text sent: alarm texts start when they reply YES." : "Saved");
+    edDlg.close();
+  } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }
+  await load();
+});
+
+$("edit-dialog").addEventListener("click", async (e) => {
+  const d = e.target.dataset, u = edUser;
+  if (!u || !(d.toggle || d.reset || d.invite || d.security || d.optIn || d.testText)) return;
+  if (d.toggle) {
+    if (u.is_active && !confirm(`Disable ${u.email}? They're signed out and get no more alarm texts.`)) return;
+    await act(api(`/api/users/${u.id}`, { method: "PUT", body: { is_active: !u.is_active } }), u.is_active ? "Disabled" : "Enabled");
+  } else if (d.reset) {
     const pw = prompt("New password. It must be at least 12 characters with upper and lower case, a number and a symbol. Their browsers are signed out.");
-    if (pw) update(d.reset, { password: pw });
-  }
-  if (d.invite) {
-    api(`/api/users/${d.invite}/invite`, { method: "POST" }).then((r) => {
-      $("u-link").innerHTML = linkBox(r); $("u-link").scrollIntoView({ behavior: "smooth" }); load();
-      if (r.email === "sending") setTimeout(() => load().catch(() => {}), 4000);
-    }).catch((err) => toast(esc(err.message), { kind: "error" }));
-  }
-  if (d.security) openSecurity(users.find((u) => u.id === Number(d.security)));
-  if (d.optIn) {
+    if (pw) await act(api(`/api/users/${u.id}`, { method: "PUT", body: { password: pw } }), "Password reset");
+  } else if (d.invite) {
+    const r = await act(api(`/api/users/${u.id}/invite`, { method: "POST" }));
+    if (r) { $("ed-link").innerHTML = linkBox(r); if (r.email === "sending") setTimeout(() => load().catch(() => {}), 4000); }
+  } else if (d.security) {
+    edDlg.close(); openSecurity(u);
+  } else if (d.optIn) {
     e.target.disabled = true;
-    api(`/api/users/${d.optIn}/opt-in`, { method: "POST" }).then(() => toast("Opt-in request sent. Alarm texts start when they reply YES."))
-      .catch((err) => toast(esc(err.message), { kind: "error", timeout: 12000 })).finally(() => setTimeout(() => load(), 1500));
-  }
-  if (d.testText) {
+    await act(api(`/api/users/${u.id}/opt-in`, { method: "POST" }), "Opt-in text sent. Alarm texts start when they reply YES.");
+    setTimeout(() => load().catch(() => {}), 2000);
+  } else if (d.testText) {
     e.target.disabled = true;
-    api(`/api/users/${d.testText}/test-text`, { method: "POST" }).then((r) => {
-      if (r.outcome === "sent") toast("Test text sent"); else toast(esc(r.error || r.outcome), { kind: "error", timeout: 12000 });
-    }).catch((err) => toast(esc(err.message), { kind: "error", timeout: 12000 })).finally(() => load());
+    const r = await act(api(`/api/users/${u.id}/test-text`, { method: "POST" }));
+    if (r) r.outcome === "sent" ? toast("Test text sent") : toast(esc(r.error || r.outcome), { kind: "error", timeout: 12000 });
   }
 });
 
+// ---------------------------------------------------------------- Add user (dialog)
+const addDlg = $("add-dialog");
+$("add-user").addEventListener("click", () => {
+  $("user-form").reset(); $("u-pass-row").hidden = true; $("u-link").innerHTML = ""; $("u-submit").hidden = false;
+  addDlg.showModal(); $("u-email").focus();
+});
+$("u-cancel").addEventListener("click", () => addDlg.close());
 const how = () => document.querySelector('input[name="u-how"]:checked').value;
 document.querySelectorAll('input[name="u-how"]').forEach((r) => r.addEventListener("change", () => {
   $("u-pass-row").hidden = how() !== "password"; $("u-pass").required = how() === "password";
@@ -128,9 +187,9 @@ $("user-form").addEventListener("submit", async (e) => {
     const r = await api("/api/users", { method: "POST", body: { email: $("u-email").value, display_name: $("u-name").value,
       password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value,
       phone: $("u-phone").value, sms_level: $("u-sms").value } });
-    e.target.reset(); $("u-pass-row").hidden = true;
-    if (r.setup_link) $("u-link").innerHTML = linkBox(r);
     toast(r.setup_link ? "User invited" : "User created");
+    if (r.setup_link) { $("u-link").innerHTML = linkBox(r); $("u-submit").hidden = true; }     // keep it open: the admin may copy the link
+    else addDlg.close();
     await load();
     if (r.email === "sending") setTimeout(() => load().catch(() => {}), 4000);     // show whether the email went
   } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }

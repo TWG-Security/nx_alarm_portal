@@ -659,11 +659,17 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
   .link-page .player-controls { flex-wrap: wrap; }
 }
 
-/* ---------- Users page: alarm texts ---------- */
-.text-cell { display: flex; gap: 6px; align-items: center; min-width: 390px; }
-[data-role] { min-width: 112px; }
-.text-cell input[type="tel"] { width: 150px; flex: 0 0 auto; padding: 6px 8px; }
-.text-cell select { width: auto; flex: 0 0 auto; }
+/* ---------- Users page: compact table, Add / Edit dialogs ---------- */
+.users-table td { vertical-align: top; }
+.users-table .nowrap, .users-table .actions { white-space: nowrap; }
+.users-table .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+.users-table .actions { text-align: right; }
+.user-dialog { width: min(600px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; }
+.user-dialog h2 { margin-top: 0; }
+.user-dialog h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 18px 0 8px;
+  padding-top: 12px; border-top: 1px solid var(--border); }
+.user-dialog .ed-line { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+@media (max-width: 560px) { .user-dialog .row { flex-direction: column; gap: 0; } }
 .text-failed { color: var(--red-text); font-weight: 600; }
 .terms-page h1 { font-size: 22px; margin: 0 0 4px; }
 .terms-page h2 { font-size: 16px; margin: 20px 0 6px; color: var(--text); }
