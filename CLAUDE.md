@@ -26,7 +26,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Deploys: no need to ask (the user said so on 2026-10-02), but always say in the reply that you're deploying, and when it's back.** A restart once landed on their test press. Back up first (`tools/backup.sh`), then check health and "live push connected" for every site.
 
 ## Current production state (2026-10-02)
-- **Production runs `feature/base-portal` at `2bdee60`** (camera editor; deployed 2026-10-02 19:59 UTC). **Not yet deployed:** `74bee50` (Dismiss button + alarm delivery under bursts, 2026-10-12; no migration).
+- **Production runs `feature/base-portal` at `74bee50`** (Dismiss button + alarm delivery under bursts; deployed 2026-10-12 12:03 UTC, no migration, health back in 4 s; push connected: site 2 after 1 s, **site 1 after 30 s** (slower than before, likely the relay; polling covered it); backups `20261012-120203Z` before, `20261012-120649Z` after). Before that `2bdee60` (camera editor, 2026-10-02).
   - Tunnel connector `10.0.2.58` is trusted (Platform page / `trust-proxy`); tunnel visitors now show their real IP (verified: 24.245.109.40).
   - Not configured yet: email, Cloudflare, Google sign-in, 2FA requirement, office allowlist.
 - **Companies:** only **TWG Security** exists (id 1, `kind=platform`). **No customer companies have been created yet.**
@@ -36,7 +36,8 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
   - `e2e-probe@twgsecurity.com`: operator, **deactivated**
   Both admins hold every `platform.*` permission.
 - **Arming was verified on production:** a Truss 8 press while site 1 was disarmed arrived in 17 ms and was stored as "disarmed" (alarm 41), with nothing sent to browsers. Both sites are armed, with no schedules.
-- **2026-10-12 alarm state:** 961 open alarms (71 site 1, 890 site 2; site 2 raised 890 in 10 days). The user wanted them cleared for a demo; a bulk SQL ack was blocked by the permission classifier, so the user was given a `!` command, and then asked for the Dismiss button to do it in the UI. Site 1 was **disarmed** that morning. Backup `20261012-112621Z` was taken first.
+- **2026-10-12 demo prep:** the user cleared all 961 open alarms (71 site 1, 890 site 2) with the new bulk **Dismiss**, confirmed "it worked"; **0 open** afterwards. A direct bulk SQL ack had been blocked by the permission classifier (Claude can't mass-update production rows without a permission rule). Site 1 was **disarmed**, site 2 armed. Site 2 is noisy (890 alarms in 10 days).
+- **Two-step sign-in is in use:** by 2026-10-12 there were 10 recovery codes and 1 passkey in production (a user enrolled). Nobody is *required* yet.
 - **Backups:** `tools/backup.sh` runs nightly at **03:15 UTC** (the user's crontab) into `~/backups/nx_alarm_portal/<timestamp>/`, keeping 14. Each run restores the dump into a scratch database to prove it.
   - First verified backup: `20261001-183149Z` (alarms=230, audit_log=510, sites=2, users=3).
   - Log: `~/backups/nx_alarm_portal/backup.log`.
