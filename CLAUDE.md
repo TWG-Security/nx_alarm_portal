@@ -9,7 +9,7 @@ A central alarm-monitoring portal for **TWG Security** (commercial security inte
 sites on **Nx Witness 6.1**). Operators see every site on a map, get alarms from all sites in one live feed,
 watch the incident clip, acknowledge with a note, and every step is audit-logged.
 
-- **Repo:** `github.com/TWG-Security/nx_alarm_portal`. Work happens on branch `feature/base-portal`, and **PR #1** is open against `main` (not merged).
+- **Repo:** `github.com/TWG-Security/nx_alarm_portal`. Work happens on branch `feature/base-portal`; **PR #1 was merged into `main` on 2026-10-12** (`65c7274`). New work: push the branch and open a new PR.
   Push with plain `git push`; the credentials are a classic PAT in `~/.git-credentials` (see Open items).
 - **Server:** Ubuntu 24.04, `10.1.10.97`, 2 vCPU / 4 GB. User `twg` has passwordless sudo and is in the `docker` group.
 - **Live URL:** `https://10.1.10.97`, via Caddy with an internal CA, so browsers show a certificate warning.
@@ -307,7 +307,7 @@ tools/dev_down.sh
    - the user changes the admin password and deletes the temp file
 11. A real certificate for the LAN address (drop `tls internal` in the `Caddyfile`); the tunnel path already has one.
 12. Roadmap: Google Workspace SSO (or via Cloudflare Access), per-company subdomains (declined for now in favour of one address), a claim/escalation workflow and SOPs per site, reports and CSV export, a UI for per-site level overrides (`sites.alarm_types`), and tidying the unused imports in `app/routers/stream.py`.
-13. Merge PR #1 once the user is happy. Pushed up to the latest commit on 2026-10-12.
+13. ~~Merge PR #1~~: **merged into `main` on 2026-10-12** (merge commit `65c7274`, 70 commits). Work still happens on `feature/base-portal`; open a new PR to `main` for later changes.
 15. **Large backlogs** (follow-ups to 2026-10-12): `loadOpenAlarms` fetches at most 500, so with more open the store and badge undercount; the Alarms page loads 100 per "Load more", so a big bulk dismiss needs many clicks (a "Dismiss all matching" server-side action would fix it). Exports still hold a DB connection while waiting up to 90 s for the clip.
 14. **3D site view ("God's Eye View")**: v1 deployed 2026-10-02 (`85b7265`). The user then said the flat free imagery looked bad ("crap 3d map") and asked for the look of gods-eye-view, "where I can add the cameras in". v2 deployed 17:53 UTC (`2aa398e`): HUD, cameras, Google 3D buildings support (waiting on a key).
    - Where: map page → site panel → **3D view** replaces the map pane (feed and site list stay). `static/js/globe.js` (Cesium), wired in `map.js`; HUD markup in `map.html`, styles under "3D site view" in `theme.css`.
