@@ -151,6 +151,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--o
 .btn-verdict-real { background: var(--red); border-color: var(--red); color: #fff; }
 .btn-verdict-real:hover { filter: brightness(1.1); }
 .btn-verdict-false { border-style: dashed; }
+.btn-verdict-dismissed { color: var(--text-muted); }
+.chip.verdict-dismissed { background: transparent; color: var(--text-muted); border: 1px solid var(--text-muted); }
 .ack-as { font-size: 12px; margin-right: auto; }
 .verdict-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
 .verdict-buttons .ack-as { margin-right: 4px; }

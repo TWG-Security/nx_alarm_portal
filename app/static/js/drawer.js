@@ -1,5 +1,5 @@
 // Alarm detail drawer: the recorded clip and live video side by side, details, acknowledge with a
-// verdict (real event / false alarm). Used on every page.
+// verdict (real event / false alarm / dismissed). Used on every page.
 
 import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine } from "./common.js";
 import { mountLive } from "./live.js";
@@ -48,7 +48,7 @@ function render(a) {
       <dt>Type</dt><dd>${esc(a.event_type)}${a.event_subtype ? ` <span class="muted mono">${esc(a.event_subtype)}</span>` : ""}</dd>
       ${a.description ? `<dt>Description</dt><dd style="white-space:pre-wrap">${esc(a.description)}</dd>` : ""}
       <dt>Level</dt><dd>${PRIORITY[a.priority]} <span class="muted">· ${esc(LEVEL_SOURCE[a.level_source] || "event type")}</span></dd>
-      <dt>In NX</dt><dd>${a.nx_ack_required ? "Acknowledging here also clears it in NX" : "A bookmark is added in NX on acknowledge"}</dd>
+      <dt>In NX</dt><dd>${a.nx_ack_required ? "Acknowledging here also clears it in NX" : "A bookmark is added in NX on acknowledge (not when dismissed)"}</dd>
     </dl>
     <div class="ack-box">
       ${disarmed ? `
@@ -68,7 +68,8 @@ function render(a) {
           <textarea id="drawer-note" maxlength="4000" placeholder="What did you see / do?"></textarea></div>
         <div class="verdict-buttons"><span class="muted ack-as">Acknowledge as</span>
           <button class="btn btn-verdict-real" data-ack="real">Real event</button>
-          <button class="btn btn-verdict-false" data-ack="false">False alarm</button></div>`}
+          <button class="btn btn-verdict-false" data-ack="false">False alarm</button>
+          <button class="btn btn-verdict-dismissed" data-ack="dismissed" title="Close it without a verdict or an NX bookmark">Dismiss</button></div>`}
       <div class="notes-box">
         <h3>Notes</h3>
         <ul class="notes-list"></ul>
@@ -215,4 +216,7 @@ document.getElementById("export-form").addEventListener("submit", async (e) => {
 document.addEventListener("keydown", (e) => { if (e.key === "Escape" && current && !document.querySelector("dialog[open]")) closeDrawer(); });
 
 // Someone else acknowledged the alarm we're looking at.
-on("store", ({ alarm } = {}) => { if (current && alarm && alarm.id === current.id && alarm.state !== current.state) { current = alarm; render(alarm); } });
+on("store", ({ alarm, alarms } = {}) => {
+  const a = current && (alarms || (alarm ? [alarm] : [])).findLast((x) => x.id === current.id);
+  if (a && a.state !== current.state) { current = a; render(a); }
+});

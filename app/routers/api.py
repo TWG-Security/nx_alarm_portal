@@ -342,7 +342,7 @@ async def site_op(site_id: int, op: str, request: Request, user: User = Depends(
 
 class AckIn(BaseModel):
     note: str = Field(default="", max_length=4000)
-    verdict: str = Field(default="", pattern="^(|real|false)$")     # optional so pages opened before verdicts still ack
+    verdict: str = Field(default="", pattern="^(|real|false|dismissed)$")     # optional so pages opened before verdicts still ack
 
 
 class NoteIn(BaseModel):
@@ -358,7 +358,7 @@ class NoteIn(BaseModel):
 
 class BulkIn(BaseModel):
     ids: list[int] = Field(min_length=1, max_length=500)
-    verdict: str = Field(pattern="^(real|false)$")
+    verdict: str = Field(pattern="^(real|false|dismissed)$")
     note: str = Field(default="", max_length=4000)
 
 
@@ -368,7 +368,7 @@ async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depe
                       site_id: int | None = None, category: str | None = Query(None, pattern="^(security|system)$"),
                       priority: int | None = Query(None, ge=1, le=3),
                       q: str | None = Query(None, max_length=200),
-                      verdict: str | None = Query(None, pattern="^(real|false|none)$"),
+                      verdict: str | None = Query(None, pattern="^(real|false|dismissed|none)$"),
                       tenant_id: int | None = None,
                       alerting: bool = False,
                       before_id: int | None = None, limit: int = Query(100, ge=1, le=500)):
@@ -401,7 +401,7 @@ async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depe
 @router.post("/alarms/bulk")
 async def bulk_edit(body: BulkIn, request: Request, user: User = Depends(require("alarms.bulk_edit")),
                     scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
-    """Admin override: mark many alarms real/false. Open ones are acknowledged with that verdict
+    """Admin override: mark many alarms real/false/dismissed. Open ones are acknowledged with that verdict
     (and the note); closed ones get their verdict changed. Every change is audit-logged."""
     ids = sorted(set(body.ids))
     ip, n = client_ip(request), len(ids)

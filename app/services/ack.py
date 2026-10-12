@@ -28,12 +28,17 @@ class AlreadyAcknowledged(Exception):
     pass
 
 
-async def write_back(alarm: Alarm, user: User, note: str) -> dict:
+async def write_back(alarm: Alarm, user: User, note: str, bookmark: bool = True) -> dict:
+    """bookmark=False (a dismissal) skips the NX bookmark, but a forced-ack event is still cleared in NX
+    so its notification doesn't stay pending in the NX Desktop client."""
+    forced = bool(alarm.nx_ack_required and alarm.nx_action_id and alarm.nx_action_server_id and alarm.device_id)
+    if not bookmark and not forced:
+        return {"method": "skipped", "ok": True, "reason": "dismissed: no NX bookmark"}
     client = manager.client_for(alarm.site)
     name = f"Alarm ack: {alarm.caption or alarm.event_type}"[:200]
     description = f"Acknowledged in TWG Alarm Portal by {user.label}.\n{note}".strip()
     start = max(0, alarm.event_ts_ms - BOOKMARK_PRE_MS)
-    if alarm.nx_ack_required and alarm.nx_action_id and alarm.nx_action_server_id and alarm.device_id:
+    if forced:
         method = "nx_acknowledge"
         call = client.acknowledge_event(alarm.device_id, alarm.nx_action_id, alarm.nx_action_server_id,
                                         start_time_ms=start, duration_ms=BOOKMARK_DURATION_MS, name=name,
@@ -52,12 +57,13 @@ async def write_back(alarm: Alarm, user: User, note: str) -> dict:
         return {"method": method, "ok": False, "error": str(describe_http_error(exc))}
 
 
-VERDICTS = {"real": "Real event", "false": "False alarm"}
+VERDICTS = {"real": "Real event", "false": "False alarm", "dismissed": "Dismissed"}
 
 
 async def acknowledge(db: AsyncSession, alarm: Alarm, user: User, note: str, ip: str = "", verdict: str = "",
                       bulk: int = 0) -> Alarm:
-    """verdict: "real" | "false" | "" (pages opened before verdicts existed send none)."""
+    """verdict: "real" | "false" | "dismissed" | "" (pages opened before verdicts existed send none).
+    "dismissed" closes the alarm without an NX bookmark (forced-ack events are still cleared in NX)."""
     note = (note or "").strip()[:4000]
     verdict = verdict if verdict in VERDICTS else ""
     # Atomic claim: only one operator can move an alarm out of "new", even if two click at once.
@@ -71,7 +77,7 @@ async def acknowledge(db: AsyncSession, alarm: Alarm, user: User, note: str, ip:
         raise AlreadyAcknowledged()
     await db.commit()
 
-    result = await write_back(alarm, user, note)
+    result = await write_back(alarm, user, note, bookmark=verdict != "dismissed")
     await db.refresh(alarm)
     alarm.nx_ack_result = result
     audit(db, alarm.tenant_id, "alarm.acknowledged", user_id=user.id, site_id=alarm.site_id,

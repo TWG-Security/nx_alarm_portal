@@ -209,6 +209,7 @@ async def alarm_clip(alarm_id: int, scope: Scope = Depends(get_scope), db: Async
                      quality: str = Query("sd", pattern="^(sd|hd)$")):
     """Clip status; poll until status == "ready", then play `url`."""
     alarm = await _clip_alarm(db, scope, alarm_id)
+    await db.commit()               # return the pool connection while the clip builds (up to 1.5 s)
     try:
         info = await clips.get_clip(alarm, pre, post, quality)
     except clips.ClipError as exc:
@@ -264,6 +265,7 @@ async def alarm_objects(alarm_id: int, scope: Scope = Depends(get_scope), db: As
     end = to_ms if to_ms is not None else alarm.event_ts_ms + s.clip_post_s * 1000
     if end <= start or end - start > s.clip_max_window_s * 1000 + 60_000:
         raise HTTPException(400, "Bad time range")
+    await db.commit()               # return the pool connection during the NX calls
     try:
         return await clips.objects(alarm, start, end)
     except Exception as exc:  # noqa: BLE001 — analytics is best-effort; the clip still plays

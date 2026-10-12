@@ -102,7 +102,11 @@ def normalize(pre_s: int | None, post_s: int | None) -> tuple[int, int]:
 
 
 async def _run(*args: str, timeout: float = 180) -> tuple[int, bytes, bytes]:
-    proc = await asyncio.create_subprocess_exec(*args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    # Lowest CPU priority: on this 2-vCPU box a transcode at normal priority starved the app, and a
+    # burst of loud alarms (one clip each) delayed new alarms reaching browsers by 2-3 s. Niced, the
+    # alarm path always runs first and clips just finish a little later.
+    proc = await asyncio.create_subprocess_exec("nice", "-n", "19", *args,
+                                                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
@@ -319,11 +323,13 @@ def schedule_prefetch(alarm: Alarm) -> None:
         final_at = (event_ms + settings.clip_post_s * 1000 + READY_MARGIN_MS) / 1000
         for when in ((event_ms + FIRST_PARTIAL_AFTER_MS) / 1000, final_at):
             await asyncio.sleep(max(0, when - time.time()))
+            # Close the session before building: a build takes seconds, and holding a pool connection
+            # through it let a burst of loud alarms take every connection, so ingest stalled (30 s+).
             async with sessionmaker()() as db:
                 a = await db.get(Alarm, alarm_id)
-                if a is None:
-                    return
-                await get_clip(a, wait_s=600)
+            if a is None:
+                return
+            await get_clip(a, wait_s=600)
 
     t = asyncio.create_task(run())
     _prefetch.add(t)

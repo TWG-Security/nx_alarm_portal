@@ -82,7 +82,9 @@ async def media(d: str, positionMs: int, durationMs: int = 10000):
     start = positionMs - 500                       # NX starts on the keyframe before positionMs
     with tempfile.TemporaryDirectory() as tmp:
         out = f"{tmp}/clip.mp4"
-        subprocess.run([FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=15",
+        # In a thread and niced: the real NX makes clips on its own server, so building them here must
+        # not hold up this fake's event push (or starve the portal under test of CPU).
+        await asyncio.to_thread(subprocess.run, ["nice", "-n", "19", FFMPEG, "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=15",
                         "-t", str((durationMs + 500) / 1000), "-c:v", "mpeg4", "-q:v", "5",
                         "-metadata", "comment=" + json.dumps({"startTimeMs": str(start), "version": 4}), out], check=True)
         return Response(open(out, "rb").read(), media_type="video/mp4")

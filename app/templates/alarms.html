@@ -15,7 +15,7 @@
       <option value="">All levels</option><option value="1">Critical</option><option value="2">Alarm</option><option value="3">Warning</option>
     </select>
     <select id="f-verdict" aria-label="Verdict">
-      <option value="">All verdicts</option><option value="real">Real events</option><option value="false">False alarms</option><option value="none">Not marked</option>
+      <option value="">All verdicts</option><option value="real">Real events</option><option value="false">False alarms</option><option value="dismissed">Dismissed</option><option value="none">Not marked</option>
     </select>
     <input type="search" id="f-q" placeholder="Search caption, camera, description" aria-label="Search">
   </div>
@@ -26,6 +26,7 @@
       <span class="muted">Mark selected as</span>
       <button class="btn btn-sm btn-verdict-real" data-bulk="real" disabled>Real event</button>
       <button class="btn btn-sm btn-verdict-false" data-bulk="false" disabled>False alarm</button>
+      <button class="btn btn-sm btn-verdict-dismissed" data-bulk="dismissed" disabled>Dismiss</button>
       <button class="btn btn-sm" data-bulk="clear" disabled>Clear selection</button>
     </span>
   </div>

@@ -71,6 +71,7 @@ function renderDetail() {
 }
 
 // ---------------------------------------------------------------- right: live feed
+const FEED_MAX = 100;
 function feedRows() {
   return [...openAlarms.values()]
     .filter((a) => inView(a) && (!selectedId || a.site_id === selectedId))
@@ -96,7 +97,10 @@ function renderFeed() {
     ul.innerHTML = `<li class="empty feed-clear"><span class="dot dot--ok"></span> ${all.length ? "Nothing at this level." : "All clear. No open alarms."}</li>`;
     return;
   }
-  ul.innerHTML = rows.map((a) => `
+  // Draw the top FEED_MAX only (criticals first): a 500-card feed took ~2 s of layout per redraw, which
+  // held back the critical pop-up by ~3 s. The tab counts above stay exact.
+  const more = rows.length - FEED_MAX;
+  ul.innerHTML = rows.slice(0, FEED_MAX).map((a) => `
     <li class="feed-item p${a.priority}" data-id="${a.id}" tabindex="0">
       <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
@@ -104,7 +108,7 @@ function renderFeed() {
       <div class="meta">${a.source_name ? `${esc(a.source_name)} · ` : ""}${fmtTime(a.event_ts_ms)}</div>
       <div class="feed-actions"><button class="btn btn-sm btn-primary" data-ack="${a.id}">Acknowledge</button>
         <button class="btn btn-sm" data-detail="${a.id}">Details</button></div>
-    </li>`).join("");
+    </li>`).join("") + (more > 0 ? `<li class="empty feed-more">+${more} more open. <a href="/alarms?state=open">See them all on the Alarms page</a></li>` : "");
 }
 
 // ---------------------------------------------------------------- map

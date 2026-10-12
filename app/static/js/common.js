@@ -71,7 +71,7 @@ export const multiCompany = SCOPE.mode === "all";
 // A small company label, shown wherever several companies can appear at once.
 export const tenantTag = (x) => (multiCompany && x?.tenant_name ? `<span class="chip tenant-chip" title="Company">${esc(x.tenant_name)}</span>` : "");
 // The operator's call on an event (app/services/ack.py VERDICTS).
-export const VERDICT = { real: "Real event", false: "False alarm" };
+export const VERDICT = { real: "Real event", false: "False alarm", dismissed: "Dismissed" };
 export const verdictChip = (a) => a.verdict ? `<span class="chip verdict-${a.verdict}" title="${a.verdict_by ? `Marked by ${esc(a.verdict_by)}` : ""}">${VERDICT[a.verdict]}</span>` : "";
 export const STATUS = { online: "Online", offline: "Offline", auth_error: "Login failed", pending: "Pending" };
 
@@ -98,6 +98,7 @@ let storeLoaded = false;
 const CATCH_UP_MS = 15 * 60 * 1000;   // alarms newer than this found by a resync are raised like live ones
 export async function loadOpenAlarms() {
   const rows = await api("/api/alarms?state=open&limit=500&alerting=1");
+  flushChanges();
   const known = new Set(openAlarms.keys());
   openAlarms.clear();
   rows.forEach((a) => openAlarms.set(a.id, a));
@@ -127,6 +128,24 @@ export function mineCounts() {
 export function applyAlarm(a) {
   if (a.state === "new") openAlarms.set(a.id, a); else openAlarms.delete(a.id);
   emit("store", { reason: "change", alarm: a });
+}
+
+// Acks and updates from the live stream are applied to the store at once (so sound stops on time) but
+// redrawn at most every 100 ms: a bulk acknowledgement sends hundreds of them, and redrawing the whole feed
+// for each one froze the page for many seconds, holding back a new alarm queued behind them.
+// A new alarm flushes first and is never batched. Listeners get { alarm } for one, { alarms } for several.
+let pendingChanges = [], changeTimer = null;
+function queueChange(a) {
+  if (a.state === "new") openAlarms.set(a.id, a); else openAlarms.delete(a.id);
+  pendingChanges.push(a);
+  changeTimer ??= setTimeout(flushChanges, 100);
+}
+function flushChanges() {
+  clearTimeout(changeTimer); changeTimer = null;
+  const list = pendingChanges;
+  pendingChanges = [];
+  if (list.length === 1) emit("store", { reason: "change", alarm: list[0] });
+  else if (list.length) emit("store", { reason: "change", alarms: list });
 }
 
 // ---------------------------------------------------------------- NX rule health (poller.rule_delays)
@@ -266,16 +285,16 @@ export function openAck(alarm) {
   });
 }
 
-// verdict: "real" | "false" — every acknowledgement records the operator's call.
+// verdict: "real" | "false" | "dismissed" (closes it without an NX bookmark) — every acknowledgement records the operator's call.
 export async function acknowledge(id, note, button, verdict = "") {
   if (button) button.disabled = true;
   try {
     const updated = await api(`/api/alarms/${id}/ack`, { method: "POST", body: { note, verdict } });
-    const what = verdict ? ` as ${VERDICT[verdict].toLowerCase()}` : "";
+    const done = verdict === "dismissed" ? "Dismissed" : `Acknowledged${verdict ? ` as ${VERDICT[verdict].toLowerCase()}` : ""}`;
     if (updated.nx_ack_result && !updated.nx_ack_result.ok) {
-      toast(`Acknowledged${what}, but the NX write-back failed: ${esc(updated.nx_ack_result.error)}`, { kind: "error", timeout: 9000 });
+      toast(`${done}, but the NX write-back failed: ${esc(updated.nx_ack_result.error)}`, { kind: "error", timeout: 9000 });
     } else {
-      toast(`Alarm acknowledged${what}`);
+      toast(verdict === "dismissed" ? "Alarm dismissed" : `Alarm ${done.toLowerCase()}`);
     }
     applyAlarm(updated);
     return updated;
@@ -411,12 +430,13 @@ function connect() {
       lastBeat = Date.now();
       const data = JSON.parse(ev.data);
       if (name === "alarm.new") {
+        flushChanges();
         const known = openAlarms.has(data.id);
         openAlarms.set(data.id, data);
         emit("store", { reason: "new", alarm: data });
         if (!known) emit("alarm.arrived", data);
       } else if (name === "alarm.acked" || name === "alarm.updated") {
-        applyAlarm(data);
+        queueChange(data);
       } else if (name === "alarms.reload") {
         await loadOpenAlarms().catch(() => {});
       }

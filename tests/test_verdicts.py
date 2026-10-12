@@ -156,3 +156,17 @@ async def test_follow_up_notes_after_acknowledging(client, session, admin):
     assert (await client.get(f"/api/alarms/{a.id}/notes")).status_code == 404
     assert (await client.post(f"/api/alarms/{a.id}/notes", json={"text": "hi"})).status_code == 404
     bus.unsubscribe(sub)
+
+
+@respx.mock
+async def test_bulk_dismiss_closes_open_alarms_without_bookmarks(client, session, admin):
+    tenant, user = admin
+    alarms = await _alarms(session, tenant, 3, device="dev-1")
+    bm = respx.post(url__regex=r".*/bookmarks").mock(return_value=httpx.Response(200, json={"id": "bm"}))
+    await login(client, user.email)
+    r = await client.post("/api/alarms/bulk", json={"ids": [a.id for a in alarms], "verdict": "dismissed"})
+    assert r.status_code == 200, r.text
+    assert sorted(r.json()["acknowledged"]) == sorted(a.id for a in alarms)
+    assert not bm.called
+    assert (await client.get("/api/alarms")).json() == []
+    assert len((await client.get("/api/alarms?state=all&verdict=dismissed")).json()) == 3

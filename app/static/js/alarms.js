@@ -94,9 +94,10 @@ async function bulk(verdict) {
   const change = picked.filter((r) => r.state !== "new" && r.verdict !== verdict).length;
   const same = picked.length - open.length - change;
   const dlg = document.getElementById("bulk-dialog");
-  document.getElementById("bulk-title").textContent = `Mark ${picked.length} alarm${picked.length > 1 ? "s" : ""} as ${VERDICT[verdict].toLowerCase()}`;
+  const plural = `${picked.length} alarm${picked.length > 1 ? "s" : ""}`;
+  document.getElementById("bulk-title").textContent = verdict === "dismissed" ? `Dismiss ${plural}` : `Mark ${plural} as ${VERDICT[verdict].toLowerCase()}`;
   document.getElementById("bulk-summary").innerHTML = [
-    open.length ? `<b>Acknowledges ${open.length} open alarm${open.length > 1 ? "s" : ""}</b>${crit ? ` <span class="chip p1">${crit} critical</span>` : ""}. Their sound and pop-ups stop for every operator.` : "",
+    open.length ? `<b>Acknowledges ${open.length} open alarm${open.length > 1 ? "s" : ""}</b>${crit ? ` <span class="chip p1">${crit} critical</span>` : ""}. Their sound and pop-ups stop for every operator.${verdict === "dismissed" ? " No NX bookmarks are added." : ""}` : "",
     change ? `Changes the verdict on ${change} closed alarm${change > 1 ? "s" : ""}.` : "",
     same ? `<span class="muted">${same} already marked ${VERDICT[verdict].toLowerCase()} (no change).</span>` : "",
     "Every change is written to the audit log under your name.",
@@ -107,8 +108,12 @@ async function bulk(verdict) {
   await new Promise((r) => dlg.addEventListener("close", r, { once: true }));
   if (dlg.returnValue !== "ok") return;
   try {
-    const res = await api("/api/alarms/bulk", { method: "POST",
-      body: { ids: picked.map((r) => r.id), verdict, note: document.getElementById("bulk-note").value } });
+    const ids = picked.map((r) => r.id), note = document.getElementById("bulk-note").value;
+    const res = { acknowledged: [], changed: [], unchanged: [] };
+    for (let i = 0; i < ids.length; i += 500) {     // the API takes at most 500 per call
+      const part = await api("/api/alarms/bulk", { method: "POST", body: { ids: ids.slice(i, i + 500), verdict, note } });
+      Object.keys(res).forEach((k) => res[k].push(...part[k]));
+    }
     toast(`Done: ${res.acknowledged.length} acknowledged, ${res.changed.length} changed${res.unchanged.length ? `, ${res.unchanged.length} unchanged` : ""}`);
     selected.clear();
     await load();
@@ -138,10 +143,10 @@ async function load(append = false) {
   render();
 }
 
-function upsert(a) {
+function upsert(a, draw = true) {
   const i = rows.findIndex((r) => r.id === a.id);
-  if (i >= 0) { if (matches(a)) rows[i] = a; else rows.splice(i, 1); render(); }
-  else if (matches(a)) { rows.unshift(a); render(); listEl.querySelector(`[data-id="${a.id}"]`)?.classList.add("fresh"); }
+  if (i >= 0) { if (matches(a)) rows[i] = a; else rows.splice(i, 1); if (draw) render(); }
+  else if (matches(a)) { rows.unshift(a); if (draw) { render(); listEl.querySelector(`[data-id="${a.id}"]`)?.classList.add("fresh"); } }
 }
 
 listEl.addEventListener("click", async (e) => {
@@ -182,7 +187,10 @@ verdictSel.addEventListener("change", () => { filt.verdict = verdictSel.value; s
 let qTimer;
 qIn.addEventListener("input", () => { clearTimeout(qTimer); qTimer = setTimeout(() => { filt.q = qIn.value.trim(); syncUrl(); load(); }, 300); });
 
-on("store", ({ alarm } = {}) => { if (alarm) upsert(alarm); });
+on("store", ({ alarm, alarms } = {}) => {
+  if (alarm) upsert(alarm);
+  else if (alarms) { alarms.forEach((a) => upsert(a, false)); render(); }
+});
 on("alarm.arrived", upsert);   // includes alarms caught up by a resync while the live stream was down
 on("alarms.reload", () => load().catch(() => {}));
 on("reconnect", () => load().catch(() => {}));

@@ -42,6 +42,7 @@ function render() {
         <span class="muted ack-as">Acknowledge as</span>
         <button class="btn btn-verdict-real" data-act="ack" data-verdict="real">Real event</button>
         <button class="btn btn-verdict-false" data-act="ack" data-verdict="false">False alarm</button>
+        <button class="btn btn-verdict-dismissed" data-act="ack" data-verdict="dismissed" title="Close it without a verdict or an NX bookmark">Dismiss</button>
         <button class="btn" data-act="map">Show on map</button>
         <button class="btn" data-act="silence" ${isSilenced() ? "disabled" : ""}>Silence 2 min</button>
         <button class="btn" data-act="min" title="Hide this pop-up. Alarms stay open in the feed">Minimize</button>

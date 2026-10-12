@@ -213,7 +213,7 @@ def _audit_row(a: AuditLog) -> dict:
     if a.action == "alarm.acknowledged":
         nx = d.get("nx") or {}
         detail = f"NX write-back: {nx.get('method') or '-'}{' (failed: ' + str(nx.get('error')) + ')' if nx.get('ok') is False else ''}"
-        verdict = {"real": "Real event. ", "false": "False alarm. "}.get(d.get("verdict", ""), "")
+        verdict = {"real": "Real event. ", "false": "False alarm. ", "dismissed": "Dismissed. "}.get(d.get("verdict", ""), "")
         return {"ts": ts, "what": "Acknowledged" + (" (bulk)" if d.get("bulk") else ""), "who": who, "detail": verdict + detail}
     if a.action == "alarm.note":
         text = d.get("text", "")
@@ -355,7 +355,7 @@ def build_pdf(alarm: Alarm, ev: Evidence, events: list[dict], user: User, note: 
             ("Event time", f"{_fmt(alarm.event_ts_ms, tz)}   ({_fmt(alarm.event_ts_ms, timezone.utc)})"),
             ("Received", f"{_fmt(_ms(alarm.received_at), tz)}  · {max(0, _ms(alarm.received_at) - alarm.event_ts_ms):,} ms after the event"),
             ("Status", status),
-            ("Verdict", {"real": "REAL EVENT", "false": "FALSE ALARM"}.get(alarm.verdict, "Not marked")
+            ("Verdict", {"real": "REAL EVENT", "false": "FALSE ALARM", "dismissed": "DISMISSED"}.get(alarm.verdict, "Not marked")
              + (f" (marked by {alarm.verdict_by.label} at {_fmt(_ms(alarm.verdict_at), tz)})" if alarm.verdict and alarm.verdict_by else ""))]
     if nx:
         rows.append(("NX write-back", f"{nx.get('method', '-')}{'' if nx.get('ok', True) else ' · FAILED: ' + str(nx.get('error'))}"))
