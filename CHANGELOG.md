@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 ### Added
+- **Cones on/off** on the top-down view's toolbar: hides the cameras' view cones, leaving their dots and names. A camera with an open alarm still shows its red flashing cone. Remembered per browser.
 - **Clicking a site goes straight to its top-down view** (site list or its pin on the map), with its cameras. Clicking an alarm does the same behind the details, centred on the alarm's camera (red). **Exit top-down**, the site panel's ✕ or "Show all sites" go back to the street-map overview. In the 3D view, clicking a site still flies the 3D view there.
 - **Live preview on hover (top-down view):** rest the mouse on a camera's dot or cone and a small live window opens beside it: a still at once, live video about 0.4 s later. It closes, and its stream stops, when the mouse leaves. Sweeping across the map doesn't open any (0.25 s delay); none while placing cameras. Click still pins the bigger live window.
 - **Where the alarm is, from above:** the alarm details now show the site's top-down map beside the details, centred on the alarm's camera with its cone **red and flashing** (other cameras orange, red if they have open alarms too). If the camera isn't placed yet, it says so and where to place it. Opening an alarm while the Map page's top-down view is open also jumps that view to the camera. Placed cameras with an open alarm flash red on the top-down view.

@@ -262,6 +262,7 @@ async function openPlanView(site, deviceId = null) {
     const { openPlan } = await import("./plan.js");
     if (plan || globe || globeOpening) return;     // 3D was picked while this loaded: it wins
     plan = openPlan(lmap, { cameras: globeCams, onPickCamera: pickCamera, onHoverCamera: hoverCamera });
+    plan.setCones(conesOn());
     window.__plan = plan;   // for tools/e2e/topdown.py
   } catch (err) {
     console.error("top-down view failed", err);
@@ -271,6 +272,7 @@ async function openPlanView(site, deviceId = null) {
   mapCanvas.classList.add("plan-open");
   globeBar.hidden = false; camsBtn.hidden = !CFG.isAdmin;
   $id("globe-close").textContent = "Exit top-down";
+  paintConesBtn(); $id("plan-cones").hidden = false;
   $id("imagery-3d").textContent = "Satellite";
   showImagery("sat");
   go();
@@ -282,9 +284,23 @@ function closePlanView() {
   try { plan.destroy(); } catch (err) { console.error(err); }
   plan = null; delete window.__plan;
   mapCanvas.classList.remove("plan-open");
-  globeBar.hidden = true;
+  globeBar.hidden = true; $id("plan-cones").hidden = true;
 }
 
+// View cones on/off (top-down), remembered in this browser when storage allows; default on.
+const CONES_KEY = "twg-plan-cones";
+let conesState = (() => { try { return localStorage.getItem(CONES_KEY) !== "0"; } catch { return true; } })();
+const conesOn = () => conesState;
+function paintConesBtn() {
+  const b = $id("plan-cones");
+  b.textContent = conesState ? "Cones: on" : "Cones: off";
+  b.setAttribute("aria-pressed", String(conesState));
+}
+function toggleCones() {
+  conesState = !conesState;
+  try { localStorage.setItem(CONES_KEY, conesState ? "1" : "0"); } catch { /* applied, just not remembered */ }
+  plan?.setCones(conesState); paintConesBtn();
+}
 const showImagery = (kind) => globeBar.querySelectorAll("[data-imagery]").forEach((b) => b.classList.toggle("active", b.dataset.imagery === kind));
 
 // A camera was clicked on either view: edit it while placing that site's cameras, else watch it live.
@@ -498,6 +514,7 @@ globeBar.addEventListener("click", (e) => {
   const t = e.target;
   if (t.id === "globe-close") { if (plan) { closePlanView(); fitToSites(); } else closeGlobeView(); return; }
   if (t.id === "globe-recenter") return view()?.flyTo(sites.get(selectedId));
+  if (t.id === "plan-cones") return toggleCones();
   if (t.id === "globe-cams") return placingSite == null ? openPlacing() : closePlacing();
   const kind = t.dataset.imagery;
   if (kind && view()) { view().setImagery(kind); showImagery(kind); }

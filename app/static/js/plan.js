@@ -53,6 +53,7 @@ export function openPlan(lmap, { cameras, onPickCamera, onHoverCamera }) {
   const group = L.layerGroup().addTo(lmap);
   const red = () => cssVar("--red", "#C0392B");
   let editor = null, editKey = null;
+  let showCones = true;      // setCones(false) hides view cones; a camera with an open alarm keeps its cone
 
   // ---- placed cameras: a cone and a dot with the name under it
   const drawn = new Map();   // "site:device" -> { cone, marker, sig }
@@ -75,7 +76,8 @@ export function openPlan(lmap, { cameras, onPickCamera, onHoverCamera }) {
         drawn.set(key, d);
       }
       const hide = key === editKey;   // being edited: the editor draws it
-      const sig = JSON.stringify([c.lat, c.lng, c.heading, c.fov, c.range_m, c.alarm, c.name, hide]);
+      const coneOn = !hide && (showCones || !!c.alarm);
+      const sig = JSON.stringify([c.lat, c.lng, c.heading, c.fov, c.range_m, c.alarm, c.name, hide, coneOn]);
       if (sig === d.sig) continue;
       d.sig = sig;
       const tint = c.alarm ? red() : ORANGE;
@@ -84,9 +86,9 @@ export function openPlan(lmap, { cameras, onPickCamera, onHoverCamera }) {
         className: `plan-cam${c.alarm ? " plan-cam--alarm" : ""}`, iconSize: [14, 14], iconAnchor: [7, 7],
         html: `<i></i><span>${c.alarm ? "ALARM · " : ""}${esc(c.name || "Camera")}</span>`,
       }));
-      for (const l of [d.cone, d.marker]) {
-        if (hide && group.hasLayer(l)) group.removeLayer(l);
-        if (!hide && !group.hasLayer(l)) group.addLayer(l);
+      for (const [l, on] of [[d.cone, coneOn], [d.marker, !hide]]) {
+        if (!on && group.hasLayer(l)) group.removeLayer(l);
+        if (on && !group.hasLayer(l)) group.addLayer(l);
       }
       d.cone.getElement()?.classList.toggle("plan-cone--alarm", !!c.alarm);   // flashes (theme.css)
     }
@@ -209,6 +211,7 @@ export function openPlan(lmap, { cameras, onPickCamera, onHoverCamera }) {
   update();
   return {
     update, flyTo, focusCamera, setImagery, editCamera, stopEditing,
+    setCones(on) { showCones = !!on; update(); },
     get editing() { return editor ? { key: editKey, mode: editor.mode } : null; },
     currentEditor: () => editor,
     destroy() {

@@ -110,6 +110,20 @@ with sync_playwright() as p:
     pg.mouse.move(dx - 300, dy + 200); pg.wait_for_timeout(500)
     print("mouse left: preview hidden", pg.evaluate("document.getElementById('cam-hover').hidden"), "| video elements left", pg.locator("#cam-hover video").count())
 
+    # Cones off: dots stay, cones go; a camera with an open alarm keeps its cone; remembered after a reload
+    pg.click("#plan-cones"); pg.wait_for_timeout(300)
+    print("cones off:", pg.inner_text("#plan-cones"), "| cones drawn", pg.locator(".leaflet-planCones-pane path").count(), "| dots", pg.locator(".plan-cam").count())
+    n = pg.locator(".feed-item").count(); inject("line")
+    pg.wait_for_function(f"document.querySelectorAll('.feed-item').length > {n}", timeout=10000)
+    pg.wait_for_timeout(500)
+    print("  alarm on a camera with cones off: its cone shows, red:", pg.locator(".leaflet-planCones-pane path.plan-cone--alarm").count(),
+          "| other cones", pg.locator(".leaflet-planCones-pane path:not(.plan-cone--alarm)").count())
+    pg.screenshot(path=f"{out}/topdown_cones_off.png")
+    pg.reload(); pg.wait_for_timeout(2000); pg.click(".site-item"); pg.wait_for_function("!!window.__plan", timeout=10000); pg.wait_for_timeout(1200)
+    print("  after reload:", pg.inner_text("#plan-cones"))
+    pg.click("#plan-cones"); pg.wait_for_timeout(300)
+    print("cones on again:", pg.inner_text("#plan-cones"), "| cones drawn", pg.locator(".leaflet-planCones-pane path").count())
+
     # Click the first camera -> live window
     pg.locator(".plan-cam i").first.click()
     pg.wait_for_selector("#cam-panel:not([hidden]) video", timeout=10000)
