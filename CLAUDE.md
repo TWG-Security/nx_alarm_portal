@@ -26,6 +26,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - **Deploys: no need to ask (the user said so on 2026-10-02), but always say in the reply that you're deploying, and when it's back.** A restart once landed on their test press. Back up first (`tools/backup.sh`), then check health and "live push connected" for every site.
 
 ## Current production state (2026-10-02)
+- **Built but NOT deployed: `a3725be` (top-down site view, see Open items 14b).** The deploy on 2026-10-12 was blocked by the permission classifier ("Production Deploy"); the user has to run it or add a permission rule.
 - **Production runs `feature/base-portal` at `74bee50`** (Dismiss button + alarm delivery under bursts; deployed 2026-10-12 12:03 UTC, no migration, health back in 4 s; push connected: site 2 after 1 s, **site 1 after 30 s** (slower than before, likely the relay; polling covered it); backups `20261012-120203Z` before, `20261012-120649Z` after). Before that `2bdee60` (camera editor, 2026-10-02).
   - Tunnel connector `10.0.2.58` is trusted (Platform page / `trust-proxy`); tunnel visitors now show their real IP (verified: 24.245.109.40).
   - Not configured yet: email, Cloudflare, Google sign-in, 2FA requirement, office allowlist.
@@ -95,6 +96,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | JSON API (sites, alarms, audit, users, settings, geocode) | `app/routers/api.py` |
 | Tile proxy + disk cache: OSM street map, USGS aerial imagery (`/tiles/sat/`, NAIP 0.3 m above z16) | `app/routers/tiles.py` |
 | 3D site view (CesiumJS 1.146 vendored in `static/vendor/cesium`, lazy-loaded) | `static/js/globe.js`, opened from `map.js` (site panel "3D view"); e2e `tools/e2e/globe.py` |
+| Top-down site view (Leaflet, aerial, camera cones + editor) | `static/js/plan.js`, opened from `map.js` (site panel "Top-down view"); styles "top-down view" in `theme.css`; e2e `tools/e2e/topdown.py` |
 | Frontend (no build step) | `app/templates/*.html`, `app/static/js/*.js`, `app/static/css/theme.css`, Leaflet vendored in `app/static/vendor/leaflet` |
 
 JS modules:
@@ -107,6 +109,7 @@ JS modules:
 - `map.js`: overview with sites, map and live feed (draws the top `FEED_MAX` = 100 cards, then "+N more")
 - `live.js`: live WebM view (drawer side pane, critical pop-up's Live button)
 - `globe.js`: the 3D site view (Cesium), imported by `map.js` only when "3D view" is clicked; software-WebGL refusal and frame watchdog
+- `plan.js`: the top-down view: turns the existing Leaflet map into aerial + camera cones; same editor API as `globe.js` (`editCamera`, `stopEditing`, `editing`, `currentEditor`), so `map.js` drives either through `view()`
 - `companies.js`: TWG's Companies page
 - `alarms.js` (incl. bulk edit), `sites.js`, `site_form.js` (arming schedule), `settings.js` (incl. company branding), `audit.js`, `users.js` (incl. groups)
 
@@ -232,7 +235,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 147 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 148 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -244,6 +247,7 @@ tools/dev_up.sh && .venv/bin/python -m tools.e2e.twofactor /tmp   # authenticato
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.email /tmp       # SMTP sink on :8125: test email, invite -> setup link, forgot -> reset link
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.tenancy /tmp     # two companies (2nd fake NX on :8198): isolation, branding, views, who hears what
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.cameras /tmp # place cameras on the 3D view, live window, alarm turns a camera red
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.topdown /tmp # same on the top-down view, + alarm latency while open / panning, exit restores the street map
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.dismiss /tmp # Dismiss everywhere; 600-alarm burst, bulk dismiss, critical latency meanwhile
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.globe /tmp   # 3D view: software-GL refusal, forced open + watchdog, alarm latency while open, failed load
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
@@ -255,10 +259,15 @@ tools/dev_down.sh
 - To probe real NX from inside the app container (it already holds the site credentials), write a script and run it with
   `docker compose cp x.py app:/tmp/x.py && docker compose exec -T -w /app -e PYTHONPATH=/app app python /tmp/x.py`.
   Keep probes read-only unless the user agrees.
+- **Camera e2e tests serve stand-in aerial tiles** (`common.stub_aerial_tiles`): on 2026-10-12 USGS NAIP took 30 s+ per uncached tile, and on dev's HTTP/1.1 those requests held all 6 browser connections, so API calls (camera list, saves) queued behind them. Production is HTTP/2 via Caddy and pre-loads z17-19 around each site (281 z19 tiles cached on 2026-10-12).
 - **Never commit real camera footage.** Tests use synthetic ffmpeg test patterns.
 - Commits end with the attribution lines from the session's system reminder. Branch `feature/base-portal`.
 
 ## Open items / backlog (roughly in priority order)
+14b. **Top-down site view** (the user asked 2026-10-12 for an NX-style flat map "where we can add cameras, not in 3d mode", with a screenshot of NX's map: drone photo, blue cones). Built `a3725be`, **not deployed** (see production state).
+   - Map page → site panel → **Top-down view** (now the primary button; 3D view stays). `plan.js` swaps the map's tile layer for aerial (`/tiles/sat`, native z19, overzoom to z21), adds cones (pane `planCones`) and camera dots, and reuses the Place cameras panel and editor. Same `camera_places` as 3D. Exit restores the street map. Opening one view closes the other.
+   - Alarm safety (dev, measured): alarms on screen 16-92 ms with the view open + live video; 44-61 ms while panning. No WebGL, so no watchdog needed.
+   - Likely next ask: **their own background image** (drone orthomosaic or floor plan, like the NX screenshot), since NAIP is 0.3 m/px and blurry past z19. Design idea: upload per site, pin it to the map by its corners (or GeoTIFF bounds), keep cameras in lat/lng so both views keep working.
 0. **Account security is DEPLOYED** (2026-10-02 00:23 UTC, `857d825`, migrations 0008-0011; see "Current production state"). Left to do:
    - allowlist the office: `docker compose exec -T app python -m app.cli allow-ip --ip 204.186.88.58 --label "TWG office"` once the user confirms that's the office's public IP (it's this server's)
    - still open from the user: SNMP (q1 in BACKLOG.md), 2FA scope (q2; today nobody is required), SMTP mailbox (q3), Cloudflare token + Zone ID (q4), Google OAuth client (q7). All are entered on the Platform page.
