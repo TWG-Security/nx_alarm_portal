@@ -28,6 +28,11 @@ def url(token: str) -> str:
     return f"{platform_settings.current().portal_url}{PATH}{token}"
 
 
+def picture_url(token: str) -> str:
+    """The alarm picture Twilio fetches for the MMS (routers/links.py)."""
+    return f"{platform_settings.current().portal_url}/media/a/{token}/alarm.jpg"
+
+
 async def mint(db: AsyncSession, alarm: Alarm, user: User | None, hours: int) -> str:
     token = secrets.token_urlsafe(18)
     now = utcnow()

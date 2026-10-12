@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
     yield
     for t in tasks:
         t.cancel()
+    from app import sms
+    await sms.shutdown()
     await manager.shutdown()
 
 

@@ -665,3 +665,7 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .text-cell input[type="tel"] { width: 150px; flex: 0 0 auto; padding: 6px 8px; }
 .text-cell select { width: auto; flex: 0 0 auto; }
 .text-failed { color: var(--red-text); font-weight: 600; }
+.terms-page h1 { font-size: 22px; margin: 0 0 4px; }
+.terms-page h2 { font-size: 16px; margin: 20px 0 6px; color: var(--text); }
+.terms-page p, .terms-page li { line-height: 1.55; }
+.login-terms { text-align: center; margin-top: 12px; font-size: 12px; }

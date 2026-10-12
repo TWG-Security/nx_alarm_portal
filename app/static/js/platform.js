@@ -218,10 +218,13 @@ async function loadMailLog() {
 $("mail-log-refresh").addEventListener("click", () => loadMailLog().catch((e) => toast(esc(e.message), { kind: "error" })));
 
 // ---------------------------------------------------------------- text messages
-const TEXT_PURPOSE = { alarm: "Alarm", summary: "Summary (too many)", test: "Test" };
+const TEXT_PURPOSE = { alarm: "Alarm", summary: "Summary (too many)", test: "Test", optin: "Opt-in request", confirm: "Signed-up confirmation",
+  help: "Help reply", inbound: "Reply received" };
+const REPLY = { yes: ["YES: opted in", "online"], stop: ["STOP: opted out", "offline"], help: ["HELP", ""], other: ["Other text", ""] };
 function paintSms() {
   const m = settings.sms;
   $("tx-enabled").checked = m.enabled; $("tx-sid").value = m.sid; $("tx-from").value = m.sender; $("tx-token").value = "";
+  $("tx-help").value = m.help_contact; $("tx-pictures").checked = m.pictures; $("tx-webhook").textContent = m.webhook_url; $("tx-terms-url").textContent = m.terms_url;
   $("tx-hours").value = m.link_hours; $("tx-max").value = m.max_per_10min; $("tx-url").textContent = `${m.portal_url}/a/…`;
   $("tx-token").placeholder = m.token_set ? "Saved. Leave blank to keep it." : "";
   $("tx-token-hint").textContent = m.token_set ? "Stored encrypted; never shown again." : "Stored encrypted.";
@@ -229,14 +232,22 @@ function paintSms() {
   const parts = [];
   if (!m.enabled) parts.push('<div class="alert alert-warn">Alarm texts are off. Nobody gets texts, whatever their Users page setting.</div>');
   if (m.last_error) parts.push(`<div class="alert alert-error"><b>Last error</b> ${esc(relTime(m.last_error_at))}: ${esc(m.last_error)}</div>`);
-  if (m.last_ok_at) parts.push(`<div class="alert alert-ok">Last text sent ${esc(relTime(m.last_ok_at))}.</div>`);
+  if (m.last_ok_at) parts.push(`<div class="alert alert-ok">Last text sent ${esc(relTime(m.last_ok_at))}.${m.last_inbound_at
+    ? ` Last reply received ${esc(relTime(m.last_inbound_at))}.` : ""}</div>`);
+  const bg = m.background || {};
+  if (bg.oldest_s > 60) parts.push(`<div class="alert alert-error"><b>A text has been in progress for ${Math.round(bg.oldest_s)} s</b>
+    (${bg.in_flight} in progress). Texts are stopped after ${bg.max_s} s and logged; check Recent texts and the app log.</div>`);
+  else if (m.enabled) parts.push(`<div class="muted small-print">Background: ${bg.in_flight || 0} text${bg.in_flight === 1 ? "" : "s"} in progress${bg.summaries_waiting
+    ? `, ${bg.summaries_waiting} summary text${bg.summaries_waiting === 1 ? "" : "s"} waiting for the 10-minute window` : ""}.</div>`);
+  if (m.enabled && !m.last_inbound_at) parts.push(`<div class="alert alert-warn">No replies received yet. People opt in by replying YES, so Twilio must send replies to
+    <b>${esc(m.webhook_url)}</b> (see "Setting up Twilio" below).</div>`);
   $("sms-status").innerHTML = parts.join("");
 }
 $("sms-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   errBox("sms-error");
   const body = { enabled: $("tx-enabled").checked, sid: $("tx-sid").value, sender: $("tx-from").value,
-    link_hours: Number($("tx-hours").value) || 24, max_per_10min: Number($("tx-max").value) || 10 };
+    link_hours: Number($("tx-hours").value) || 24, max_per_10min: Number($("tx-max").value) || 10, help_contact: $("tx-help").value, pictures: $("tx-pictures").checked };
   if ($("tx-clear").checked) body.token = "";
   else if ($("tx-token").value) body.token = $("tx-token").value;
   try { settings = await api("/api/platform/settings/sms", { method: "PUT", body }); paintSms(); toast("Text message settings saved"); }
@@ -256,7 +267,7 @@ $("tx-test").addEventListener("click", async () => {
 async function loadSmsLog() {
   const rows = await api("/api/platform/sms-log");
   $("sms-log").innerHTML = rows.map((m) => {
-    const [label, cls] = MAIL_OUT[m.outcome] || [m.outcome, ""];
+    const [label, cls] = (m.purpose === "inbound" ? REPLY[m.outcome.replace("?", "")] : MAIL_OUT[m.outcome]) || [m.outcome, ""];
     return `<tr><td title="${esc(fmtTime(m.ts))}">${esc(relTime(m.ts))}</td><td>${esc(m.who || m.to)}${m.who ? `<div class="muted small-print">${esc(m.to)}</div>` : ""}</td>
       <td>${esc(TEXT_PURPOSE[m.purpose] || m.purpose)}${m.alarm_id ? ` <span class="muted">#${m.alarm_id}</span>` : ""}</td>
       <td><span class="chip ${cls}">${esc(label === "Not sent: email off" ? "Not sent: texts off" : label)}</span>${m.attempts > 1 ? ` <span class="muted small-print">${m.attempts} tries</span>` : ""}${m.error ? `<div class="muted small-print">${esc(m.error)}</div>` : ""}</td>

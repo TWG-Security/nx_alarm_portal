@@ -63,6 +63,10 @@ class User(Base):
     # Text messages (app/sms.py): E.164 mobile number and which alarms text them (off | critical | alarm)
     phone: Mapped[str] = mapped_column(String(20), default="")
     sms_level: Mapped[str] = mapped_column(String(10), default="off")
+    # Consent (carrier rules): none | pending (opt-in request sent) | yes (replied YES) | stopped (replied STOP)
+    sms_consent: Mapped[str] = mapped_column(String(10), default="none")
+    sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sms_optin_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     @property
     def is_invited(self) -> bool:
@@ -143,7 +147,7 @@ class SmsLog(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     to: Mapped[str] = mapped_column(String(20))
-    purpose: Mapped[str] = mapped_column(String(10))          # alarm | summary | test
+    purpose: Mapped[str] = mapped_column(String(10))          # alarm | summary | test | optin | confirm | help | inbound
     outcome: Mapped[str] = mapped_column(String(20))          # sent | failed | disabled
     error: Mapped[str] = mapped_column(String(500), default="")
     attempts: Mapped[int] = mapped_column(Integer, default=0)
@@ -423,6 +427,9 @@ class PlatformSettings(Base):
     sms_last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sms_last_error: Mapped[str] = mapped_column(Text, default="")
     sms_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sms_help_contact: Mapped[str] = mapped_column(String(300), default="")    # in HELP replies and on /sms-terms
+    sms_last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sms_pictures: Mapped[bool] = mapped_column(Boolean, default=True)          # alarm texts go as MMS with the frame + boxes
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 

@@ -259,6 +259,8 @@
         that one alarm (details, clip, live camera) <b>without signing in</b>. Texts go out in the background: a slow or failing Twilio never holds up the alarm screen.</p>
       <div id="sms-status"></div>
       <label class="check"><input type="checkbox" id="tx-enabled"> Send alarm texts</label>
+      <label class="check"><input type="checkbox" id="tx-pictures"> Attach a picture of the alarm with its boxes (MMS)
+        <small class="muted">&nbsp;The text waits at most 4 s for it, otherwise goes without.</small></label>
       <div class="rules-grid">
         <div class="field"><label for="tx-sid">Account SID</label><input id="tx-sid" type="text" maxlength="64" class="mono" autocomplete="off" placeholder="AC…"></div>
         <div class="field"><label for="tx-token">Auth Token</label><input id="tx-token" type="password" maxlength="200" autocomplete="new-password"><small id="tx-token-hint"></small></div>
@@ -268,6 +270,8 @@
         <div class="field"><label for="tx-max">Most texts per person</label><input id="tx-max" type="number" min="1" max="100">
           <small>in any 10 minutes. Past that, one summary text counts the rest.</small></div>
       </div>
+      <div class="field" style="max-width:520px"><label for="tx-help">Help contact</label><input id="tx-help" type="text" maxlength="300" placeholder="support@twgsecurity.com or (570) 555-1234">
+        <small>Sent when someone replies HELP, and shown on the public <a id="tx-terms" href="/sms-terms" target="_blank" rel="noopener">text message terms</a> page.</small></div>
       <label class="check" id="tx-clear-row" hidden><input type="checkbox" id="tx-clear"> Remove the saved Auth Token</label>
       <p class="muted small-print">Links start with <b id="tx-url"></b> (Email tab → Portal address). It must open from a phone on mobile data.</p>
       <div id="sms-error"></div>
@@ -284,6 +288,9 @@
             For a local number: <b>A2P 10DLC</b> brand + campaign registration. Use case: security alarm notifications to staff who opted in. Approval takes days.</li>
           <li>A <b>trial</b> account only texts numbers verified under <b>Phone Numbers</b> → <b>Verified Caller IDs</b>, and adds "Sent from your Twilio trial account".</li>
           <li>Tick <b>Send alarm texts</b>, <b>Save</b>, then <b>Send test text</b>. Then add mobile numbers on the <b>Users</b> page.</li>
+          <li><b>Replies (YES / STOP / HELP):</b> Twilio → <b>Phone Numbers</b> → <b>Manage</b> → <b>Active numbers</b> → your number → <b>Messaging configuration</b> →
+            <b>A message comes in</b>: <b>Webhook</b>, URL <code id="tx-webhook"></code>, <b>HTTP POST</b> → <b>Save configuration</b>. (If the number is in a Messaging Service, set it on the service's <b>Integration</b> page instead.)</li>
+          <li>For the toll-free / A2P forms: opt-in proof and terms URL <code id="tx-terms-url"></code>; opt-in method: "an administrator adds the number, the person replies YES".</li>
         </ol></details>
     </form>
     <div class="card">

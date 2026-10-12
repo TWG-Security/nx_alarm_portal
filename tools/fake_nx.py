@@ -159,6 +159,7 @@ async def twilio_send(sid: str, request: Request):
     if TWILIO_MODE["mode"] == "fail":
         return JSONResponse({"code": 30034, "message": "Message from an unregistered number", "status": 400}, status_code=400)
     TEXTS.append({"to": form.get("To"), "from": form.get("From") or form.get("MessagingServiceSid"), "body": form.get("Body"),
+                  "media": form.get("MediaUrl") or "",
                   "at_ms": int(time.time() * 1000)})
     return JSONResponse({"sid": "SM" + uuid.uuid4().hex, "status": "queued"}, status_code=201)
 

@@ -45,6 +45,17 @@ def wait_texts(n: int, timeout=10.0) -> list[dict]:
     return texts()
 
 
+def twilio_reply(frm: str, body: str) -> int:
+    """A text someone sends to our number, as Twilio would post it (signed with the dev Auth Token)."""
+    import base64, hashlib, hmac, urllib.parse
+    params = {"From": frm, "To": "+15705550000", "Body": body, "MessageSid": "SMreply", "AccountSid": SID}
+    url = f"{PORTAL}/twilio/sms"
+    sig = base64.b64encode(hmac.new(b"dev-token", (url + "".join(k + v for k, v in sorted(params.items()))).encode(),
+                                    hashlib.sha1).digest()).decode()
+    req = urllib.request.Request(url, data=urllib.parse.urlencode(params).encode(), headers={"X-Twilio-Signature": sig})
+    return urllib.request.urlopen(req).status
+
+
 def alarm_on_screen(pg, kind: str) -> float:
     """Inject an alarm and time it to the feed (ms)."""
     before = pg.locator(".feed-item").count()
@@ -94,11 +105,22 @@ with sync_playwright() as p:
     pg.press("[data-phone]", "Tab")
     pg.wait_for_function("document.querySelector('[data-sms]') && !document.querySelector('[data-sms]').disabled", timeout=5000)
     check(pg.input_value("[data-phone]") == "(570) 555-0101" and pg.input_value("[data-sms]") == "alarm",
-          "adding a number saves it and starts Critical + Alarm texts")
+          "adding a number saves it with Critical + Alarm")
+    pg.wait_for_selector(".chip:has-text('Waiting for YES')", timeout=5000)
+    ask = wait_texts(2)[-1]
+    check(ask["to"] == "+15705550101" and "Reply YES to sign up" in ask["body"] and "STOP to opt out at any time" in ask["body"]
+          and "/sms-terms" in ask["body"], "adding a number texts the opt-in request (YES, STOP, terms)")
+    check(pg.locator("[data-test-text]").count() == 0, "no Test button until they reply YES")
+    pg.screenshot(path=f"{out}/sms2a-waiting.png")
+    check(twilio_reply("+15705550101", "Yes") == 200, "Twilio-signed YES reply accepted")
+    confirm = wait_texts(3)[-1]
+    check("you're signed up" in confirm["body"], "YES gets the signed-up confirmation")
+    pg.reload(); pg.wait_for_selector(".chip:has-text('Opted in')", timeout=5000)
+    check(True, "Users page shows Opted in")
     pg.click("[data-test-text]")
     pg.wait_for_selector(".toast:has-text('Test text sent')", timeout=8000)
-    pg.wait_for_selector(".text-cell + .small-print:has-text('test text sent')", timeout=5000)
-    check(wait_texts(2)[-1]["to"] == "+15705550101", "Users page Test texts that person")
+    pg.wait_for_selector("td .small-print:has-text('test text sent')", timeout=5000)
+    check(wait_texts(4)[-1]["to"] == "+15705550101", "Users page Test texts that person")
     pg.screenshot(path=f"{out}/sms2-users.png")
 
     # --- 3. An alarm → a text with a link; alarm timing unaffected
@@ -111,8 +133,16 @@ with sync_playwright() as p:
     text = t[-1]
     print(f"      alarm on screen {ms:.0f} ms; text: {text['body']!r}")
     check(ms < 1000, f"alarm on screen in {ms:.0f} ms with texts on")
-    check(text["body"].startswith("TWG ALARM: ") and f"{PORTAL}/a/" in text["body"], "text says ALARM and carries the link")
-    link = text["body"].rsplit(" ", 1)[-1]
+    lines = text["body"].split("\n")
+    check(lines[0].startswith("TWG ALARM: ") and lines[1] == "Fake Test Site" and lines[2] == "Harrisburg, PA",
+          "text: alarm, then site name, then address, one per line")
+    check(any(l.startswith("Directions: https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380") for l in lines),
+          "text has a tap-to-navigate Directions link")
+    check(lines[-1] == "Reply STOP to opt out.", "text ends with the opt-out line")
+    link = next(l for l in lines if l.startswith("View alarm: ")).split(": ", 1)[1]
+    check(text["media"].endswith("/alarm.jpg"), "text is an MMS with the alarm picture")
+    pic = urllib.request.urlopen(text["media"])
+    check(pic.status == 200 and pic.headers["content-type"] == "image/jpeg", f"picture loads for Twilio ({len(pic.read())} bytes)")
 
     # --- 4. The link on a phone, signed out
     phone = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
@@ -139,6 +169,10 @@ with sync_playwright() as p:
     check(bad.status == 404 and "doesn't work" in m.inner_text("h1"), "a mangled link shows 'This link doesn't work'")
     m.screenshot(path=f"{out}/sms5-bad-link.png")
     check(not m_errors, f"no script errors on the link page {m_errors}")
+    r = m.goto(f"{PORTAL}/sms-terms")
+    check(r.status == 200 and "Reply STOP" in m.inner_text("article") and "not sold" in m.inner_text("article"),
+          "public text-message terms page, signed out")
+    m.screenshot(path=f"{out}/sms7-terms.png", full_page=True)
     phone.close()
 
     # --- 5. Twilio rejects texts: alarms still instant, the failure shows loudly

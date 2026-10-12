@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import httpx
 
@@ -590,6 +590,16 @@ class UserUpdate(BaseModel):
     sms_level: str | None = Field(default=None, pattern="^(off|critical|alarm)$")
 
 
+def _ask_consent(target: User) -> bool:
+    """A number that should get texts but was never asked: mark it "pending" (the caller sends the request
+    after committing). Texts off: stays "none" and the Users page offers "Send opt-in" later."""
+    from app import platform_settings
+    if target.phone and target.sms_level != "off" and target.sms_consent == "none" and platform_settings.current().sms_ready:
+        target.sms_consent = "pending"
+        return True
+    return False
+
+
 def _phone(raw: str) -> str:
     from app import sms
     try:
@@ -607,7 +617,9 @@ def _check_password(pw: str) -> None:
 
 def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | None = None, text: dict | None = None) -> dict:
     return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
-            "phone": u.phone, "sms_level": u.sms_level, "last_text": text,
+            "phone": u.phone, "sms_level": u.sms_level, "last_text": text, "sms_consent": u.sms_consent,
+            "sms_consent_at": u.sms_consent_at.isoformat() if u.sms_consent_at else None,
+            "sms_optin_sent_at": u.sms_optin_sent_at.isoformat() if u.sms_optin_sent_at else None,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
             "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
             "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
@@ -667,9 +679,13 @@ async def create_user(body: UserIn, request: Request, user: User = Depends(requi
     out = {}
     if not body.password:
         out = await invites.invite(db, new, await db.get(Tenant, tid), user)
+    ask = _ask_consent(new)
     audit(db, tid, "user.created", user_id=user.id, ip=client_ip(request), email=new.email, role=new.role,
           invited=not body.password)
     await db.commit()
+    if ask:
+        from app import sms
+        await sms.request_opt_in(new.id, user.label)
     return {**_user_dict(new), **out}
 
 
@@ -711,6 +727,9 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
         if value is not None and getattr(target, name) != value:
             setattr(target, name, value)
             fields.append(name)
+    if "phone" in fields:                     # consent belongs to a number: a new one is asked again
+        target.sms_consent, target.sms_consent_at, target.sms_optin_sent_at = "none", None, None
+    ask = bool({"phone", "sms_level"} & set(fields)) and _ask_consent(target)
     if body.password:
         from app import sessions
         _check_password(body.password)
@@ -721,6 +740,38 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
         fields.append("password")
     audit(db, target.tenant_id, "user.updated", user_id=user.id, ip=client_ip(request), target=target.email, fields=fields)
     await db.commit()
+    if ask:
+        from app import sms
+        await sms.request_opt_in(target.id, user.label)
+    return _user_dict(target)
+
+
+@router.post("/users/{user_id}/opt-in")
+async def send_opt_in(user_id: int, request: Request, user: User = Depends(require_admin),
+                      scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """(Re)send the "Reply YES to get alarm texts" request."""
+    from app import platform_settings, sms
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    if target is None:
+        raise HTTPException(404)
+    scope.require_write(target.tenant_id)
+    if not target.phone:
+        raise HTTPException(400, "Add a mobile number first")
+    if not platform_settings.current().sms_ready:
+        raise HTTPException(400, "Text messages are off (Platform page → Text messages)")
+    if target.sms_consent == "yes":
+        raise HTTPException(400, "They've already replied YES")
+    if target.sms_consent == "stopped":
+        raise HTTPException(400, "They replied STOP, so carriers block texts to them. They can text START or YES to the portal's number to sign up again.")
+    sent = target.sms_optin_sent_at
+    if sent is not None and (sent if sent.tzinfo else sent.replace(tzinfo=timezone.utc)) > datetime.now(timezone.utc) - timedelta(minutes=1):
+        raise HTTPException(429, "An opt-in request went less than a minute ago")
+    if target.sms_level == "off":
+        target.sms_level = "alarm"
+    target.sms_consent = "pending"
+    audit(db, target.tenant_id, "sms.opt_in_requested", user_id=user.id, ip=client_ip(request), target=target.email)
+    await db.commit()
+    await sms.request_opt_in(target.id, user.label)
     return _user_dict(target)
 
 
@@ -735,6 +786,8 @@ async def test_text(user_id: int, request: Request, user: User = Depends(require
     scope.require_write(target.tenant_id)
     if not target.phone:
         raise HTTPException(400, "Add a mobile number first")
+    if target.sms_consent != "yes":
+        raise HTTPException(400, "They haven't replied YES yet, so they can't be texted. Use Send opt-in.")
     audit(db, target.tenant_id, "user.test_text", user_id=user.id, ip=client_ip(request), target=target.email)
     await db.commit()
     outcome, error = await sms.send_test(target.phone, user.label, user=target)

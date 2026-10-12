@@ -80,13 +80,21 @@ def _settings_dict(row) -> dict:
         "sms": {"enabled": row.sms_enabled, "sid": row.twilio_sid, "token_set": bool(row.twilio_token_enc),
                 "sender": row.twilio_from, "link_hours": row.sms_link_hours, "max_per_10min": row.sms_max_per_10min,
                 "portal_url": row.portal_url, "last_ok_at": _iso(row.sms_last_ok_at),
-                "last_error": row.sms_last_error, "last_error_at": _iso(row.sms_last_error_at)},
+                "last_error": row.sms_last_error, "last_error_at": _iso(row.sms_last_error_at),
+                "help_contact": row.sms_help_contact, "pictures": row.sms_pictures, "background": _sms_status(), "last_inbound_at": _iso(row.sms_last_inbound_at),
+                "webhook_url": f"{(row.portal_url or '').rstrip('/')}/twilio/sms",
+                "terms_url": f"{(row.portal_url or '').rstrip('/')}/sms-terms"},
         "google": {"enabled": row.google_enabled, "client_id": row.google_client_id,
                    "secret_set": bool(row.google_client_secret_enc), "domains": row.google_domains,
                    "redirect_uri": f"{(row.portal_url or '').rstrip('/')}/auth/google/callback",
                    "origin": (row.portal_url or "").rstrip("/")},
         "updated_at": _iso(row.updated_at),
     }
+
+
+def _sms_status() -> dict:
+    from app import sms
+    return sms.status()
 
 
 @router.get("/api/platform/settings")
@@ -319,6 +327,8 @@ class SmsIn(BaseModel):
     sender: str = Field(default="", max_length=64)
     link_hours: int = Field(default=24, ge=1, le=168)
     max_per_10min: int = Field(default=10, ge=1, le=100)
+    help_contact: str = Field(default="", max_length=300)
+    pictures: bool = True
 
 
 @router.put("/api/platform/settings/sms")
@@ -339,7 +349,8 @@ async def put_sms(body: SmsIn, request: Request, user: User = Depends(MANAGE), d
         raise HTTPException(400, "Enter the Account SID, Auth Token and the number to send from before switching texts on.")
     changed = []
     for k, col, v in (("enabled", "sms_enabled", body.enabled), ("sid", "twilio_sid", sid), ("sender", "twilio_from", sender),
-                      ("link_hours", "sms_link_hours", body.link_hours), ("max_per_10min", "sms_max_per_10min", body.max_per_10min)):
+                      ("link_hours", "sms_link_hours", body.link_hours), ("max_per_10min", "sms_max_per_10min", body.max_per_10min),
+                      ("help_contact", "sms_help_contact", body.help_contact.strip()), ("pictures", "sms_pictures", body.pictures)):
         if getattr(row, col) != v:
             setattr(row, col, v)
             changed.append(k)

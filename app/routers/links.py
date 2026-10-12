@@ -2,7 +2,9 @@
 
 - GET /a/{token}                               the page: one alarm's details, clip and live video
 - GET /api/a/{token}/clip, /objects            clip status and analytics boxes (same as the signed-in ones)
-- GET /media/a/{token}/snapshot.jpg, live.jpg, live.webm, clips/{name}.mp4
+- GET /media/a/{token}/snapshot.jpg, alarm.jpg (frame + boxes: the MMS picture), live.jpg, live.webm, clips/{name}.mp4
+- POST /twilio/sms                            replies to our number (YES / STOP / HELP), Twilio-signed
+- GET /sms-terms                              the public text-message terms (carriers and Twilio ask for it)
 
 Everything is limited to the link's one alarm. An unknown token is recorded as a failed sign-in
 (kind "alarm_link"), so an address that guesses gets banned (BanGate guards these paths). Opening the
@@ -10,24 +12,26 @@ page is audit-logged in the alarm's company under the name of the person it was 
 Pages are never cached or indexed and send no Referer (the token is the key).
 """
 
+import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import alarm_links, security_guard
+from app import alarm_links, platform_settings, security_guard, sms
 from app.audit import audit
 from app.config import get_settings
 from app.db import get_db
 from app.deps import client_ip, render
-from app.models import Alarm, User, utcnow
+from app.models import Alarm, PlatformSettings, User, utcnow
 from app.routers import stream
 from app.services import clips
 from app.services.serialize import alarm_dict
 from app.services.sites import describe_http_error
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 PRIVATE = {"Cache-Control": "no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow"}
 
@@ -65,7 +69,8 @@ async def alarm_page(token: str, request: Request, db: AsyncSession = Depends(ge
     data = alarm_dict(alarm)
     data.pop("nx_ack_result", None)
     response = render(request, "alarm_link.html", state="ok", alarm=data, token=token,
-                      sent_to=who.label if who else "", expires_at=link.expires_at.isoformat())
+                      sent_to=who.label if who else "", expires_at=link.expires_at.isoformat(),
+                      directions=sms.directions_url(alarm.site))
     response.headers.update(PRIVATE)
     return response
 
@@ -127,6 +132,19 @@ async def link_snapshot(token: str, request: Request, db: AsyncSession = Depends
     return Response(await stream.snapshot_bytes(alarm), media_type="image/jpeg", headers=PRIVATE)
 
 
+@router.get("/media/a/{token}/alarm.jpg")
+async def link_picture(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """The alarm frame with its boxes: the picture in the MMS (Twilio fetches it) and on the link page."""
+    alarm = await _alarm(request, db, token)
+    if not alarm.device_id:
+        raise HTTPException(404)
+    await db.commit()
+    pic = await sms.alarm_picture(alarm, budget_s=20)
+    if pic is None:
+        raise HTTPException(502, "The camera picture isn't available")
+    return Response(pic, media_type="image/jpeg", headers=PRIVATE)
+
+
 @router.get("/media/a/{token}/live.jpg")
 async def link_live_still(token: str, request: Request, db: AsyncSession = Depends(get_db)):
     alarm = await _alarm(request, db, token)
@@ -143,3 +161,44 @@ async def link_live(token: str, request: Request, db: AsyncSession = Depends(get
         raise HTTPException(404)
     await db.commit()          # a live stream runs for minutes: don't pin a DB connection
     return await stream._live_webm(alarm.site, alarm.device_id)
+
+
+# ------------------------------------------------------------------ text-message consent (public)
+
+TWIML_EMPTY = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
+
+
+@router.post("/twilio/sms")
+async def twilio_reply(request: Request, db: AsyncSession = Depends(get_db)):
+    """Twilio's "A message comes in" webhook. Checked with X-Twilio-Signature (our Auth Token), so only
+    Twilio can opt people in or out. Replies are sent through the API (logged), so the TwiML is empty."""
+    form = await request.form()
+    params = [(k, str(v)) for k, v in form.multi_items()]
+    cfg = await sms.config(db)
+    path = request.url.path
+    urls = {f"{platform_settings.current().portal_url}{path}", str(request.url).split("?")[0],
+            str(request.url.replace(scheme="https")).split("?")[0]}
+    signature = request.headers.get("x-twilio-signature", "")
+    if cfg is None or not any(sms.valid_signature(cfg.token, u, params, signature) for u in urls):
+        log.warning("twilio reply rejected: %s (from %s)",
+                                            "texts are off" if cfg is None else "signature didn't match", client_ip(request))
+        if cfg is not None:
+            row = await db.get(PlatformSettings, 1)
+            row.sms_last_error = ("A reply from Twilio was refused: its signature didn't match. Check the webhook URL on the "
+                                  f"Twilio number is exactly {platform_settings.current().portal_url}/twilio/sms and the Auth Token is current.")
+            row.sms_last_error_at = utcnow()
+            await db.commit()
+        raise HTTPException(403, "Bad signature")
+    await db.commit()
+    data = dict(params)
+    await sms.handle_reply(data.get("From", ""), data.get("Body", ""), data.get("MessageSid", ""))
+    return Response(TWIML_EMPTY, media_type="application/xml")
+
+
+@router.get("/sms-terms")
+async def sms_terms(request: Request, db: AsyncSession = Depends(get_db)):
+    row = await db.get(PlatformSettings, 1)
+    contact = (row.sms_help_contact if row else "") or "twgsecurity.com"
+    sender = row.twilio_from if row and row.twilio_from.startswith("+") else ""
+    return render(request, "sms_terms.html", contact=contact, sender=sender,
+                  portal=platform_settings.current().portal_url, updated="October 12, 2026")

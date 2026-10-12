@@ -21,6 +21,7 @@
     </dl>
     <div id="link-player"></div>
     <div class="link-actions">
+      {% if directions %}<a class="btn" href="{{ directions }}" target="_blank" rel="noopener noreferrer">Directions</a>{% endif %}
       <a class="btn btn-primary" href="/login?next={{ ('/?alarm=' ~ alarm.id) | urlencode }}">Sign in to acknowledge</a>
     </div>
     <p class="muted small-print">This link was texted{% if sent_to %} to {{ sent_to }}{% endif %} and works until <span id="link-expires" data-iso="{{ expires_at }}"></span>.

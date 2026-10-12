@@ -34,13 +34,24 @@ document.addEventListener("click", (e) => {
 // ---------------------------------------------------------------- alarm texts
 const fmtPhone = (p) => (/^\+1\d{10}$/.test(p || "") ? `(${p.slice(2, 5)}) ${p.slice(5, 8)}-${p.slice(8)}` : p || "");
 const TEXTED = { sent: ["text sent", ""], failed: ["text FAILED", "text-failed"], disabled: ["texts are off", ""] };
+const CONSENT = {
+  none: ["Not asked yet", ""], pending: ["Waiting for YES", "disarmed"], yes: ["Opted in", "online"], stopped: ["Replied STOP", "offline"],
+};
 function textCell(u) {
   const t = u.last_text, [word, cls] = t ? TEXTED[t.outcome] || [t.outcome, ""] : [];
+  const [cWord, cCls] = CONSENT[u.sms_consent] || CONSENT.none;
+  const cTitle = u.sms_consent === "pending" ? `Opt-in request sent ${relTime(u.sms_optin_sent_at)}. Alarm texts start when they reply YES.`
+    : u.sms_consent === "yes" ? `Replied YES ${relTime(u.sms_consent_at)}` : u.sms_consent === "stopped"
+    ? "They replied STOP. They can text START or YES to the portal's number to sign up again." : "No texts until they reply YES to an opt-in request.";
+  const btn = !u.phone ? "" : u.sms_consent === "yes"
+    ? `<button class="btn btn-sm" type="button" data-test-text="${u.id}" title="Text them a test message">Test</button>`
+    : u.sms_consent === "stopped" ? "" : `<button class="btn btn-sm" type="button" data-opt-in="${u.id}" title="Text them: reply YES to get alarm texts">${u.sms_consent === "pending" ? "Resend opt-in" : "Send opt-in"}</button>`;
   return `<div class="text-cell"><input type="tel" data-phone="${u.id}" value="${esc(fmtPhone(u.phone))}" placeholder="Mobile number" maxlength="30" aria-label="Mobile number">
     <select data-sms="${u.id}" aria-label="Which alarms text them" ${u.phone ? "" : "disabled"}>
       ${[["off", "No texts"], ["critical", "Critical only"], ["alarm", "Critical + Alarm"]].map(([v, l]) => `<option value="${v}" ${u.sms_level === v ? "selected" : ""}>${l}</option>`).join("")}</select>
-    ${u.phone ? `<button class="btn btn-sm" type="button" data-test-text="${u.id}" title="Text them a test message">Test</button>` : ""}</div>
-    ${t ? `<div class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : ""}${esc(word)} ${esc(relTime(t.ts))}${t.error ? `: ${esc(t.error.slice(0, 80))}` : ""}</div>` : ""}`;
+    ${btn}</div>
+    ${u.phone ? `<span class="chip ${cCls}" title="${esc(cTitle)}">${cWord}</span>` : ""}
+    ${t ? `<span class="muted small-print ${cls}" title="${esc(t.error || "")}">${t.purpose === "test" ? "test " : t.purpose === "optin" ? "opt-in " : ""}${esc(word)} ${esc(relTime(t.ts))}${t.error ? `: ${esc(t.error.slice(0, 80))}` : ""}</span>` : ""}`;
 }
 
 function render() {
@@ -75,7 +86,7 @@ tbody.addEventListener("change", (e) => {
   if (d.sms) update(d.sms, { sms_level: e.target.value });
   if (d.phone) {
     const u = users.find((x) => x.id === Number(d.phone)), phone = e.target.value.trim();
-    // A first number starts texting Critical + Alarm (change it in the box beside it); clearing it stops texts.
+    // A first number defaults to Critical + Alarm and gets the opt-in request; clearing it stops texts.
     update(d.phone, !u.phone && phone && u.sms_level === "off" ? { phone, sms_level: "alarm" } : { phone });
   }
 });
@@ -93,6 +104,11 @@ tbody.addEventListener("click", (e) => {
     }).catch((err) => toast(esc(err.message), { kind: "error" }));
   }
   if (d.security) openSecurity(users.find((u) => u.id === Number(d.security)));
+  if (d.optIn) {
+    e.target.disabled = true;
+    api(`/api/users/${d.optIn}/opt-in`, { method: "POST" }).then(() => toast("Opt-in request sent. Alarm texts start when they reply YES."))
+      .catch((err) => toast(esc(err.message), { kind: "error", timeout: 12000 })).finally(() => setTimeout(() => load(), 1500));
+  }
   if (d.testText) {
     e.target.disabled = true;
     api(`/api/users/${d.testText}/test-text`, { method: "POST" }).then((r) => {
