@@ -119,6 +119,7 @@ async def put_peplink(body: PeplinkIn, request: Request, user: User = Depends(MA
         row.updated_by_id = user.id
         audit(db, user.tenant_id, "platform.settings", user_id=user.id, ip=client_ip(request), section="peplink", fields=changed)
     await db.commit()
+    svc.wake()
     return await _admin_view(db, row)
 
 
@@ -193,6 +194,7 @@ async def add_tracker(body: TrackerIn, request: Request, user: User = Depends(MA
     audit(db, body.tenant_id, "tracker.added", user_id=user.id, ip=client_ip(request), name=t.name, serial=t.serial)
     await db.commit()
     bus.publish(t.tenant_id, "tracker.moved", svc.tracker_dict(t))
+    svc.wake()
     return await _admin_view(db, await _row(db))
 
 

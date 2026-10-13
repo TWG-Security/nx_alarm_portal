@@ -721,3 +721,22 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .model-panel .mp-adv { font-size: 12px; color: #cfcfcf; }
 .model-panel .mp-adv label { display: block; margin: 4px 0; }
 .model-panel button.danger { border-color: #C0392B; color: #ffb4a8; }
+
+/* ---- guards / patrol vehicles (guards.js) */
+.guard-icon { background: none; border: 0; }
+.guard { position: relative; width: 18px; height: 18px; transform: translate(-50%, -50%); white-space: nowrap; pointer-events: auto; }
+.guard-dot { position: relative; width: 18px; height: 18px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 1px #1A1A1A, 0 2px 6px rgba(0,0,0,.5); background: var(--guard-c, #8a8a8a); flex: 0 0 auto; }
+.guard-arrow { position: absolute; left: 50%; top: 50%; width: 0; height: 0; margin: -16px 0 0 -6px; border: 6px solid transparent; border-bottom: 9px solid var(--guard-c, #8a8a8a); transform-origin: 6px 16px; }
+.guard-label { position: absolute; left: 22px; top: -4px; font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #fff; background: rgba(13,13,13,.82); padding: 3px 6px; border-radius: 4px; }
+.guard-label small { display: block; font-weight: 400; color: #cfcfcf; }
+.guard--live { --guard-c: #2FA36B; }
+.guard--late { --guard-c: #D9A21B; }
+.guard--stale, .guard--none { --guard-c: #8a8a8a; }
+.guard--stale .guard-label, .guard--none .guard-label { color: #cfcfcf; }
+.guard--err .guard-dot { box-shadow: 0 0 0 2px #C0392B, 0 2px 6px rgba(0,0,0,.5); }
+.guard-list { list-style: none; margin: 0; padding: 0; }
+.guard-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 4px; border-radius: 6px; cursor: pointer; }
+.guard-list li:hover, .guard-list li.following { background: var(--hover, rgba(127,127,127,.12)); }
+.guard-list li.following b::after { content: " · following"; font-weight: 400; color: #E08A30; }
+.guard-list .small-print { flex-basis: 100%; padding-left: 20px; margin-top: -2px; }
+.guard-pip { width: 12px; height: 12px; border-radius: 50%; background: var(--guard-c, #8a8a8a); flex: 0 0 auto; }

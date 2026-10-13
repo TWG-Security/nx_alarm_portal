@@ -2,6 +2,7 @@
 import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
+import { mountGuards } from "./guards.js";
 
 const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
@@ -13,6 +14,8 @@ const SEVERITY = { alarm: 0, warn: 1, offline: 2, ok: 3 };
 const DEFAULT_CENTER = [39.8, -98.6];
 const lmap = createMap(document.getElementById("map"), { center: DEFAULT_CENTER, zoom: 4 });
 
+// Guards / patrol vehicles (Peplink GPS): markers + trails on this map, a list in the side panel.
+const guards = mountGuards(lmap, document.getElementById("guard-list"), { onChange: () => globe?.update() });
 const stateOf = (site) => { const c = openCounts(site.id); return { c, marker: markerState(site, c) }; };
 
 // ---------------------------------------------------------------- left: stats, sites, site detail
@@ -219,7 +222,7 @@ async function openGlobeView(site) {
   try {
     const { openGlobe } = await import("./globe.js");
     globe = await openGlobe(globeEl, {
-      pins: globePins, cameras: globeCams, models: globeModels,
+      pins: globePins, cameras: globeCams, models: globeModels, guards: () => guards.list(),
       onPick: (id) => select(id),
       onPickCamera: pickCamera,
       onView: renderCoords,

@@ -60,11 +60,12 @@ const cssVar = (name, fallback) => getComputedStyle(document.documentElement).ge
  *   pins: () => [{ id, name, lat, lng, state: "alarm"|"warn"|"offline"|"ok", count, disarmed }]
  *   cameras: () => [{ siteId, deviceId, name, lat, lng, heading, fov, range_m, alarm }]
  *   models: () => [{ siteId, url, anchor, placement: { lat, lng, height, heading, scale } }]: site 3D models (3D Tiles)
+ *   guards: () => [{ id, name, lat, lng, speed, fresh: "live"|"late"|"stale"|"none", trail: [[lat, lng], ...] }]
  *   onPick(siteId): a site pin was clicked; onPickCamera(siteId, deviceId): a camera was clicked
  *   onView({ lat, lng, alt, heading }): the view stopped moving (for the HUD readout)
  *   onTooSlow(reason): frames are slow enough to delay alarms; the caller should close the view
  */
-export async function openGlobe(el, { pins, cameras = () => [], models = () => [], onPick, onPickCamera, onView, onTooSlow }) {
+export async function openGlobe(el, { pins, cameras = () => [], models = () => [], guards = () => [], onPick, onPickCamera, onView, onTooSlow }) {
   const problem = graphicsProblem();
   if (problem) throw new Error(problem);
   const Cesium = await loadCesium();
@@ -284,11 +285,41 @@ export async function openGlobe(el, { pins, cameras = () => [], models = () => [
     if (ts) viewer.camera.flyToBoundingSphere(ts.boundingSphere, { offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-35), ts.boundingSphere.radius * 2.6), duration: 1.2 });
   }
 
+  // ---- guards / patrol vehicles: a dot + name tag and their recent trail, both on the ground
+  const guardsE = new Map();      // id -> { dot, trail }
+  const GUARD_COLOR = { live: Cesium.Color.fromCssColorString("#2FA36B"), late: Cesium.Color.fromCssColorString("#D9A21B") };
+  function updateGuards() {
+    const seen = new Set();
+    for (const g of guards()) {
+      if (g.lat == null) continue;
+      seen.add(g.id);
+      let e = guardsE.get(g.id);
+      if (!e) {
+        e = {
+          dot: viewer.entities.add({
+            point: { pixelSize: 13, outlineColor: Cesium.Color.WHITE, outlineWidth: 3, heightReference: clamp, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+            label: hudLabel("", { pixelOffset: new Cesium.Cartesian2(0, -14), font: "600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" }),
+          }),
+          trail: viewer.entities.add({ polyline: { clampToGround: true, width: 3, material: ORANGE.withAlpha(0.8), classificationType: Cesium.ClassificationType.BOTH } }),
+        };
+        guardsE.set(g.id, e);
+      }
+      const col = GUARD_COLOR[g.fresh] || Cesium.Color.fromCssColorString("#8a8a8a");
+      e.dot.position = Cesium.Cartesian3.fromDegrees(g.lng, g.lat, 0);
+      e.dot.point.color = col;
+      e.dot.label.text = `${g.name.toUpperCase()}${g.speed != null && g.speed * 2.23694 >= 1 ? `  ${Math.round(g.speed * 2.23694)} MPH` : ""}`;
+      const pts = (g.trail || []).slice(-200);
+      e.trail.show = pts.length > 1;
+      if (pts.length > 1) e.trail.polyline.positions = Cesium.Cartesian3.fromDegreesArray(pts.flatMap(([la, lo]) => [lo, la]));
+    }
+    for (const [id, e] of guardsE) if (!seen.has(id)) { viewer.entities.remove(e.dot); viewer.entities.remove(e.trail); guardsE.delete(id); }
+  }
+
   // Ground-draped shapes are built in the background and can finish after the frame that asked
   // for them; with on-demand rendering nothing would redraw, so ask a few more times.
   let settle = null;
   function update() {
-    updatePins(); updateCameras(); updateModels(); scene.requestRender();
+    updatePins(); updateCameras(); updateModels(); updateGuards(); scene.requestRender();
     clearInterval(settle);
     let n = 0;
     settle = setInterval(() => { scene.requestRender(); if (++n >= 6) clearInterval(settle); }, 250);

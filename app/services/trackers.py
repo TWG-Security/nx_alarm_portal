@@ -34,6 +34,13 @@ _client: tuple[tuple[str, str], peplink.Client] | None = None
 _per_device_orgs: dict[str, float] = {}         # org id -> until (monotonic): use per-device calls
 _last_prune: float | None = None
 transport = None                                # tests: an httpx transport for the IC2 client
+_wake: asyncio.Event | None = None
+
+
+def wake() -> None:
+    """Poll now (settings saved, a tracker added) instead of at the end of the current wait."""
+    if _wake is not None:
+        _wake.set()
 
 
 def utcnow() -> datetime:
@@ -171,8 +178,11 @@ def _move(db, t: Tracker, fix: peplink.Fix) -> None:
 
 async def run() -> None:
     """The background loop (started in main.lifespan)."""
+    global _wake
+    _wake = asyncio.Event()
     await asyncio.sleep(3)
     while True:
+        _wake.clear()                   # before the round: a wake-up during it means "go again right away"
         try:
             wait = await poll_once()
         except asyncio.CancelledError:
@@ -180,4 +190,7 @@ async def run() -> None:
         except Exception:  # noqa: BLE001 - keep tracking alive whatever happens
             log.exception("tracker poll failed")
             wait = 30.0
-        await asyncio.sleep(wait)
+        try:
+            await asyncio.wait_for(_wake.wait(), wait)
+        except asyncio.TimeoutError:
+            pass
