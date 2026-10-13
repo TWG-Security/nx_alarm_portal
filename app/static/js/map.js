@@ -251,6 +251,7 @@ async function openGlobeView(site) {
 }
 
 function closeGlobeView() {
+  if (cv) { cv.dirty = false; closeCamView(); }
   closeCamPanel(); closePlacing(); models.hide();
   $id("globe-model").hidden = true; $id("globe-model-show").hidden = true;
   try { globe?.destroy(); } catch (err) { console.error(err); }
@@ -393,7 +394,10 @@ async function openCamPanel(siteId, deviceId) {
   camPanel.classList.toggle("cam-alarm", !!a);
   camPanel.innerHTML = `<div class="cam-head"><span><b>${esc(p.name || "Camera")}</b> <span class="muted">· ${esc(s.name)}</span></span>
       <span>${a ? `<button type="button" data-cam-alarm="${a.id}" title="Open this alarm">ALARM ▸</button>` : ""}<button type="button" data-cam-close aria-label="Close">✕</button></span></div>
-    <div class="cam-live"></div>`;
+    <div class="cam-live"></div>
+    ${globe && (p.fov || 60) < 180 ? `<div class="cam-actions"><button type="button" class="btn btn-sm" data-cam-view>View from camera</button>
+      ${CFG.isAdmin ? '<button type="button" class="btn btn-sm" data-cam-calibrate title="Line the camera\'s picture up with the 3D view">Calibrate</button>' : ""}</div>` : ""}`;
+  globe?.selectCamera(siteId, deviceId);
   camPanel.hidden = false;
   const { mountLive } = await import("./live.js");
   if (camOpen?.deviceId !== deviceId) return;
@@ -401,14 +405,154 @@ async function openCamPanel(siteId, deviceId) {
     { label: false, base: `/media/sites/${siteId}/cameras/${encodeURIComponent(deviceId)}` });
 }
 function closeCamPanel() {
+  globe?.selectCamera(null);
   try { camLive?.destroy(); } catch (err) { console.error(err); }
   camLive = null; camOpen = null; camPanel.hidden = true; camPanel.replaceChildren();
 }
 camPanel.addEventListener("click", (e) => {
   if (e.target.closest("[data-cam-close]")) return closeCamPanel();
+  if (e.target.closest("[data-cam-view]") && camOpen) return openCamView(camOpen.siteId, camOpen.deviceId, false);
+  if (e.target.closest("[data-cam-calibrate]") && camOpen) return openCamView(camOpen.siteId, camOpen.deviceId, true);
   const id = e.target.closest("[data-cam-alarm]")?.dataset.camAlarm;
   if (id) { const a = openAlarms.get(Number(id)); if (a) focusAlarm(a); }
 });
+
+// ---- View from camera + Calibrate (3D view). The 3D view jumps to the camera's pose (globe.viewFromCamera) and the
+// camera's live picture lies over it at the same width, half see-through. Calibrate (admins): drag on the picture
+// to turn / tilt, scroll to zoom (field of view), arrow keys for fine steps, numbers for height, roll and position,
+// until the picture and the 3D scene line up; Save stores the pose (height_m, tilt, roll, heading, fov, lat/lng).
+const camViewEl = $id("cam-view"), camViewImg = $id("cam-view-img"), camViewDrag = $id("cam-view-drag"), camCal = $id("cam-cal");
+let cv = null;      // { siteId, deviceId, ctl, start, timer, calibrating, dirty }
+const CAL_FIELDS = [["heading", "Turn", "°", 0.5], ["tilt", "Tilt down", "°", 0.25], ["fov", "Width (field of view)", "°", 0.5],
+                    ["roll", "Roll", "°", 0.25], ["height_m", "Height above ground", "m", 0.1]];
+function fitPicture() {
+  if (!cv) return;
+  const box = camViewEl.getBoundingClientRect(), aspect = camViewImg.naturalWidth ? camViewImg.naturalWidth / camViewImg.naturalHeight : 16 / 9;
+  const h = box.width / aspect;              // the 3D view's field of view spans its full width: so does the picture
+  Object.assign(camViewImg.style, { width: `${box.width}px`, height: `${h}px`, top: `${(box.height - h) / 2}px` });
+  if (cv.ctl.pose.aspect !== aspect) cv.ctl.setPose({ aspect });
+}
+function refreshPicture() {
+  if (!cv) return;
+  const url = `/media/sites/${cv.siteId}/cameras/${encodeURIComponent(cv.deviceId)}/live.jpg?t=${Date.now()}`;
+  const img = new Image();
+  img.onload = () => { if (cv) { camViewImg.src = img.src; fitPicture(); } };
+  img.src = url;
+}
+function openCamView(siteId, deviceId, calibrate) {
+  const s = sites.get(siteId), p = s?.camera_places?.[deviceId];
+  if (!globe || !p) return;
+  closeCamView();
+  const ctl = globe.viewFromCamera({ siteId, deviceId, ...p });
+  cv = { siteId, deviceId, ctl, start: ctl.pose, calibrating: false, dirty: false, saved: "" };
+  $id("cam-view-name").textContent = p.name || "Camera";
+  $id("cam-view-cal").hidden = !CFG.isAdmin;
+  camViewImg.style.opacity = String($id("cam-view-opacity").value / 100);
+  camViewEl.hidden = false;
+  camPanel.hidden = true; globeBar.hidden = true; hud.hidden = true;      // just the camera's view
+  refreshPicture();
+  cv.timer = setInterval(() => { if (!document.hidden) refreshPicture(); }, 1500);
+  if (calibrate && CFG.isAdmin) startCalibrate();
+}
+function closeCamView() {
+  if (!cv) return;
+  if (cv.dirty && !confirm("Leave without saving the calibration?")) return false;
+  clearInterval(cv.timer);
+  cv.ctl.exit();
+  cv = null;
+  camViewEl.hidden = true; camCal.hidden = true; camViewDrag.hidden = true;
+  camViewImg.removeAttribute("src");
+  if (globe) { globeBar.hidden = false; hud.hidden = false; }
+  if (camOpen) camPanel.hidden = false;
+  return true;
+}
+function startCalibrate() {
+  cv.calibrating = true;
+  camViewDrag.hidden = false;
+  $id("cam-view-cal").hidden = true;
+  if (Number($id("cam-view-opacity").value) > 70 || Number($id("cam-view-opacity").value) < 30) { $id("cam-view-opacity").value = 55; camViewImg.style.opacity = "0.55"; }
+  paintCal();
+}
+function paintCal() {
+  if (!cv?.calibrating) return;
+  const pz = cv.ctl.pose;
+  camCal.hidden = false;
+  camCal.innerHTML = `<div class="cam-cal-head"><b>Calibrate</b> <span class="muted">Drag the picture to turn / tilt · scroll to zoom · arrow keys for fine steps</span></div>
+    <div class="cam-cal-grid">${CAL_FIELDS.map(([k, label, unit, step]) => `<label>${label}
+      <span class="cam-cal-num"><button type="button" data-cal-step="${k}" data-by="${-step}" aria-label="Less">−</button>
+      <input type="number" data-cal="${k}" step="${step}" value="${(+pz[k]).toFixed(k === "height_m" ? 2 : 2)}">${unit}
+      <button type="button" data-cal-step="${k}" data-by="${step}" aria-label="More">+</button></span></label>`).join("")}
+      <label>Move the camera <span class="cam-cal-nudge">${[["N", 0, 0.25], ["S", 0, -0.25], ["W", -0.25, 0], ["E", 0.25, 0]].map(([d, e, n]) =>
+        `<button type="button" data-cal-move="${e},${n}" title="Move 25 cm ${d}">${d}</button>`).join("")}</span></label></div>
+    <div class="cam-cal-foot"><span class="muted" id="cam-cal-say">${esc(cv.saved || (cv.dirty ? "Not saved yet" : "Line up edges, corners and posts in both."))}</span>
+      <button type="button" class="btn btn-sm" data-cal-reset>Reset</button>
+      <button type="button" class="btn btn-sm btn-primary" data-cal-save>Save</button></div>`;
+}
+const clampDeg = (k, v) => (k === "heading" ? ((v % 360) + 360) % 360 : k === "tilt" ? Math.max(-90, Math.min(90, v))
+  : k === "roll" ? Math.max(-45, Math.min(45, v)) : k === "fov" ? Math.max(5, Math.min(170, v)) : Math.max(0, Math.min(300, v)));
+function nudge(values) {
+  if (!cv?.calibrating) return;
+  const pz = cv.ctl.pose, next = {};
+  for (const [k, v] of Object.entries(values)) next[k] = k === "lat" || k === "lng" ? v : clampDeg(k, v);
+  cv.ctl.setPose(next);
+  cv.dirty = true; cv.saved = "";
+  for (const [k] of CAL_FIELDS) {
+    const el = camCal.querySelector(`[data-cal="${k}"]`);
+    if (el && document.activeElement !== el) el.value = (+cv.ctl.pose[k]).toFixed(2);
+  }
+  const say = $id("cam-cal-say"); if (say) say.textContent = "Not saved yet";
+  void pz;
+}
+async function saveCalibration() {
+  const pz = cv.ctl.pose, s = sites.get(cv.siteId), p = s?.camera_places?.[cv.deviceId] || {};
+  const body = { lat: pz.lat, lng: pz.lng, heading: pz.heading, fov: Math.round(pz.fov * 100) / 100, range_m: p.range_m || pz.range,
+                 height_m: Math.round(pz.height_m * 100) / 100, tilt: Math.round(pz.tilt * 100) / 100, roll: Math.round(pz.roll * 100) / 100 };
+  try {
+    await saveSite(await api(`/api/sites/${cv.siteId}/cameras/${encodeURIComponent(cv.deviceId)}`, { method: "PUT", body }));
+    cv.dirty = false; cv.saved = "Saved ✓"; cv.start = cv.ctl.pose;
+    paintCal();
+    toast("Calibration saved");
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+}
+$id("cam-view-exit").addEventListener("click", () => closeCamView());
+$id("cam-view-cal").addEventListener("click", () => cv && startCalibrate());
+$id("cam-view-opacity").addEventListener("input", (e) => { camViewImg.style.opacity = String(e.target.value / 100); });
+camCal.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || !cv) return;
+  if (b.dataset.calStep) { const k = b.dataset.calStep; nudge({ [k]: cv.ctl.pose[k] + Number(b.dataset.by) }); return; }
+  if (b.dataset.calMove) {
+    const [de, dn] = b.dataset.calMove.split(",").map(Number), pz = cv.ctl.pose;
+    nudge({ lat: pz.lat + dn / 111320, lng: pz.lng + de / (111320 * Math.cos(pz.lat * Math.PI / 180)) });
+    return;
+  }
+  if (b.matches("[data-cal-reset]")) { cv.ctl.setPose(cv.start); cv.dirty = false; paintCal(); return; }
+  if (b.matches("[data-cal-save]")) saveCalibration();
+});
+camCal.addEventListener("change", (e) => {
+  const k = e.target.dataset.cal, v = Number(e.target.value);
+  if (k && Number.isFinite(v)) nudge({ [k]: v });
+});
+// Drag the picture: left/right turns, up/down tilts (the scene follows the picture). Scroll zooms.
+let calDrag = null;
+camViewDrag.addEventListener("pointerdown", (e) => { if (!cv) return; calDrag = { x: e.clientX, y: e.clientY, pose: cv.ctl.pose }; camViewDrag.setPointerCapture(e.pointerId); });
+camViewDrag.addEventListener("pointermove", (e) => {
+  if (!calDrag || !cv) return;
+  const perPx = calDrag.pose.fov / camViewEl.getBoundingClientRect().width;      // degrees per screen pixel
+  nudge({ heading: calDrag.pose.heading - (e.clientX - calDrag.x) * perPx, tilt: calDrag.pose.tilt - (e.clientY - calDrag.y) * perPx });
+});
+camViewDrag.addEventListener("pointerup", () => { calDrag = null; });
+camViewDrag.addEventListener("wheel", (e) => { if (!cv) return; e.preventDefault(); nudge({ fov: cv.ctl.pose.fov * (e.deltaY > 0 ? 1.02 : 1 / 1.02) }); }, { passive: false });
+document.addEventListener("keydown", (e) => {
+  if (!cv) return;
+  if (e.key === "Escape") { if (!document.querySelector("dialog[open]")) closeCamView(); return; }   // Esc on an alarm pop-up only closes it
+  if (!cv.calibrating || e.target.matches("input, textarea")) return;
+  const fine = e.shiftKey ? 0.05 : 0.25, pz = cv.ctl.pose;
+  const k = { ArrowLeft: ["heading", -fine], ArrowRight: ["heading", fine], ArrowUp: ["tilt", -fine], ArrowDown: ["tilt", fine],
+              "+": ["fov", -fine * 2], "=": ["fov", -fine * 2], "-": ["fov", fine * 2] }[e.key];
+  if (k) { e.preventDefault(); nudge({ [k[0]]: pz[k[0]] + k[1] }); }
+});
+window.addEventListener("resize", fitPicture);
 
 // ---- place and edit cameras (admins). The editor in globe.js / plan.js does the mouse work; this panel
 // lists the site's cameras and shows/edits the numbers. Every finished change is saved at once.

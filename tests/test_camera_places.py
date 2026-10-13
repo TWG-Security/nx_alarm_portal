@@ -72,3 +72,19 @@ async def test_live_view_only_for_placed_cameras(client, session, admin, monkeyp
     await client.put(f"/api/sites/{site.id}/cameras/cam-1", json={"lat": 40, "lng": -75})
     r = await client.get(f"/media/sites/{site.id}/cameras/cam-1/live.jpg")
     assert r.status_code == 200 and r.content == b"\xff\xd8JPEG" and asked == [("cam-1", -1)]
+
+
+async def test_a_calibrated_3d_pose_survives_moving_the_camera_on_the_map(client, session, admin):
+    """height / tilt / roll come from the 3D view's Calibrate; the 2D editors don't send them, and must not undo them."""
+    tenant, user = admin
+    site = await make_site(session, tenant)
+    await login(client, user.email)
+    r = await client.put(f"/api/sites/{site.id}/cameras/cam-1", json={"lat": 40.1, "lng": -75.2, "heading": 90, "fov": 70.25,
+                                                                      "range_m": 30, "height_m": 5.25, "tilt": 18.5, "roll": -1.5})
+    assert r.json()["camera_places"]["cam-1"] == {"name": "Front Gate", "lat": 40.1, "lng": -75.2, "heading": 90.0, "fov": 70.25,
+                                                  "range_m": 30.0, "height_m": 5.25, "tilt": 18.5, "roll": -1.5}
+    r = await client.put(f"/api/sites/{site.id}/cameras/cam-1", json={"lat": 40.11, "lng": -75.21, "heading": 95, "fov": 70, "range_m": 30})
+    p = r.json()["camera_places"]["cam-1"]
+    assert (p["lat"], p["heading"], p["height_m"], p["tilt"], p["roll"]) == (40.11, 95.0, 5.25, 18.5, -1.5)
+    for bad in ({"tilt": 91}, {"height_m": -1}, {"roll": 60}):
+        assert (await client.put(f"/api/sites/{site.id}/cameras/cam-1", json={"lat": 40.1, "lng": -75.2, **bad})).status_code == 422

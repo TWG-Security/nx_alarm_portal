@@ -182,47 +182,218 @@ export async function openGlobe(el, { pins, cameras = () => [], models = () => [
   const conePositions = (c) => Cesium.Cartesian3.fromDegreesArray(coneLngLat(c));
   const distM = (a, b) => Math.hypot((b.lng - a.lng) * M_PER_DEG * Math.cos(Cesium.Math.toRadians(a.lat)), (b.lat - a.lat) * M_PER_DEG);
   const bearing = (a, b) => (Cesium.Math.toDegrees(Math.atan2((b.lng - a.lng) * Math.cos(Cesium.Math.toRadians(a.lat)), b.lat - a.lat)) + 360) % 360;
-  const camsE = new Map();    // "site:device" -> { marker, cone }
+  // ---- cameras in 3D: a small body at the lens (height above the ground), its view as a 3D cone (a pyramid
+  // with the camera's field of view, aim, tilt and roll), and, for the selected camera, its live picture on the
+  // cone's far end. Domes (180°+) keep the flat circle on the ground. The pose maths uses a Cesium.Camera, so
+  // the cone, "View from camera" and Calibrate always agree. Old placements without height / tilt get a 4 m mast
+  // aimed at 60 % of the cone's length.
+  const DEF_HEIGHT = 4, ASPECT = 16 / 9;
+  const rad = Cesium.Math.toRadians;
+  const camGround = (c) => (google ? ground.get(`${c.lat.toFixed(5)},${c.lng.toFixed(5)}`) ?? 0 : 0);
+  function camPose(c) {
+    const height_m = c.height_m ?? DEF_HEIGHT, range = c.range_m || 40;
+    return { lat: c.lat, lng: c.lng, height_m, heading: c.heading || 0, range,
+             tilt: c.tilt ?? Cesium.Math.toDegrees(Math.atan2(height_m, range * 0.6)), roll: c.roll || 0,
+             fov: Math.min(c.fov || 60, 179), aspect: c.aspect || ASPECT };
+  }
+  const scratchCam = new Cesium.Camera(scene);
+  /** The lens in the world: { origin, dir, right, up } (unit vectors, Earth-fixed). */
+  function lens(p) {
+    const origin = Cesium.Cartesian3.fromDegrees(p.lng, p.lat, camGround(p) + p.height_m);
+    scratchCam.setView({ destination: origin, orientation: { heading: rad(p.heading), pitch: rad(-p.tilt), roll: rad(p.roll) } });
+    return { origin, dir: Cesium.Cartesian3.clone(scratchCam.directionWC), right: Cesium.Cartesian3.clone(scratchCam.rightWC),
+             up: Cesium.Cartesian3.clone(scratchCam.upWC) };
+  }
+  /** The 4 corners (tl, tr, br, bl) of the view at `dist` metres in front of the lens. */
+  function corners(p, L, dist) {
+    const tx = Math.tan(rad(p.fov) / 2), ty = tx / p.aspect, C = Cesium.Cartesian3;
+    const at = (sx, sy) => {
+      const v = C.multiplyByScalar(L.dir, dist, new C());
+      C.add(v, C.multiplyByScalar(L.right, sx * tx * dist, new C()), v);
+      C.add(v, C.multiplyByScalar(L.up, sy * ty * dist, new C()), v);
+      return C.add(L.origin, v, v);
+    };
+    return [at(-1, 1), at(1, 1), at(1, -1), at(-1, -1)];
+  }
+  function bodyOrientation(L) {
+    const C = Cesium.Cartesian3, m = new Cesium.Matrix3();
+    Cesium.Matrix3.setColumn(m, 0, L.dir, m);
+    Cesium.Matrix3.setColumn(m, 1, C.cross(L.up, L.dir, new C()), m);
+    Cesium.Matrix3.setColumn(m, 2, L.up, m);
+    return Cesium.Quaternion.fromRotationMatrix(m);
+  }
+
+  const camsE = new Map();    // "site:device" -> { marker, body, faces[5], edges, ground, groundEdge }
+  let selCam = null;          // { key, siteId, deviceId, quad, img, timer }: the camera whose picture shows on its cone
   function updateCameras() {
     const seen = new Set();
     for (const c of cameras()) {
       const key = `${c.siteId}:${c.deviceId}`;
       seen.add(key);
-      const hide = key === editKey;   // being edited: the editor draws it
+      const hide = key === editKey || key === camView?.key;   // being edited (the editor draws it) / looked through
       const tint = c.alarm ? color("alarm") : ORANGE;
       let e = camsE.get(key);
       if (!e) {
+        const tag = { siteId: c.siteId, deviceId: c.deviceId };
+        const face = () => viewer.entities.add({ polygon: { perPositionHeight: true, arcType: Cesium.ArcType.NONE } });
         e = {
           marker: viewer.entities.add({
-            point: { pixelSize: 10, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, heightReference: clamp, disableDepthTestDistance: Number.POSITIVE_INFINITY },
-            label: hudLabel("", { pixelOffset: new Cesium.Cartesian2(0, -12), font: "600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+            point: { pixelSize: 10, outlineColor: Cesium.Color.WHITE, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY },
+            label: hudLabel("", { pixelOffset: new Cesium.Cartesian2(0, -12), heightReference: Cesium.HeightReference.NONE,
+                                  font: "600 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
                                   distanceDisplayCondition: new Cesium.DistanceDisplayCondition(0, 2500) }),
           }),
-          cone: viewer.entities.add({ polygon: { classificationType: Cesium.ClassificationType.BOTH } }),
-          edge: viewer.entities.add({ polyline: { clampToGround: true, width: 2, classificationType: Cesium.ClassificationType.BOTH } }),
+          body: viewer.entities.add({ box: { dimensions: new Cesium.Cartesian3(0.7, 0.32, 0.32), outline: true, outlineColor: INK } }),
+          faces: [face(), face(), face(), face(), face()],
+          edges: viewer.entities.add({ polyline: { width: 2, arcType: Cesium.ArcType.NONE } }),
+          mast: viewer.entities.add({ polyline: { width: 1.5, arcType: Cesium.ArcType.NONE, material: Cesium.Color.WHITE.withAlpha(0.6) } }),
+          ground: viewer.entities.add({ polygon: { classificationType: Cesium.ClassificationType.BOTH } }),
+          groundEdge: viewer.entities.add({ polyline: { clampToGround: true, width: 2, classificationType: Cesium.ClassificationType.BOTH } }),
         };
-        e.marker.camera = e.cone.camera = e.edge.camera = { siteId: c.siteId, deviceId: c.deviceId };
+        for (const part of [e.marker, e.body, ...e.faces, e.edges, e.mast, e.ground, e.groundEdge]) part.camera = tag;
         camsE.set(key, e);
+        if (google && !ground.has(`${c.lat.toFixed(5)},${c.lng.toFixed(5)}`)) groundHeight(c.lat, c.lng).then(() => { updateCameras(); scene.requestRender(); });
       }
-      e.marker.position = Cesium.Cartesian3.fromDegrees(c.lng, c.lat, 0);
+      const p = camPose(c), dome = (c.fov || 60) >= 180;
+      const L = lens(p);
+      e.marker.position = L.origin;
       e.marker.point.color = tint;
       e.marker.point.pixelSize = c.alarm ? 14 : 10;
       e.marker.label.text = `${c.alarm ? "ALARM  " : ""}${(c.name || "Camera").toUpperCase()}`;
       e.marker.label.fillColor = c.alarm ? color("alarm").brighten(0.4, new Cesium.Color()) : Cesium.Color.WHITE;
-      const ring = conePositions(c);
-      e.cone.polygon.hierarchy = new Cesium.PolygonHierarchy(ring);
-      e.cone.polygon.material = tint.withAlpha(c.alarm ? 0.5 : 0.32);
-      e.edge.polyline.positions = [...ring, ring[0]];
-      e.edge.polyline.material = tint;
-      e.edge.polyline.width = c.alarm ? 3 : 2;
-      e.marker.show = e.cone.show = e.edge.show = !hide;
+      e.body.position = L.origin;
+      e.body.orientation = bodyOrientation(L);
+      e.body.box.material = tint;
+      e.mast.polyline.positions = [Cesium.Cartesian3.fromDegrees(p.lng, p.lat, camGround(p)), L.origin];
+      if (!dome) {
+        const [tl, tr, br, bl] = corners(p, L, p.range);
+        [[L.origin, tl, tr], [L.origin, tr, br], [L.origin, br, bl], [L.origin, bl, tl], [tl, tr, br, bl]].forEach((ring, i) => {
+          e.faces[i].polygon.hierarchy = new Cesium.PolygonHierarchy(ring);
+          e.faces[i].polygon.material = tint.withAlpha(i === 4 ? 0.08 : c.alarm ? 0.3 : 0.16);
+        });
+        e.edges.polyline.positions = [tl, tr, br, bl, tl, L.origin, tr, br, L.origin, bl];
+        e.edges.polyline.material = tint;
+        e.edges.polyline.width = c.alarm ? 3 : 2;
+      } else {
+        const ring = conePositions(c);
+        e.ground.polygon.hierarchy = new Cesium.PolygonHierarchy(ring);
+        e.ground.polygon.material = tint.withAlpha(c.alarm ? 0.5 : 0.32);
+        e.groundEdge.polyline.positions = [...ring, ring[0]];
+        e.groundEdge.polyline.material = tint;
+      }
+      e.marker.show = e.body.show = e.mast.show = !hide;
+      e.faces.forEach((f) => { f.show = !hide && !dome && camerasShown; });
+      e.edges.show = !hide && !dome && camerasShown;
+      e.ground.show = e.groundEdge.show = !hide && dome && camerasShown;
+      if (selCam?.key === key) placePicture(c, p, L);
     }
     for (const [key, e] of camsE) {
       if (seen.has(key)) continue;
-      for (const part of [e.marker, e.cone, e.edge]) viewer.entities.remove(part);
+      for (const part of [e.marker, e.body, ...e.faces, e.edges, e.mast, e.ground, e.groundEdge]) viewer.entities.remove(part);
       camsE.delete(key);
+      if (selCam?.key === key) selectCamera(null);
     }
   }
+  let camerasShown = true;
+
+  // The selected camera's live picture on the far end of its cone (refreshed every few seconds).
+  const PICTURE_EVERY_MS = 3000;
+  const pictureUrl = (siteId, deviceId) => `/media/sites/${siteId}/cameras/${encodeURIComponent(deviceId)}/live.jpg`;
+  function quad(cs, image) {
+    const C = Cesium.Cartesian3, pos = new Float64Array(12), nrm = new Float32Array(12);
+    cs.forEach((c, i) => pos.set([c.x, c.y, c.z], i * 3));
+    const n = C.normalize(C.cross(C.subtract(cs[1], cs[0], new C()), C.subtract(cs[3], cs[0], new C()), new C()), new C());
+    for (let i = 0; i < 4; i++) nrm.set([n.x, n.y, n.z], i * 3);
+    const geometry = new Cesium.Geometry({
+      attributes: {
+        position: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.DOUBLE, componentsPerAttribute: 3, values: pos }),
+        normal: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 3, values: nrm }),
+        st: new Cesium.GeometryAttribute({ componentDatatype: Cesium.ComponentDatatype.FLOAT, componentsPerAttribute: 2,
+                                           values: new Float32Array([0, 1, 1, 1, 1, 0, 0, 0]) }),
+      },
+      indices: new Uint16Array([0, 1, 2, 0, 2, 3]),
+      primitiveType: Cesium.PrimitiveType.TRIANGLES,
+      boundingSphere: Cesium.BoundingSphere.fromPoints(cs),
+    });
+    return new Cesium.Primitive({
+      geometryInstances: new Cesium.GeometryInstance({ geometry }),
+      appearance: new Cesium.MaterialAppearance({ material: Cesium.Material.fromType("Image", { image }), flat: true,
+                                                  faceForward: true, closed: false, translucent: false }),
+      asynchronous: false,
+    });
+  }
+  function placePicture(c, p, L) {
+    if (!selCam) return;
+    if (selCam.quad) scene.primitives.remove(selCam.quad);
+    selCam.quad = null;
+    if (!selCam.img || (c.fov || 60) >= 180) return;
+    if (selCam.img.naturalWidth) p.aspect = selCam.img.naturalWidth / selCam.img.naturalHeight;
+    selCam.quad = scene.primitives.add(quad(corners(p, L, p.range), selCam.img));
+    selCam.quad.show = camView?.key !== selCam.key;
+    scene.requestRender();
+  }
+  function loadPicture(sel) {
+    const img = new Image();
+    img.onload = () => {
+      if (selCam !== sel) return;
+      sel.img = img;
+      const c = cameras().find((x) => `${x.siteId}:${x.deviceId}` === sel.key);
+      if (c) { const p = camPose(c); placePicture(c, p, lens(p)); }
+    };
+    img.src = `${pictureUrl(sel.siteId, sel.deviceId)}?t=${Date.now()}`;
+  }
+  /** Show this camera's live picture on its cone (null: none). */
+  function selectCamera(siteId, deviceId) {
+    if (selCam) { clearInterval(selCam.timer); if (selCam.quad) scene.primitives.remove(selCam.quad); }
+    selCam = null;
+    if (siteId == null) { scene.requestRender(); return; }
+    const sel = { key: `${siteId}:${deviceId}`, siteId, deviceId, quad: null, img: null, timer: null };
+    selCam = sel;
+    loadPicture(sel);
+    sel.timer = setInterval(() => { if (selCam === sel && !document.hidden) loadPicture(sel); }, PICTURE_EVERY_MS);
+  }
+  function showCameraCones(on) { camerasShown = on; updateCameras(); scene.requestRender(); }
+
+  // ---- View from camera: put the 3D view exactly where the camera is, looking where it looks, with its field of
+  // view. The page lays the camera's live picture over it (same width as the view), so lining the two up is the
+  // calibration. setPose() moves the view as the numbers change; exit() puts the previous view back.
+  let camView = null;
+  function viewFromCamera(c) {
+    exitCameraView();
+    const ctl = scene.screenSpaceCameraController, cam = viewer.camera;
+    const before = { position: Cesium.Cartesian3.clone(cam.positionWC), heading: cam.heading, pitch: cam.pitch, roll: cam.roll,
+                     fov: cam.frustum.fov, near: cam.frustum.near };
+    let pose = camPose(c);
+    const apply = () => {
+      const L = lens(pose), W = scene.canvas.clientWidth, H = scene.canvas.clientHeight;
+      cam.setView({ destination: L.origin, orientation: { heading: rad(pose.heading), pitch: rad(-pose.tilt), roll: rad(pose.roll) } });
+      // Cesium's fov is across the wider side of the canvas: the picture spans the view's full width.
+      const half = Math.tan(rad(pose.fov) / 2);
+      cam.frustum.fov = W >= H ? rad(pose.fov) : 2 * Math.atan(half * H / W);
+      cam.frustum.near = 0.2;
+      scene.requestRender();
+    };
+    ctl.enableInputs = false;
+    if (selCam?.quad) selCam.quad.show = false;          // its own picture would sit in front of us
+    camView = {
+      key: `${c.siteId}:${c.deviceId}`,
+      get pose() { return { ...pose }; },
+      setPose(values) { pose = { ...pose, ...values }; apply(); },
+      exit() {
+        ctl.enableInputs = true;
+        cam.frustum.fov = before.fov; cam.frustum.near = before.near;
+        cam.setView({ destination: before.position, orientation: { heading: before.heading, pitch: before.pitch, roll: before.roll } });
+        camView = null;
+        if (selCam?.quad) selCam.quad.show = true;
+        updateCameras();
+        scene.requestRender();
+      },
+    };
+    updateCameras();
+    apply();
+    return camView;
+  }
+  function exitCameraView() { camView?.exit(); }
 
   // ---- site 3D models (3D Tiles from app/routers/site_models.py). Content is in metres, east/north/up
   // around the model's floor (converted models), or on the Earth already (georeferenced 3D Tiles: then
@@ -550,11 +721,13 @@ export async function openGlobe(el, { pins, cameras = () => [], models = () => [
   update();
   return {
     update, flyTo, setImagery, editCamera, editModel, stopEditing, showModels, flyToModel,
+    selectCamera, viewFromCamera, exitCameraView, showCameraCones, cameraPose: camPose,
+    get cameraView() { return camView; },
     modelState: (siteId) => { const e = modelsE.get(siteId); return e ? { loaded: !!e.tileset, failed: e.failed || "", tiles: e.tileset ? e.tileset.statistics.numberOfLoadedTilesTotal : 0 } : null; },
     get editing() { return editor ? { key: editKey, mode: editor.mode, model: modelEdit?.siteId ?? null } : null; },
     currentEditor: () => editor,
     hasBuildings: !!google,
-    destroy() { clearInterval(settle); stopEditing(); input.destroy(); viewer.destroy(); },
+    destroy() { clearInterval(settle); stopEditing(); selectCamera(null); exitCameraView(); input.destroy(); viewer.destroy(); },
     get viewer() { return viewer; },   // for tests and debugging
     stats,
   };

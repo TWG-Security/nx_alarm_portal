@@ -29,6 +29,17 @@
       <div class="hud-tr"><div id="hud-clock"></div><div class="hud-sub" id="hud-counts"></div></div>
       <div class="hud-bl" id="hud-coords"></div>
     </div>
+    <div class="cam-view" id="cam-view" hidden>
+      <img class="cam-view-img" id="cam-view-img" alt="" draggable="false">
+      <div class="cam-view-drag" id="cam-view-drag" hidden title="Drag to turn and tilt, scroll to zoom"></div>
+      <div class="cam-view-bar">
+        <span><b id="cam-view-name"></b> <span class="muted">· view from the camera</span></span>
+        <label class="cam-view-op">Picture <input type="range" id="cam-view-opacity" min="0" max="100" value="55" aria-label="Picture opacity"></label>
+        <button type="button" class="btn btn-sm" id="cam-view-cal" hidden>Calibrate</button>
+        <button type="button" class="btn btn-sm btn-primary" id="cam-view-exit">Exit view</button>
+      </div>
+      <div class="cam-cal" id="cam-cal" hidden></div>
+    </div>
     <div class="cam-panel" id="cam-panel" hidden></div>
     <div class="cam-panel cam-hover" id="cam-hover" hidden aria-hidden="true"></div>
     <div class="cam-place" id="cam-place" hidden></div>

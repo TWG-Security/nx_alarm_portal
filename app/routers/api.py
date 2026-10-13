@@ -254,6 +254,11 @@ class CameraPlaceIn(BaseModel):
     heading: float = Field(default=0, ge=0, le=360)        # degrees clockwise from north, the way it faces
     fov: float = Field(default=60, ge=5, le=360)           # field of view, degrees (360 = fisheye / dome)
     range_m: float = Field(default=40, ge=2, le=500)       # how far the view cone is drawn
+    # 3D pose (the 3D view's camera body, view cone and Calibrate). None = keep what's saved (the 2D editors don't
+    # send them), so placing or aiming a camera on the map never undoes a calibration.
+    height_m: float | None = Field(default=None, ge=0, le=300)   # lens height above the ground at its spot
+    tilt: float | None = Field(default=None, ge=-90, le=90)      # degrees below the horizon (down is positive)
+    roll: float | None = Field(default=None, ge=-45, le=45)      # degrees, clockwise as seen from behind the camera
 
 
 async def _site_cameras(site: Site) -> dict[str, str]:
@@ -307,9 +312,16 @@ async def place_camera(site_id: int, device_id: str, body: CameraPlaceIn, reques
     if device_id not in names and device_id not in (site.camera_places or {}):
         raise HTTPException(404, "That camera isn't on this site")
     places = dict(site.camera_places or {})
-    places[device_id] = {"name": names.get(device_id) or places.get(device_id, {}).get("name", ""),
-                         "lat": round(body.lat, 7), "lng": round(body.lng, 7), "heading": round(body.heading % 360, 1),
-                         "fov": round(body.fov, 1), "range_m": round(body.range_m, 1)}
+    old = places.get(device_id, {})
+    places[device_id] = {"name": names.get(device_id) or old.get("name", ""),
+                         "lat": round(body.lat, 7), "lng": round(body.lng, 7), "heading": round(body.heading % 360, 2),
+                         "fov": round(body.fov, 2), "range_m": round(body.range_m, 1)}
+    for k, digits in (("height_m", 2), ("tilt", 2), ("roll", 2)):
+        v = getattr(body, k)
+        if v is not None:
+            places[device_id][k] = round(v, digits)
+        elif k in old:
+            places[device_id][k] = old[k]
     site.camera_places = places
     audit(db, site.tenant_id, "site.camera_placed", user_id=user.id, site_id=site.id, ip=client_ip(request),
           device_id=device_id, camera=places[device_id]["name"])

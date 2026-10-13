@@ -873,3 +873,25 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .calls { border-bottom: 2px solid #C0392B; padding-bottom: 8px; margin-bottom: 8px; }
 .calls h2 { display: flex; align-items: center; gap: 8px; color: var(--red-text); }
 .call-item { border-left: 4px solid #C0392B; }
+
+/* 3D view: View from camera + Calibrate. The live picture lies over the 3D view at the same width (the view's
+   field of view spans its width), half see-through, so lining them up is the calibration. */
+.cam-view { position: absolute; inset: 0; z-index: 6; pointer-events: none; overflow: hidden; }
+.cam-view-img { position: absolute; left: 0; object-fit: fill; pointer-events: none; outline: 1px solid rgba(224, 138, 48, .6); }
+.cam-view-drag { position: absolute; inset: 0; pointer-events: auto; cursor: grab; touch-action: none; }
+.cam-view-drag:active { cursor: grabbing; }
+.cam-view-bar { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); pointer-events: auto; display: flex; gap: 10px;
+  align-items: center; flex-wrap: wrap; justify-content: center; max-width: calc(100% - 20px); padding: 6px 10px; border-radius: 8px;
+  background: rgba(13, 13, 13, .85); border: 1px solid rgba(224, 138, 48, .55); color: #fff; font-size: 13px; }
+.cam-view-op { display: flex; align-items: center; gap: 6px; }
+.cam-cal { position: absolute; left: 10px; bottom: 10px; pointer-events: auto; width: min(420px, calc(100% - 20px)); padding: 10px 12px;
+  border-radius: 8px; background: rgba(13, 13, 13, .9); border: 1px solid rgba(224, 138, 48, .55); color: #fff; font-size: 13px; }
+.cam-cal-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px; margin: 8px 0; }
+.cam-cal-grid label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: #ccc; }
+.cam-cal-num { display: flex; align-items: center; gap: 4px; }
+.cam-cal-num input { width: 76px; }
+.cam-cal-num button, .cam-cal-nudge button { min-width: 28px; height: 28px; border-radius: 4px; border: 1px solid #555; background: #222; color: #fff; cursor: pointer; }
+.cam-cal-nudge { display: flex; gap: 4px; }
+.cam-cal-foot { display: flex; align-items: center; gap: 8px; }
+.cam-cal-foot .muted { flex: 1; }
+.cam-actions { display: flex; gap: 6px; padding: 6px 8px; }
