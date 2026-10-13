@@ -3,6 +3,7 @@
 - GET  /g/{token}            the page: Start / Stop sharing, how fresh the last position is
 - POST /api/g/{token}/pos    one position from the browser {lat, lng, accuracy, speed, heading, ts}
 - POST /api/g/{token}/stop   the guard stopped sharing (button, or the page closing: sendBeacon)
+- POST /api/g/{token}/diag   "Request location": what the phone's browser answered (audit "location.test")
 
 Unknown tokens count as failed sign-ins (kind "share_link"), so guessing gets the address banned. The link only
 writes this one tracker's position; it shows nothing about alarms or other guards.
@@ -99,4 +100,38 @@ async def share_position(token: str, body: PosIn, request: Request, db: AsyncSes
 async def share_stop(token: str, request: Request, db: AsyncSession = Depends(get_db)):
     tid = await _live(request, db, token)
     await trackers.phone_stop(tid)
+    return {"ok": True}
+
+
+class DiagIn(BaseModel):
+    """What a phone's browser answered to one location request (js/location_test.js), for troubleshooting."""
+    ua: str = Field(default="", max_length=400)
+    secure: bool = False
+    has_geo: bool = False
+    framed: bool = False
+    standalone: bool | None = None
+    visibility: str = Field(default="", max_length=20)
+    perm_before: str = Field(default="", max_length=20)
+    perm_after: str = Field(default="", max_length=20)
+    outcome: str = Field(default="", max_length=20)
+    code: int | None = Field(default=None, ge=0, le=99)
+    message: str = Field(default="", max_length=200)
+    ms: int = Field(default=0, ge=0, le=600_000)
+    accuracy: float | None = Field(default=None, ge=0, le=1_000_000)
+
+
+def record_diag(db: AsyncSession, request: Request, tenant_id: int, user_id: int | None, body: DiagIn, **where) -> None:
+    import logging
+    detail = body.model_dump()
+    logging.getLogger("portal.share").info("location test (user %s): %s", user_id, detail)
+    audit(db, tenant_id, "location.test", user_id=user_id, ip=client_ip(request), **where, **detail)
+
+
+@router.post("/api/g/{token}/diag")
+async def share_diag(token: str, body: DiagIn, request: Request, db: AsyncSession = Depends(get_db)):
+    status, t = await _tracker(request, db, token)
+    if status != "ok":
+        raise HTTPException(410 if status == "expired" else 404)
+    record_diag(db, request, t.tenant_id, t.user_id, body, page="location", tracker=t.name)
+    await db.commit()
     return {"ok": True}

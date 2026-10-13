@@ -1,5 +1,6 @@
 // The guard's location-sharing page (/g/<token>, app/routers/share.py). The sharing itself is share_core.js.
 import { createSharer, isIOS, locationPermission } from "./share_core.js";
+import { mountLocationTest } from "./location_test.js";
 
 const { token, everyS } = window.PORTAL;
 const $ = (id) => document.getElementById(id);
@@ -20,6 +21,7 @@ const sharer = createSharer(token, {
 $("share-start").addEventListener("click", () => sharer.start());          // one request, inside the tap
 $("share-stop").addEventListener("click", () => sharer.stop());
 if (isIOS()) document.querySelector(".ios-tip").hidden = false;
+mountLocationTest(`/api/g/${encodeURIComponent(token)}/diag`);
 // Reopened while sharing: carry on by itself only if the browser already allows location (no tap = no prompt).
 (async () => {
   let again = false;

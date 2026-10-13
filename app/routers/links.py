@@ -7,6 +7,7 @@
 - POST /twilio/sms                            replies to our number (YES / STOP / HELP), Twilio-signed
 - GET /sms-terms                              the public text-message terms (carriers and Twilio ask for it)
 - POST /api/a/{token}/share                   "Share my location now": the texted person's location-link token
+- POST /api/a/{token}/diag                    "Request location": what the phone's browser answered (troubleshooting)
 - POST /api/a/{token}/status                  En route / On scene / Clear (an MDT's status buttons), logged on the timeline
 
 Everything is limited to the link's one alarm and the live view of its site's cameras. An unknown token is recorded as a failed sign-in
@@ -356,3 +357,20 @@ async def link_guard_status(token: str, body: StatusIn, request: Request, db: As
           ip=client_ip(request), status=body.status, **where)
     await db.commit()
     return {"ok": True, "status": body.status, "position": bool(where)}
+
+
+
+@router.post("/api/a/{token}/diag")
+async def link_location_diag(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """"Request location" on the alarm page: what the phone's browser answered (audit "location.test")."""
+    from app.routers.share import DiagIn, record_diag
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(404 if status == "invalid" else 410)
+    try:
+        body = DiagIn.model_validate(await request.json())
+    except Exception:  # noqa: BLE001 - a malformed report is just refused
+        raise HTTPException(422, "Bad report") from None
+    record_diag(db, request, alarm.tenant_id, link.user_id, body, page="alarm", alarm=alarm.id)   # not alarm_id: not on its timeline
+    await db.commit()
+    return {"ok": True}

@@ -71,6 +71,20 @@ with sync_playwright() as p:
     check(dp.evaluate("window.__geo") == 0 and "Tap Start sharing" in dp.inner_text("#share-state"),
           f"reopened without permission: no request until a tap, says to tap ({dp.inner_text('#share-state')!r})")
     dp.screenshot(path=f"{out}/share-safari-reopen.png")
+
+    # "Request location" (troubleshooting): what the phone answered, on screen and in the portal's audit log.
+    dp.click("#loc-test")
+    dp.wait_for_selector(".loc-test-result [data-sent]:has-text('Sent to TWG')", timeout=15000)
+    bad = dp.inner_text(".loc-test-result")
+    check("PERMISSION_DENIED" in bad and ("refused at once" in bad or "was refused" in bad), f"Request location, location blocked: says so ({bad.splitlines()[0]!r})")
+    dp.screenshot(path=f"{out}/share-safari-request-blocked.png")
+    ph.click("#loc-test")
+    ph.wait_for_selector(".loc-test-result [data-sent]:has-text('Sent to TWG')", timeout=30000)
+    good = ph.inner_text(".loc-test-result")
+    check(good.startswith("Location works"), f"Request location, allowed: works ({good.splitlines()[0]!r})")
+    rows = [r for r in pg.evaluate(API, ["/api/audit?limit=200", "GET", None])[1] if r["action"] == "location.test"]
+    check(len(rows) == 2 and {r["detail"]["outcome"] for r in rows} == {"ok", "error"},
+          f"both reports reached the audit log ({[(r['detail']['outcome'], r['detail'].get('code'), r['detail']['ms']) for r in rows]})")
     check(not errors, f"no page errors {errors}")
     b.close()
 

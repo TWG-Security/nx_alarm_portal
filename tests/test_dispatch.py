@@ -505,3 +505,26 @@ async def test_locate_a_guard_without_an_alarm(session, client, monkeypatch):
     assert len(log) == 1 and log[0].detail["to"] == "guard"
     await login(client, p["acme"].email)
     assert (await client.post(f"/api/trackers/{phone.id}/locate")).status_code == 404
+
+
+async def test_request_location_reports_what_the_phone_answered(session, client):
+    """The guard's "Request location" button sends what the browser answered (error code, time, permission state) to
+    the audit log, from the location page and from the alarm page; unknown links are refused."""
+    from app import alarm_links, guard_share
+    t, site, p = await world(session)
+    tr = await track(session, t.id, "Phone", 10, p["all"], source="phone")
+    share = guard_share.share_url(tr).rstrip("/").rsplit("/", 1)[-1]
+    alarm = await make_alarm(session, site)
+    link = await alarm_links.mint(session, alarm, await session.get(User, p["all"].id), 24)
+    await session.commit()
+    report = {"ua": "Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) Version/18.6 Mobile Safari", "secure": True,
+              "has_geo": True, "perm_before": "prompt", "perm_after": "prompt", "outcome": "error", "code": 1,
+              "message": "User denied Geolocation", "ms": 9}
+    assert (await client.post(f"/api/g/{share}/diag", json=report)).status_code == 200
+    assert (await client.post(f"/a/x", json=report)).status_code in (404, 405)
+    assert (await client.post(f"/api/a/{link}/diag", json={**report, "ms": 12})).status_code == 200
+    assert (await client.post("/api/g/nope/diag", json=report)).status_code == 404
+    assert (await client.post(f"/api/a/{link}/diag", json={"code": "x"})).status_code == 422
+    rows = (await session.scalars(select(AuditLog).where(AuditLog.action == "location.test").order_by(AuditLog.id))).all()
+    assert [(r.detail["page"], r.detail["code"], r.detail["ms"], r.user_id) for r in rows] == [("location", 1, 9, p["all"].id), ("alarm", 1, 12, p["all"].id)]
+    assert rows[1].alarm_id is None and rows[1].detail["alarm"] == alarm.id                   # not on the alarm's timeline

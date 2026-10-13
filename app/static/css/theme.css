@@ -896,3 +896,9 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .cam-cal-foot .muted { flex: 1; }
 .cam-actions { display: flex; gap: 6px; padding: 6px 8px; }
 .ios-tip { margin: 8px 0 0; border-left: 3px solid #E08A30; padding: 4px 8px; }
+.loc-test { margin-top: 10px; }
+.loc-test-result { margin-top: 8px; padding: 8px 10px; border-radius: 6px; border-left: 4px solid #C0392B; background: var(--surface-2); font-size: 13px; }
+.loc-test-result--ok { border-left-color: #2e7d32; }
+.loc-test-result dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 6px 0; }
+.loc-test-result dt { color: var(--text-muted); }
+.loc-test-result dd { margin: 0; word-break: break-word; }

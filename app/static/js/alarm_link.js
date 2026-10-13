@@ -6,6 +6,7 @@ import { CFG, fmtTime } from "./common.js";
 import { mountPlayer } from "./player.js";
 import { mountLive } from "./live.js";
 import { createSharer, isIOS, locationPermission } from "./share_core.js";
+import { mountLocationTest } from "./location_test.js";
 
 const a = CFG.alarm, token = CFG.token;
 const STILL_EVERY_MS = 3000;     // a still per visible camera every 3 s (~40 KB each): light on phone data and the NX relay
@@ -63,6 +64,7 @@ if (CFG.canShare && $("link-share-start")) {
   });
   $("link-share-stop").addEventListener("click", () => sharer?.stop());
   if (isIOS()) document.querySelector(".ios-tip").hidden = false;
+  mountLocationTest(`/api/a/${token}/diag`);
   (async () => {
     let again = false;
     try { again = sessionStorage.getItem(KEY) === "1"; } catch { /* fine */ }
