@@ -119,14 +119,25 @@ with sync_playwright() as p:
     pg.screenshot(path=f"{out}/guards-map.png")
     pg.locator("#guard-list").screenshot(path=f"{out}/guards-panel.png")
 
-    # Hide guards on the map (eye), remembered; collapse the section, remembered.
-    pane = "getComputedStyle(document.querySelector('.leaflet-guards-pane')).display"
-    pg.click("#guard-list [data-guards-eye]")
-    check(pg.evaluate(pane) == "none" and "Hidden on the map" in pg.inner_text("#guard-list"), "eye: guards hidden on the map")
-    pg.reload(); pg.wait_for_selector("#guard-list [data-guards-eye]", timeout=10000)
-    check(pg.evaluate(pane) == "none", "still hidden after a reload")
-    pg.click("#guard-list [data-guards-eye]")
-    check(pg.evaluate(pane) != "none", "eye again: guards back on the map")
+    # Hide one guard on the map (its own eye), remembered; the other stays.
+    markers = "() => [...document.querySelectorAll('.leaflet-guards-pane .guard-label')].map(e => e.firstChild.textContent.trim())"
+    before = pg.evaluate(markers)
+    pg.click("#guard-list li:has-text('Parked Trailer') [data-guard-eye]")
+    after = pg.evaluate(markers)
+    check("Parked Trailer" in before and "Parked Trailer" not in after and len(after) == len(before) - 1,
+          f"the trailer's eye hides only the trailer ({before} -> {after})")
+    check("hidden on the map" in pg.inner_text("#guard-list li:has-text('Parked Trailer')"), "it stays in the list, marked hidden")
+    pg.reload(); pg.wait_for_selector("#guard-list li", timeout=10000); pg.wait_for_timeout(1500)
+    check("Parked Trailer" not in pg.evaluate(markers) and len(pg.evaluate(markers)) == len(after), "still hidden after a reload")
+    pg.click("#guard-list li:has-text('Parked Trailer') [data-guard-eye]")
+    check("Parked Trailer" in pg.evaluate(markers), "its eye again shows it")
+    # Sites folds away too, remembered.
+    pg.click("#sites-toggle")
+    check(pg.is_hidden("#site-list") and pg.get_attribute("#sites-toggle", "aria-expanded") == "false", "Sites header collapses the sites list")
+    pg.reload(); pg.wait_for_selector("#sites-toggle", timeout=10000)
+    check(pg.is_hidden("#site-list"), "Sites still collapsed after a reload")
+    pg.click("#sites-toggle")
+    check(pg.is_visible("#site-list .site-item"), "Sites header expands it again")
     pg.click("#guard-list [data-guards-toggle]")
     check(pg.locator("#guard-list li").count() == 0 and pg.get_attribute("[data-guards-toggle]", "aria-expanded") == "false", "header click collapses the section")
     pg.reload(); pg.wait_for_selector("#guard-list [data-guards-toggle]", timeout=10000)

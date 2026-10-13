@@ -926,3 +926,7 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .guard-actions { display: flex; gap: 4px; }
 .guard-hidden-note { margin: 6px 0 0; }
 .guard-list { margin-top: 8px; }
+.guard-list li { grid-template-columns: 12px minmax(0, 1fr) auto; }
+.guard-list li.is-hidden .guard-pip, .guard-list li.is-hidden .guard-main { opacity: .45; }
+.guard-btn[data-guard-eye][aria-pressed="false"] { color: #E08A30; }
+#sites-head .badge { margin-left: 2px; }

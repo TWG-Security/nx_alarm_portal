@@ -11,8 +11,8 @@ const FRESH_S = 180, STALE_S = 900;       // green under 3 min, amber under 15 m
 const TRAIL_CHOICES = [5, 15, 30, 60], TRAIL_KEY = "twg-guard-trail-min";
 let trailMin = (() => { try { const v = Number(localStorage.getItem(TRAIL_KEY)); return TRAIL_CHOICES.includes(v) ? v : 5; } catch { return 5; } })();
 const MPH = 2.23694;
-// The side panel's Guards section can be collapsed, and guards hidden from the map (both remembered here).
-const COLLAPSE_KEY = "twg-guards-collapsed", SHOW_KEY = "twg-guards-shown";
+// The side panel's Guards section can be collapsed, and each guard hidden from the map (both remembered here).
+const COLLAPSE_KEY = "twg-guards-collapsed", HIDDEN_KEY = "twg-guards-hidden";
 const remembered = (key, fallback) => { try { const v = localStorage.getItem(key); return v == null ? fallback : v === "1"; } catch { return fallback; } };
 const remember = (key, on) => { try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* applied, just not remembered */ } };
 // Line icons (stroke = currentColor), like the rest of the portal's buttons.
@@ -47,10 +47,19 @@ function statusText(t, f = freshness(t)) {
  */
 export function mountGuards(lmap, listEl, { onChange } = {}) {
   const guards = new Map();          // id -> { t, marker, trail, line }
-  const pane = lmap.createPane("guards");
-  pane.style.zIndex = 640;          // above cones and site pins, below popups
-  let collapsed = remembered(COLLAPSE_KEY, false), shown = remembered(SHOW_KEY, true);
-  pane.style.display = shown ? "" : "none";
+  lmap.createPane("guards").style.zIndex = 640;          // above cones and site pins, below popups
+  let collapsed = remembered(COLLAPSE_KEY, false);
+  // Guards hidden from the map (and the 3D view); they stay in the list, dimmed, with their eye to bring them back.
+  const hidden = new Set((() => { try { return JSON.parse(localStorage.getItem(HIDDEN_KEY) || "[]"); } catch { return []; } })());
+  const saveHidden = () => { try { localStorage.setItem(HIDDEN_KEY, JSON.stringify([...hidden])); } catch { /* applied, just not remembered */ } };
+  function applyVisibility(g) {
+    const show = !hidden.has(g.t.id);
+    for (const layer of [g.marker, g.line]) {
+      if (!layer) continue;
+      if (show && !lmap.hasLayer(layer)) layer.addTo(lmap);
+      else if (!show && lmap.hasLayer(layer)) layer.remove();
+    }
+  }
   let follow = null;
 
   function icon(t) {
@@ -79,7 +88,7 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
     let g = guards.get(t.id);
     if (!g) {
       g = { t, trail: fromApi(t.trail) };
-      g.line = L.polyline(latlngs(g.trail), { pane: "guards", color: "#E08A30", weight: 3, opacity: 0.8, interactive: false }).addTo(lmap);
+      g.line = L.polyline(latlngs(g.trail), { pane: "guards", color: "#E08A30", weight: 3, opacity: 0.8, interactive: false });
       guards.set(t.id, g);
     }
     const prev = g.t;
@@ -90,13 +99,14 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
       trim(g);
       if (!g.marker) {
         g.marker = L.marker([g.t.lat, g.t.lng], { pane: "guards", icon: icon(g.t), keyboard: true, alt: g.t.name, zIndexOffset: 2000 })
-          .addTo(lmap).on("click", () => focus(g.t.id));
+          .on("click", () => focus(g.t.id));
       } else {
         g.marker.setLatLng([g.t.lat, g.t.lng]);
         g.marker.setIcon(icon(g.t));
       }
       if (follow === g.t.id) lmap.panTo([g.t.lat, g.t.lng]);
     }
+    applyVisibility(g);
     renderList();
     onChange?.();
   }
@@ -205,17 +215,17 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
         <span class="guard-head-tools">
           ${collapsed ? "" : `<label class="guard-trail" title="How much trail each guard leaves on the map">Trail
             <select data-trail aria-label="Trail length">${TRAIL_CHOICES.map((m) => `<option value="${m}" ${m === trailMin ? "selected" : ""}>${m} min</option>`).join("")}</select></label>`}
-          <button type="button" class="guard-btn" data-guards-eye aria-pressed="${shown}" title="${shown ? "Hide guards on the map" : "Show guards on the map"}">${shown ? ICON.eye : ICON.eyeOff}</button>
         </span></div>
-      ${collapsed ? "" : `${shown ? "" : '<p class="muted small-print guard-hidden-note">Hidden on the map.</p>'}<ul class="guard-list">${all.map((t) => {
-      const f = freshness(t);
-      return `<li data-guard="${t.id}" class="${follow === t.id ? "following" : ""}" tabindex="0" title="${esc(t.error || t.device_name || "")}">
+      ${collapsed ? "" : `<ul class="guard-list">${all.map((t) => {
+      const f = freshness(t), off = hidden.has(t.id);
+      return `<li data-guard="${t.id}" class="${follow === t.id ? "following" : ""}${off ? " is-hidden" : ""}" tabindex="0" title="${esc(t.error || t.device_name || "")}">
         <span class="guard-pip guard--${f}"></span>
         <span class="guard-main"><span class="guard-name">${esc(t.name)}${follow === t.id ? ' <span class="guard-following">following</span>' : ""}${t.error ? ` <span class="chip offline" title="${esc(t.error)}">!</span>` : ""}</span>
-          <span class="guard-sub${f === "offline" ? " guard-offline-text" : ""}">${esc(statusText(t, f) ?? `${speedText(t)} · ${relTime(t.fix_at)}`)}</span></span>
+          <span class="guard-sub${f === "offline" && !off ? " guard-offline-text" : ""}">${off ? "hidden on the map · " : ""}${esc(statusText(t, f) ?? `${speedText(t)} · ${relTime(t.fix_at)}`)}</span></span>
         <span class="guard-actions">
           <button type="button" class="guard-btn" data-locate="${t.id}" title="${t.source === "phone" ? `Locate: text ${esc(t.name)} asking them to share their location now` : `Locate: get ${esc(t.name)}'s position from InControl2 now`}" aria-label="Locate ${esc(t.name)}">${ICON.locate}</button>
           <button type="button" class="guard-btn" data-history="${t.id}" title="History: where ${esc(t.name)} was, any time range" aria-label="${esc(t.name)}'s history">${ICON.history}</button>
+          <button type="button" class="guard-btn" data-guard-eye="${t.id}" aria-pressed="${!off}" title="${off ? `Show ${esc(t.name)} on the map` : `Hide ${esc(t.name)} on the map`}" aria-label="${off ? "Show" : "Hide"} ${esc(t.name)}">${off ? ICON.eyeOff : ICON.eye}</button>
         </span></li>`;
     }).join("")}</ul>${historyHtml()}`}`;
   }
@@ -232,9 +242,14 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
     if (e.target.closest("[data-guards-toggle]")) {
       collapsed = !collapsed; remember(COLLAPSE_KEY, collapsed); renderList(true); return;
     }
-    if (e.target.closest("[data-guards-eye]")) {
-      shown = !shown; remember(SHOW_KEY, shown);
-      pane.style.display = shown ? "" : "none";          // markers, trails and a history path all live in this pane
+    const eye = e.target.closest("[data-guard-eye]");
+    if (eye) {
+      e.stopPropagation();
+      const id = Number(eye.dataset.guardEye), g = guards.get(id);
+      if (hidden.has(id)) hidden.delete(id); else hidden.add(id);
+      saveHidden();
+      if (hidden.has(id) && follow === id) follow = null;   // don't keep panning to someone hidden
+      if (g) applyVisibility(g);
       renderList(true); onChange?.();                      // and the 3D view
       return;
     }
@@ -305,7 +320,7 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
   load().catch(() => {});
 
   return {
-    list: () => (shown ? [...guards.values()].map((g) => ({ ...g.t, trail: latlngs(g.trail), fresh: freshness(g.t) })) : []),
+    list: () => [...guards.values()].filter((g) => !hidden.has(g.t.id)).map((g) => ({ ...g.t, trail: latlngs(g.trail), fresh: freshness(g.t) })),
     focus,
     destroy() { clearInterval(tick); offs.forEach((off) => off?.()); clearHistory(); for (const id of [...guards.keys()]) remove(id); },
   };

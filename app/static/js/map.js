@@ -29,10 +29,30 @@ function renderStats() {
   document.getElementById("stat-offline").textContent = offline;
 }
 
+// The Sites section folds away like Guards (remembered in this browser). Folded, its header still shows the count
+// and, in red, how many alarms are open across the sites.
+const SITES_KEY = "twg-sites-collapsed";
+let sitesCollapsed = (() => { try { return localStorage.getItem(SITES_KEY) === "1"; } catch { return false; } })();
+const CHEVRON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+function renderSitesHead(list) {
+  const open = list.reduce((n, { st }) => n + st.c[1] + st.c[2], 0);
+  document.getElementById("sites-head").innerHTML = `<button type="button" class="guard-toggle" id="sites-toggle" aria-expanded="${!sitesCollapsed}"
+      title="${sitesCollapsed ? "Show" : "Hide"} the sites list"><span class="guard-chev">${CHEVRON}</span><h3>Sites</h3>
+      <span class="guard-count">${list.length}</span>${open ? `<span class="badge" title="Open alarms">${open}</span>` : ""}</button>`;
+  document.getElementById("site-list").hidden = sitesCollapsed;
+}
+document.getElementById("sites-head").addEventListener("click", (e) => {
+  if (!e.target.closest("#sites-toggle")) return;
+  sitesCollapsed = !sitesCollapsed;
+  try { localStorage.setItem(SITES_KEY, sitesCollapsed ? "1" : "0"); } catch { /* applied, just not remembered */ }
+  renderSites();
+});
+
 function renderSites() {
   const ul = document.getElementById("site-list");
   const list = [...sites.values()].map((s) => ({ s, st: stateOf(s) }))
     .sort((a, b) => SEVERITY[a.st.marker] - SEVERITY[b.st.marker] || a.s.name.localeCompare(b.s.name));
+  renderSitesHead(list);
   if (!list.length) {
     ul.innerHTML = `<li class="empty">No sites yet.${CFG.isAdmin ? ' <a href="/sites/new">Add the first site</a>.' : ""}</li>`;
     return;
