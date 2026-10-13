@@ -56,18 +56,29 @@ def test_ic2_local_time_becomes_utc():
 
 async def test_setup_discovery_and_tracking(client, session):
     tenant, _ = await _setup(client, session, track=False)
-    assert (await client.post("/api/tracking/test")).json() == {"ok": True, "organizations": ["TWG Dev (fake)"]}
-    devs = (await client.get("/api/tracking/devices")).json()["devices"]
-    assert [d["name"] for d in devs] == ["Patrol Car 1", "Parked Trailer"]          # online first; the AP has no GPS
+    assert (await client.post("/api/tracking/test")).json()["organizations"] == ["TWG Dev (fake)", "Blocked Customer (fake)"]
+    # Organization → Group → Router.
+    orgs = (await client.get("/api/tracking/orgs")).json()
+    assert [o["name"] for o in orgs] == ["Blocked Customer (fake)", "TWG Dev (fake)"]
+    r = await client.get("/api/tracking/orgs/blocked/groups")
+    assert r.status_code == 502 and "API access blocked" in r.json()["detail"]
+    groups = (await client.get("/api/tracking/orgs/devorg/groups")).json()
+    assert [(g["id"], g["name"], g["online"]) for g in groups] == [(2, "Office", 1), (38, "Security Pod", 1)]
+    devs = (await client.get("/api/tracking/orgs/devorg/groups/38/devices")).json()
+    assert [(d["name"], d["gps"]) for d in devs] == [("Patrol Car 1", "live"), ("Parked Trailer", "live")]
     seen = (datetime.now(timezone.utc) - datetime.fromisoformat(devs[0]["fix_at"])).total_seconds()
-    assert 1700 < seen < 1900                         # the org-wide list's UTC timestamps (its 30-min-old cache)
+    assert -1 < seen < 25                             # local time converted with the group's clock
+    office = (await client.get("/api/tracking/orgs/devorg/groups/2/devices")).json()
+    assert [(d["name"], d["gps"]) for d in office] == [("Office AP", "none")]        # its configured address isn't GPS
+    assert (await client.get("/api/tracking/orgs/..%2Fx/groups")).status_code in (404, 422)
+    assert "/_ic2/rest/o/devorg/g/38/d" not in fake_nx.IC2["calls"]                 # the list that carries admin passwords
     car = devs[0]
     r = await client.post("/api/tracking/trackers", json={"name": "Patrol 1", "org": car["org"],
                                                            "group": car["group"], "device": car["device"], "serial": car["serial"]})
     assert r.status_code == 200
     assert (await client.post("/api/tracking/trackers", json={"name": "Again", "org": "devorg",
                                                                "group": 38, "device": 3})).status_code == 409
-    assert (await client.get("/api/tracking/devices")).json()["devices"][0]["tracked_as"] == "Patrol 1"
+    assert (await client.get("/api/tracking/orgs/devorg/groups/38/devices")).json()[0]["tracked_as"] == "Patrol 1"
 
     sub = bus.subscribe({tenant.id})
     fake_nx.IC2["calls"].clear()

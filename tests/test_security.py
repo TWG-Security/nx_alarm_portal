@@ -215,3 +215,10 @@ async def test_plain_http_visitors_are_sent_to_https(client):
     assert r.status_code == 308 and r.headers["location"].startswith("https://")
     assert (await client.get("/login", headers={"cf-visitor": '{"scheme":"https"}'})).status_code == 200
     assert (await client.get("/login")).status_code == 200                 # LAN / no Cloudflare: untouched
+
+
+async def test_browser_tab_icon(client):
+    r = await client.get("/favicon.ico")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/x-icon" and r.content[:4] == b"\x00\x00\x01\x00"
+    page = (await client.get("/login")).text
+    assert 'rel="icon"' in page and 'rel="apple-touch-icon"' in page

@@ -6,7 +6,9 @@
   GET    /api/tracking                     the company's InControl2 settings + its trackers (admins)
   PUT    /api/tracking/source              Client ID / Secret / on-off / interval
   POST   /api/tracking/test                get a token and count the organizations it sees
-  GET    /api/tracking/devices             GPS routers in those organizations, to pick from
+  GET    /api/tracking/orgs                the InControl2 organizations these credentials see
+  GET    /api/tracking/orgs/{org}/groups   an organization's groups
+  GET    /api/tracking/orgs/{org}/groups/{group}/devices   a group's routers with their GPS state, to pick from
   POST   /api/tracking/trackers            track a router
   PUT    /api/tracking/trackers/{id}       rename / kind / on-off
   DELETE /api/tracking/trackers/{id}
@@ -15,7 +17,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -150,40 +152,57 @@ async def test_source(user: User = Depends(require_admin), scope: Scope = Depend
     return {"ok": True, "organizations": [o["name"] for o in orgs]}
 
 
-@router.get("/api/tracking/devices")
-async def find_devices(user: User = Depends(require_admin), scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
-    """Routers that have reported a real GPS position, across every organization these credentials see."""
+ORG_ID = r"^[A-Za-z0-9_-]{1,32}$"            # goes into IC2 URLs
+
+
+async def _ic2(call):
+    try:
+        return await call
+    except peplink.PeplinkError as e:
+        raise HTTPException(502, str(e)) from None
+
+
+@router.get("/api/tracking/orgs")
+async def list_orgs(user: User = Depends(require_admin), scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    client = await _client(db, scope.write_tenant())
+    await db.commit()                        # don't hold the connection while IC2 answers
+    orgs = await _ic2(client.organizations())
+    return sorted(orgs, key=lambda o: (o["name"] or "").lower())
+
+
+@router.get("/api/tracking/orgs/{org}/groups")
+async def list_groups(org: str = Path(pattern=ORG_ID), user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                      db: AsyncSession = Depends(get_db)):
+    client = await _client(db, scope.write_tenant())
+    await db.commit()
+    groups = await _ic2(client.groups(org))
+    return sorted(groups, key=lambda g: (g["name"] or "").lower())
+
+
+@router.get("/api/tracking/orgs/{org}/groups/{group}/devices")
+async def list_group_devices(group: int, org: str = Path(pattern=ORG_ID), user: User = Depends(require_admin),
+                             scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """A group's routers: live GPS (with how fresh), GPS but no position, or no GPS (can't be tracked)."""
     tenant_id = scope.write_tenant()
     client = await _client(db, tenant_id)
     tracked = {(t.ic2_org, t.ic2_device): t.name for t in (await db.scalars(select(Tracker).where(Tracker.tenant_id == tenant_id))).all()}
-    await db.commit()                        # don't hold the connection while IC2 answers
-    out, problems = [], []
-    try:
-        orgs = await client.organizations()
-    except peplink.PeplinkError as e:
-        raise HTTPException(502, str(e)) from None
-    for org in orgs:
-        try:
-            devices = await client.org_locations(org["id"])
-        except peplink.PeplinkError as e:
-            problems.append(f"{org['name']}: {e}")
-            continue
-        for d in devices:
-            fix = peplink.newest_fix(d["points"], "UTC")           # the org-wide list's ts is UTC (a cached position)
-            if fix is None:
-                continue
-            out.append({"org": org["id"], "org_name": org["name"], "group": d["group_id"], "device": d["id"], "serial": d["sn"],
-                        "name": d["name"], "online": d["status"] == "online", "product": d["product_name"],
-                        "lat": fix.lat, "lng": fix.lng, "fix_at": fix.at.isoformat(),
-                        "tracked_as": tracked.get((org["id"], d["id"]))})
-    out.sort(key=lambda x: (not x["online"], x["org_name"].lower(), (x["name"] or "").lower()))
-    return {"devices": out, "problems": problems}
+    await db.commit()
+    out = []
+    for d in await _ic2(client.group_locations(org, group)):
+        fix = peplink.newest_fix(d["points"], "UTC", peplink.zone_offset(d["group_time"]))
+        out.append({"org": org, "group": d["group_id"] or group, "device": d["id"], "serial": d["sn"], "name": d["name"],
+                    "online": d["status"] == "online", "product": d["product_name"], "gps_off": d["gps_off"],
+                    "gps": "live" if fix else "none", "fix_at": fix.at.isoformat() if fix else None,
+                    "lat": fix.lat if fix else None, "lng": fix.lng if fix else None,
+                    "tracked_as": tracked.get((org, d["id"]))})
+    out.sort(key=lambda x: (x["gps"] != "live", not x["online"], (x["name"] or "").lower()))
+    return out
 
 
 class TrackerIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     kind: str = Field(default="vehicle", pattern="^(vehicle|guard)$")
-    org: str = Field(min_length=1, max_length=32)
+    org: str = Field(pattern=ORG_ID)
     group: int
     device: int
     serial: str = Field(default="", max_length=40)

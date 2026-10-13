@@ -780,3 +780,4 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .sched-save { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
 .sched-save.dirty { position: sticky; bottom: 0; background: var(--surface); padding-bottom: 10px; z-index: 2; }
 .sched-save .unsaved { color: var(--orange, #E08A30); font-weight: 600; }
+.gt-pick { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; }

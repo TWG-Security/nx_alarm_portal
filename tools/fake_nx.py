@@ -260,7 +260,9 @@ async def ic2_token(request: Request):
 @app.get("/_ic2/rest/o")
 async def ic2_orgs(request: Request):
     return await _ic2_gate(request) or _ok([{"id": "devorg", "name": "TWG Dev (fake)", "org_code": "ABC123", "status": "active",
-                                              "branch_id": 5, "url": "https://example.test/o/devorg/overview"}])
+                                              "branch_id": 5, "url": "https://example.test/o/devorg/overview"},
+                                             {"id": "blocked", "name": "Blocked Customer (fake)", "org_code": "DEF456", "status": "active",
+                                              "branch_id": 5, "url": "https://example.test/o/blocked/overview"}])
 
 @app.get("/_ic2/rest/o/{org}/loc")
 async def ic2_org_loc(org: str, request: Request):
@@ -291,3 +293,18 @@ async def ic2_mode(mode: str):
 
 @app.get("/_ic2/calls")
 async def ic2_calls(): return IC2["calls"][-200:]
+
+# IC2 groups (Organization → Group → Router picker). A second org with API access blocked, like CSTK.
+@app.get("/_ic2/rest/o/{org}/g")
+async def ic2_groups(org: str, request: Request):
+    if org == "blocked":
+        return JSONResponse({"error": "invalid_access", "error_description": "Authentication fail! API access blocked in organization settings."}, status_code=401)
+    return await _ic2_gate(request) or _ok([
+        {"id": 38, "name": "Security Pod", "online_device_count": 1, "offline_device_count": 1, "timezone": "America/New_York", "is_gps_tracking_disabled": False},
+        {"id": 2, "name": "Office", "online_device_count": 1, "offline_device_count": 0, "timezone": "America/New_York", "is_gps_tracking_disabled": False}])
+
+@app.get("/_ic2/rest/o/{org}/g/{group}/loc")
+async def ic2_group_loc(org: str, group: int, request: Request):
+    rows = [{**d, "group_time": _ic2_local(time.time()), "is_gps_tracking_disabled": False}
+            for d in _ic2_devices(org_wide=False) if d["group_id"] == group]
+    return await _ic2_gate(request) or _ok(rows)

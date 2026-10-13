@@ -59,28 +59,67 @@ $("gt-test").addEventListener("click", async () => {
   } catch (err) { out.innerHTML = `<span class="text-failed">${esc(err.message)}</span>`; }
 });
 
+// ---- add: Organization → Group → Router (only what's picked is asked of InControl2)
 let devices = [];
-$("gt-find").addEventListener("click", async () => {
-  const box = $("gt-devices");
-  box.innerHTML = '<p class="muted">Asking InControl2… (a few seconds per organization)</p>';
+const ago = (iso) => (iso ? relTime(iso) : "");
+async function loadOrgs() {
+  const sel = $("gt-org");
+  sel.innerHTML = '<option value="">Loading…</option>';
   try {
-    const r = await api("/api/tracking/devices");
-    devices = r.devices;
-    box.innerHTML = (devices.length ? `<div class="table-wrap"><table>
-      <thead><tr><th>Router</th><th>Organization</th><th>Position seen</th><th>Track as</th></tr></thead><tbody>
-      ${devices.map((d, i) => `<tr>
+    const orgs = await api("/api/tracking/orgs");
+    sel.innerHTML = `<option value="">Pick an organization (${orgs.length})</option>` + orgs.map((o) => `<option value="${esc(o.id)}">${esc(o.name)}</option>`).join("");
+  } catch (err) {
+    sel.innerHTML = '<option value="">Couldn\'t load organizations</option>';
+    $("gt-devices").innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`;
+  }
+}
+$("gt-org").addEventListener("focus", () => { if ($("gt-org").options.length <= 1 && data?.secret_set) loadOrgs(); });
+$("gt-org").addEventListener("change", async () => {
+  const org = $("gt-org").value, gsel = $("gt-group");
+  devices = []; $("gt-devices").innerHTML = ""; $("gt-filter").disabled = true; $("gt-filter").value = "";
+  gsel.disabled = true;
+  if (!org) { gsel.innerHTML = '<option value="">Pick an organization first</option>'; return; }
+  gsel.innerHTML = '<option value="">Loading groups…</option>';
+  try {
+    const groups = await api(`/api/tracking/orgs/${encodeURIComponent(org)}/groups`);
+    gsel.innerHTML = `<option value="">Pick a group (${groups.length})</option>` + groups.map((g) =>
+      `<option value="${g.id}">${esc(g.name)} · ${g.online} online${g.offline ? `, ${g.offline} offline` : ""}${g.gps_off ? " · GPS tracking off" : ""}</option>`).join("");
+    gsel.disabled = false;
+    if (groups.length === 1) { gsel.value = String(groups[0].id); gsel.dispatchEvent(new Event("change")); }
+  } catch (err) {
+    gsel.innerHTML = '<option value="">No access</option>';
+    $("gt-devices").innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`;
+  }
+});
+$("gt-group").addEventListener("change", async () => {
+  const org = $("gt-org").value, group = $("gt-group").value, box = $("gt-devices");
+  devices = []; box.innerHTML = "";
+  if (!group) return;
+  box.innerHTML = '<p class="muted">Loading routers…</p>';
+  try {
+    devices = await api(`/api/tracking/orgs/${encodeURIComponent(org)}/groups/${group}/devices`);
+    $("gt-filter").disabled = false;
+    paintDevices();
+  } catch (err) { box.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`; }
+});
+$("gt-filter").addEventListener("input", () => paintDevices());
+
+function paintDevices() {
+  const q = $("gt-filter").value.trim().toLowerCase();
+  const list = devices.map((d, i) => ({ d, i })).filter(({ d }) => !q || `${d.name} ${d.serial} ${d.product}`.toLowerCase().includes(q));
+  $("gt-devices").innerHTML = !devices.length ? '<p class="muted">No routers in this group.</p>' : !list.length ? '<p class="muted">No router matches.</p>'
+    : `<div class="table-wrap"><table>
+      <thead><tr><th>Router</th><th>GPS</th><th>Track as</th></tr></thead><tbody>
+      ${list.map(({ d, i }) => `<tr>
         <td><b>${esc(d.name || d.serial)}</b> ${d.online ? '<span class="chip online">online</span>' : '<span class="chip">offline</span>'}
           <div class="muted small-print">${esc(d.product || "")} · <span class="mono">${esc(d.serial || "")}</span></div></td>
-        <td>${esc(d.org_name)}</td>
-        <td class="small-print">${esc(relTime(d.fix_at))}<div class="muted">${d.lat.toFixed(5)}, ${d.lng.toFixed(5)}</div></td>
-        <td>${d.tracked_as ? `<span class="muted">Tracked as <b>${esc(d.tracked_as)}</b></span>` : `<div class="row" style="gap:6px;flex-wrap:wrap">
+        <td class="small-print">${d.gps === "live" ? `Position ${esc(ago(d.fix_at))}` : `<span class="muted">${d.gps_off ? "GPS tracking is off for this group" : "No GPS position (no GPS, or no fix)"}</span>`}</td>
+        <td>${d.tracked_as ? `<span class="muted">Tracked as <b>${esc(d.tracked_as)}</b></span>` : d.gps !== "live" ? '<span class="muted">—</span>' : `<div class="row" style="gap:6px;flex-wrap:wrap">
           <input type="text" maxlength="100" value="${esc(d.name || "")}" data-dev-name="${i}" aria-label="Name on the map" style="flex:1 1 140px">
           <select data-dev-kind="${i}" aria-label="Kind"><option value="vehicle">Vehicle</option><option value="guard">Guard</option></select>
           <button class="btn btn-sm btn-primary" type="button" data-track="${i}">Track</button></div>`}</td></tr>`).join("")}
-      </tbody></table></div>` : '<p class="muted">No router has reported a GPS position.</p>')
-      + (r.problems.length ? `<div class="alert alert-error small-print">${r.problems.map(esc).join("<br>")}</div>` : "");
-  } catch (err) { box.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`; }
-});
+      </tbody></table></div>`;
+}
 
 $("gt-devices").addEventListener("click", async (e) => {
   const i = e.target.dataset.track;
@@ -93,7 +132,7 @@ $("gt-devices").addEventListener("click", async (e) => {
       org: d.org, group: d.group, device: d.device, serial: d.serial || "", device_name: d.name || "" } });
     paint();
     d.tracked_as = name;
-    e.target.closest("td").innerHTML = `<span class="muted">Tracked as <b>${esc(name)}</b></span>`;
+    paintDevices();
     toast(`Tracking ${esc(name)}. Its position shows in a few seconds.`);
     for (const ms of [3000, 8000, 15000]) setTimeout(() => load().catch(() => {}), ms);     // the server polls it right away
   } catch (err) { toast(esc(err.message), { kind: "error" }); }

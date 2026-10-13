@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -116,6 +116,11 @@ def create_app() -> FastAPI:
         response = render(request, "error.html", status=exc.status_code, message=exc.detail)
         response.status_code = exc.status_code
         return response
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        # Browsers ask for /favicon.ico on their own (pages also link it): the TWG eye.
+        return FileResponse("app/static/favicon.ico", media_type="image/x-icon", headers={"Cache-Control": "public, max-age=86400"})
 
     @app.get("/healthz", include_in_schema=False)
     async def healthz():

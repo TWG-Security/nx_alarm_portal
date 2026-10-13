@@ -49,8 +49,13 @@
       </table></div>
     </div>
     <div class="card manage-only">
-      <div class="card-head"><h2>Routers with GPS</h2><button class="btn btn-sm" type="button" id="gt-find">Find routers</button></div>
-      <p class="muted" style="margin-top:0">Every router in your InControl2 organizations that has reported a GPS position. Pick one to track it.</p>
+      <h2>Add a guard or vehicle</h2>
+      <p class="muted" style="margin-top:0">Pick the InControl2 organization, then the group, then the router in the guard's vehicle or kit.</p>
+      <div class="gt-pick">
+        <div class="field"><label for="gt-org">Organization</label><select id="gt-org"><option value="">Load organizations…</option></select></div>
+        <div class="field"><label for="gt-group">Group</label><select id="gt-group" disabled><option value="">Pick an organization first</option></select></div>
+        <div class="field"><label for="gt-filter">Search routers</label><input id="gt-filter" type="search" placeholder="Name or serial" disabled></div>
+      </div>
       <div id="gt-devices"></div>
     </div>
   </div>

@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
@@ -60,7 +60,20 @@ def to_utc(ts: str, tz: str | None) -> datetime | None:
     return local.astimezone(timezone.utc)
 
 
-def newest_fix(points: list, tz: str | None) -> Fix | None:
+def zone_offset(group_time: str | None) -> timedelta | None:
+    """How far the group's local clock is from UTC, from the "group_time" IC2 sends with group/device
+    locations (rounded to 15 min), so their local timestamps convert even without a zone name."""
+    if not group_time:
+        return None
+    try:
+        local = datetime.fromisoformat(group_time.replace("Z", "")).replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+    minutes = round((local - datetime.now(timezone.utc)).total_seconds() / 900) * 15
+    return timedelta(minutes=minutes)
+
+
+def newest_fix(points: list, tz: str | None, offset: timedelta | None = None) -> Fix | None:
     """The latest real GPS position in an IC2 points list. Only isExist true counts: devices without GPS
     (switches, APs, routers with GPS off) come back with isExist false + isStatic true, their configured
     address and the current time, which would look like a live, parked guard."""
@@ -68,7 +81,7 @@ def newest_fix(points: list, tz: str | None) -> Fix | None:
     for p in points or []:
         if not isinstance(p, dict) or p.get("la") is None or p.get("lo") is None or p.get("isExist") is not True:
             continue
-        at = to_utc(str(p.get("ts") or ""), tz)
+        at = (to_utc(str(p.get("ts") or ""), "UTC") - offset) if offset is not None and p.get("ts") else to_utc(str(p.get("ts") or ""), tz)
         if at is None:
             continue
         fix = Fix(float(p["la"]), float(p["lo"]), at, _num(p.get("sp")), _num(p.get("at")))
@@ -155,6 +168,21 @@ class Client:
         return [{"id": d.get("id"), "group_id": d.get("group_id"), "sn": d.get("sn"), "name": d.get("name"),
                  "status": d.get("status"), "product_name": d.get("product_name"), "points": d.get("points") or []}
                 for d in rows or [] if isinstance(d, dict)]
+
+    async def groups(self, org_id: str) -> list[dict]:
+        rows = await self.get(f"/rest/o/{org_id}/g") or []
+        return [{"id": g.get("id"), "name": g.get("name"), "online": g.get("online_device_count") or 0,
+                 "offline": g.get("offline_device_count") or 0, "gps_off": bool(g.get("is_gps_tracking_disabled")),
+                 "timezone": g.get("timezone")} for g in rows if isinstance(g, dict)]
+
+    async def group_locations(self, org_id: str, group_id: int) -> list[dict]:
+        """A group's devices with their positions (local timestamps: each row carries "group_time").
+        Not /g/{group}/d: that list carries every router's admin password."""
+        rows = await self.get(f"/rest/o/{org_id}/g/{group_id}/loc") or []
+        return [{"id": d.get("id"), "group_id": d.get("group_id"), "sn": d.get("sn"), "name": d.get("name"),
+                 "status": d.get("status"), "product_name": d.get("product_name"), "points": d.get("points") or [],
+                 "group_time": d.get("group_time"), "gps_off": bool(d.get("is_gps_tracking_disabled"))}
+                for d in rows if isinstance(d, dict)]
 
     async def device(self, org_id: str, group_id: int, device_id: int) -> dict:
         d = await self.get(f"/rest/o/{org_id}/g/{group_id}/d/{device_id}") or {}
