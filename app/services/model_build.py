@@ -33,6 +33,9 @@ MAX_UNPACKED = 8 * 1024**3          # a zip may expand to at most 8 GB...
 MAX_FILES = 50_000                   # ...in at most this many files
 MAX_TEXTURE = 4096                   # bigger textures are scaled down (browsers and GPUs struggle above this)
 SAMPLE_PER_PIECE = 20_000            # vertices sampled per piece to find the floor height
+SPLIT_OBJ_BYTES = 48 * 1024**2      # an OBJ bigger than this is cut into pieces first (bounded memory)...
+FACES_PER_PIECE = 250_000           # ...of at most this many faces, one material per piece
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"}
 
 
 class BuildError(Exception):
@@ -254,9 +257,137 @@ def _unlit(glb: bytes) -> bytes:
     return b"glTF" + struct.pack("<II", 2, 12 + len(out)) + out
 
 
+
+# ---------------------------------------------------------------------------------------------- big inputs
+# Memory stays bounded whatever the model's size: textures are scaled down one at a time before any mesh is
+# loaded (JPEGs decoded straight at the smaller size), and big OBJ files are streamed into pieces of at most
+# FACES_PER_PIECE faces, each converted on its own.
+
+def shrink_textures(job: Path, src: Path) -> int:
+    from PIL import Image
+    Image.MAX_IMAGE_PIXELS = None                       # admins' uploads; the process is memory-capped anyway
+    images = [p for p in src.rglob("*") if p.suffix.lower() in IMAGE_EXTS and p.is_file()]
+    done = 0
+    for n, p in enumerate(images, 1):
+        try:
+            with Image.open(p) as im:
+                if max(im.size) <= MAX_TEXTURE:
+                    continue
+                _status(job, f"Scaling down textures ({n} of {len(images)})", 3)
+                fmt = im.format
+                if fmt == "JPEG":
+                    im.draft("RGB", (MAX_TEXTURE, MAX_TEXTURE))     # decode at 1/2, 1/4 or 1/8 size directly
+                im.thumbnail((MAX_TEXTURE, MAX_TEXTURE), Image.LANCZOS)
+                small = im.convert("RGB") if fmt == "JPEG" or im.mode not in ("RGB", "RGBA", "L") else im.copy()
+            if fmt == "JPEG":
+                small.save(p, "JPEG", quality=90)
+            else:
+                small.save(p, fmt or "PNG")
+            done += 1
+        except (OSError, ValueError):
+            continue                                    # unreadable images: the mesh loader reports it if it matters
+    return done
+
+
+def _idx(token: bytes, count: int) -> int:
+    i = int(token)
+    return i - 1 if i > 0 else count + i                # OBJ indices are 1-based; negative = from the end
+
+
+def split_obj(job: Path, path: Path) -> list[Path]:
+    """Stream a big OBJ into pieces of at most FACES_PER_PIECE faces (one material each), written next to it so
+    its .mtl and textures still resolve. The original is removed. Returns the piece files."""
+    from array import array
+    import numpy as np
+    v, vt, vn = array("d"), array("d"), array("d")
+    mtllibs: list[bytes] = []
+    size = path.stat().st_size
+    _status(job, f"Reading {path.name} ({size / 1024**2:,.0f} MB)", 4)
+    with open(path, "rb") as f:                          # pass 1: every position / texture / normal
+        for line in f:
+            if line[:2] == b"v ":
+                p = line.split()
+                v.extend((float(p[1]), float(p[2]), float(p[3])))
+            elif line[:3] == b"vt ":
+                p = line.split()
+                vt.extend((float(p[1]), float(p[2]) if len(p) > 2 else 0.0))
+            elif line[:3] == b"vn ":
+                p = line.split()
+                vn.extend((float(p[1]), float(p[2]), float(p[3])))
+            elif line.startswith(b"mtllib"):
+                mtllibs.append(line.rstrip())
+    V = np.frombuffer(v, dtype=np.float64).reshape(-1, 3)
+    T = np.frombuffer(vt, dtype=np.float64).reshape(-1, 2) if len(vt) else None
+    N = np.frombuffer(vn, dtype=np.float64).reshape(-1, 3) if len(vn) else None
+    pieces: list[Path] = []
+    stem = path.stem
+
+    def flush(material: bytes, faces: list) -> None:
+        if not faces:
+            return
+        vi = sorted({c[0] for f in faces for c in f})
+        ti = sorted({c[1] for f in faces for c in f if c[1] is not None})
+        ni = sorted({c[2] for f in faces for c in f if c[2] is not None})
+        vm = {o: i + 1 for i, o in enumerate(vi)}
+        tm = {o: i + 1 for i, o in enumerate(ti)}
+        nm = {o: i + 1 for i, o in enumerate(ni)}
+        out = path.with_name(f"{stem}__piece{len(pieces) + 1:04d}.obj")
+        with open(out, "wb") as w:
+            w.write(b"\n".join(mtllibs) + b"\n")
+            np.savetxt(w, V[vi], fmt="v %.6f %.6f %.6f")
+            if ti:
+                np.savetxt(w, T[ti], fmt="vt %.6f %.6f")
+            if ni:
+                np.savetxt(w, N[ni], fmt="vn %.5f %.5f %.5f")
+            if material:
+                w.write(b"usemtl " + material + b"\n")
+            lines = []
+            for f in faces:
+                lines.append(b"f " + b" ".join(
+                    b"%d/%s/%s" % (vm[a], b"%d" % tm[t] if t is not None else b"", b"%d" % nm[n] if n is not None else b"")
+                    for a, t, n in f))
+            w.write(b"\n".join(lines) + b"\n")
+        pieces.append(out)
+
+    groups: dict[bytes, list] = {}                       # material -> faces still to write
+    material, cv, ct, cn, read = b"", 0, 0, 0, 0
+    with open(path, "rb") as f:                          # pass 2: faces, by material, in pieces
+        for line in f:
+            read += len(line)
+            head = line[:2]
+            if head == b"v ":
+                cv += 1
+            elif head == b"vt":
+                ct += 1
+            elif head == b"vn":
+                cn += 1
+            elif head == b"f ":
+                corners = []
+                for tok in line.split()[1:]:
+                    parts = tok.split(b"/")
+                    corners.append((_idx(parts[0], cv),
+                                    _idx(parts[1], ct) if len(parts) > 1 and parts[1] else None,
+                                    _idx(parts[2], cn) if len(parts) > 2 and parts[2] else None))
+                for k in range(1, len(corners) - 1):    # polygons -> triangles
+                    groups.setdefault(material, []).append((corners[0], corners[k], corners[k + 1]))
+                if len(groups[material]) >= FACES_PER_PIECE:
+                    flush(material, groups.pop(material))
+                    _status(job, f"Cutting {path.name} into pieces ({read * 100 // size}%)", 4)
+            elif line.startswith(b"usemtl"):
+                material = line.split(maxsplit=1)[1].strip() if len(line.split()) > 1 else b""
+    for m, faces in groups.items():
+        flush(m, faces)
+    del V, T, N, v, vt, vn
+    path.unlink()
+    return pieces
+
+
 def build_meshes(job: Path, src: Path, out: Path, up: str) -> dict:
     import numpy as np
     import trimesh
+    shrink_textures(job, src)
+    for big in [p for p in src.rglob("*") if p.suffix.lower() == ".obj" and p.is_file() and p.stat().st_size > SPLIT_OBJ_BYTES]:
+        split_obj(job, big)
     files = sorted(p for p in src.rglob("*") if p.suffix.lower() in MESH_EXTS and p.is_file())
     if not files:
         raise BuildError("No 3D model found. Upload 3D Tiles (a folder with tileset.json), OBJ, glTF/GLB, PLY or STL")

@@ -241,3 +241,55 @@ def test_point_clouds_are_explained(tmp_path):
     ply = b"ply\nformat ascii 1.0\nelement vertex 3\nproperty float x\nproperty float y\nproperty float z\nend_header\n0 0 0\n1 0 0\n0 1 0\n"
     _, r = _job(tmp_path, "cloud.ply", ply)
     assert not r["ok"] and "point cloud" in r["error"]
+
+
+def test_big_obj_is_cut_into_pieces_with_textures_kept(tmp_path, monkeypatch):
+    """A big single-block OBJ (Terra without tiling) is streamed into pieces, so memory doesn't grow with it."""
+    monkeypatch.setattr(model_build, "SPLIT_OBJ_BYTES", 0)
+    monkeypatch.setattr(model_build, "FACES_PER_PIECE", 4)
+    job = tmp_path / "job"
+    job.mkdir()
+    (job / "upload.zip").write_bytes(sample_zip())
+    r = model_build.build(job)
+    assert r["faces"] == 12 and r["pieces"] == 4 and r["georef"]["label"].startswith("Terra")   # 10 + 2 faces, max 4 per piece
+    for glb in (job / "tiles").glob("*.glb"):
+        d = _glb_json(glb.read_bytes())
+        assert all("TEXCOORD_0" in p["attributes"] for m in d["meshes"] for p in m["primitives"]), glb.name
+    assert not list((job / "src").rglob("Tile_+000_+000.obj"))                # replaced by its pieces
+
+
+def test_negative_obj_indices_and_polygons(tmp_path, monkeypatch):
+    monkeypatch.setattr(model_build, "SPLIT_OBJ_BYTES", 0)
+    obj = "v 0 0 0\nv 4 0 0\nv 4 2 0\nv 0 2 0\nf -4 -3 -2 -1\n"          # one quad, relative indices
+    job, r = _job(tmp_path, "quad.obj", obj.encode(), up="z")
+    assert r["ok"] and r["faces"] == 2 and r["size_m"][:2] == [4.0, 2.0]
+
+
+def test_huge_texture_files_are_shrunk_before_loading(tmp_path):
+    src = tmp_path / "src"
+    src.mkdir()
+    Image.new("RGB", (8192, 64), (200, 10, 10)).save(src / "big.jpg", "JPEG")
+    Image.new("RGB", (100, 100)).save(src / "small.png")
+    (tmp_path / "status.json").write_text("{}")
+    assert model_build.shrink_textures(tmp_path, src) == 1
+    assert Image.open(src / "big.jpg").size[0] <= 4096 and Image.open(src / "small.png").size == (100, 100)
+
+
+async def test_a_failed_upload_can_be_tried_again(client, session, model_dir):
+    tenant, admin = await make_tenant_user(session)
+    site = await make_site(session, tenant)
+    await login(client, admin.email)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("office/model.obj", "v 0 0 0\nv 1 0 0\nf 1 2 9\n")          # a face pointing past the vertices
+    m = await _upload(client, site.id, buf.getvalue(), name="office.zip")
+    assert m["job"]["status"] == "failed" and m["job"]["retry"]
+    # The files are kept: fix them (as a converter fix would) and try again, without uploading.
+    obj = next((model_dir / str(site.id) / str(m["job"]["version"]) / "src").rglob("*.obj"))
+    obj.write_text("v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n")
+    r = await client.post(f"/api/sites/{site.id}/model/retry")
+    assert r.status_code == 200 and r.json()["job"]["status"] == "converting"
+    await _drain()
+    m = (await client.get(f"/api/sites/{site.id}/model")).json()
+    assert m["job"] is None and m["ready"]["faces"] == 1
+    assert (await client.post(f"/api/sites/{site.id}/model/retry")).status_code == 400

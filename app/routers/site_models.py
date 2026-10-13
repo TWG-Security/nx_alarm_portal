@@ -23,7 +23,7 @@ import secrets
 import shutil
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -52,6 +52,7 @@ SERVE_TYPES = {".json": "application/json", ".b3dm": "application/octet-stream",
                ".glb": "model/gltf-binary", ".gltf": "model/gltf+json", ".bin": "application/octet-stream",
                ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".ktx2": "image/ktx2"}
 
+FAILED_KEEP_DAYS = 3                     # a failed conversion's files are kept this long for "Try again"
 _uploads: dict[str, dict] = {}           # upload id -> {site_id, version, path, size, received, name, up, user_id}
 _build_slot = asyncio.Semaphore(1)       # one conversion at a time on this 2-CPU server
 _tasks: set[asyncio.Task] = set()
@@ -157,8 +158,9 @@ async def _finish(site_id: int, version: int, result: dict) -> None:
             return
         job = site.model["job"]
         if not result.get("ok"):
-            _set(site, job={**job, "status": "failed", "error": result.get("error", "Conversion failed")})
-            _rmtree_later(job_dir(site_id, version))
+            # The files stay (FAILED_KEEP_DAYS) so it can be tried again, e.g. after a converter fix, without re-uploading.
+            _set(site, job={**job, "status": "failed", "error": result.get("error", "Conversion failed"),
+                            "retry": job_dir(site_id, version).is_dir(), "failed_at": _now()})
             audit(db, site.tenant_id, "site.model_failed", user_id=job.get("by"), site_id=site.id, name=job.get("name"),
                   error=result.get("error"))
         else:
@@ -201,6 +203,11 @@ async def resume() -> None:
                 _spawn(site.id, job["version"])
             elif job.get("status") in ("uploading", "converting"):
                 _set(site, job={**job, "status": "failed", "error": "The upload was cut off by a portal restart. Upload it again."})
+            elif job.get("status") == "failed" and job.get("retry"):
+                failed = datetime.fromisoformat(job.get("failed_at") or job.get("started_at") or _now())
+                if datetime.now(timezone.utc) - failed > timedelta(days=FAILED_KEEP_DAYS):
+                    _rmtree_later(job_dir(site.id, job["version"]))
+                    _set(site, job={**job, "retry": False})
         await db.commit()
 
 
@@ -230,6 +237,8 @@ async def start_upload(site_id: int, body: UploadIn, request: Request, user: Use
     job = (site.model or {}).get("job") or {}
     if job.get("status") in ("uploading", "converting"):
         raise HTTPException(409, "A model is already being uploaded or converted for this site")
+    if job.get("status") == "failed":                     # a new upload replaces the failed one's kept files
+        _rmtree_later(job_dir(site.id, job["version"]))
     root().mkdir(parents=True, exist_ok=True)
     free = shutil.disk_usage(root()).free
     if free < body.size * 3 + 1024**3:
@@ -344,6 +353,25 @@ async def place_model(site_id: int, body: PlacementIn, request: Request, user: U
     return public(site.model)
 
 
+@router.post("/api/sites/{site_id}/model/retry")
+async def retry_model(site_id: int, request: Request, user: User = Depends(require_admin),
+                      scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Convert a failed upload again from its kept files."""
+    site = await _site(db, scope, site_id, write=True)
+    job = (site.model or {}).get("job") or {}
+    if job.get("status") != "failed" or not job.get("retry") or not job_dir(site.id, job["version"]).is_dir():
+        raise HTTPException(400, "There's no failed upload to try again. Upload the model again.")
+    for f in ("result.json", "status.json"):
+        (job_dir(site.id, job["version"]) / f).unlink(missing_ok=True)
+    _set(site, job={k: v for k, v in job.items() if k not in ("error", "retry", "failed_at")} | {"status": "converting", "by": user.id,
+                                                                                            "by_name": user.label})
+    audit(db, site.tenant_id, "site.model_retry", user_id=user.id, site_id=site.id, ip=client_ip(request), name=job.get("name"))
+    await db.commit()
+    await _publish(site)
+    _spawn(site.id, job["version"])
+    return public(site.model)
+
+
 class RebuildIn(BaseModel):
     up: str = Field(pattern="^(auto|y|z)$")
 
@@ -384,6 +412,7 @@ async def delete_model(site_id: int, request: Request, job_only: bool = False, u
     ready, job = model.get("ready"), model.get("job") or {}
     if job_only:
         if job.get("status") == "failed":
+            _rmtree_later(job_dir(site.id, job["version"]))
             _set(site, job=None)
             await db.commit()
             await _publish(site)

@@ -189,3 +189,90 @@ async def twilio_texts(): return TEXTS
 async def twilio_mode(mode: str):
     TWILIO_MODE["mode"] = mode
     return TWILIO_MODE
+
+
+# ---------------------------------------------------------------- fake Peplink InControl2 (guard tracking)
+# dev_up.sh points PEPLINK_API_BASE at /_ic2. Client ID "dev-client", secret "dev-secret". The patrol car
+# (device 3) drives a 150 m circle around the dev site, one lap in 10 minutes; like IC2, a new position
+# appears only every IC2_STEP_S and timestamps are the group's local time (America/New_York) without a zone.
+# POST /_ic2/mode/{ok|fail|hang|no_org_loc|stop}: normal, 500s, 30 s hangs, org-wide /loc 404 (per-device
+# calls still work), or the car stops reporting (its last position just gets old).
+import math as _math
+from datetime import datetime as _dt, timezone as _tz
+from zoneinfo import ZoneInfo as _Zone
+IC2 = {"mode": "ok", "tokens": set(), "stopped_at": None, "calls": []}
+IC2_STEP_S, IC2_SITE = 20, (40.2665, -76.8838)
+
+def _ic2_local(t):
+    return _dt.fromtimestamp(t, _tz.utc).astimezone(_Zone("America/New_York")).strftime("%Y-%m-%dT%H:%M:%S")
+
+def _ic2_car():
+    t = IC2["stopped_at"] or time.time()
+    t = t - t % IC2_STEP_S
+    a = 2 * _math.pi * (t % 600) / 600
+    lat = IC2_SITE[0] + 150 * _math.cos(a) / 111320
+    lng = IC2_SITE[1] + 150 * _math.sin(a) / (111320 * _math.cos(_math.radians(IC2_SITE[0])))
+    return {"la": round(lat, 6), "lo": round(lng, 6), "sp": 1.57, "at": 152.0, "ts": _ic2_local(t), "isExist": True, "isStatic": False}
+
+def _ic2_devices():
+    return [{"id": 3, "group_id": 38, "sn": "293B-1E37-276B", "name": "Patrol Car 1", "status": "online",
+             "product_name": "Pepwave MAX BR1 Pro 5G", "points": [_ic2_car()]},
+            {"id": 7, "group_id": 38, "sn": "192F-C07C-CB87", "name": "Parked Trailer", "status": "offline",
+             "product_name": "Peplink MAX Transit Duo Pro",
+             "points": [{"la": 40.2671, "lo": -76.8829, "ts": "2026-10-12T09:00:00", "isExist": True}]},
+            {"id": 9, "group_id": 2, "sn": "2933-7A2D-DA42", "name": "Office AP", "status": "online",
+             "product_name": "Pepwave AP One", "points": [{"isExist": False}]}]
+
+async def _ic2_gate(request: Request):
+    IC2["calls"].append(request.url.path)
+    if IC2["mode"] == "hang":
+        await asyncio.sleep(30)
+    if IC2["mode"] == "fail":
+        return JSONResponse({"stat": "fail", "code": 500, "message": "Internal error"}, status_code=500)
+    tok = request.headers.get("authorization", "").removeprefix("Bearer ")
+    if tok not in IC2["tokens"]:
+        return JSONResponse({"error": "invalid_access", "error_description": "Invalid Access, Access Denied."}, status_code=401)
+    return None
+
+@app.post("/_ic2/api/oauth2/token")
+async def ic2_token(request: Request):
+    form = await request.form()
+    if form.get("client_id") != "dev-client" or form.get("client_secret") != "dev-secret":
+        return JSONResponse({"error": "invalid_client", "error_description": "Bad client credentials"}, status_code=401)
+    tok = uuid.uuid4().hex
+    IC2["tokens"].add(tok)
+    return {"access_token": tok, "token_type": "bearer", "expires_in": 172800}
+
+@app.get("/_ic2/rest/o")
+async def ic2_orgs(request: Request):
+    return await _ic2_gate(request) or {"stat": "ok", "response": [{"id": "devorg", "name": "TWG Dev (fake)"}]}
+
+@app.get("/_ic2/rest/o/{org}/loc")
+async def ic2_org_loc(org: str, request: Request):
+    if IC2["mode"] == "no_org_loc":
+        return JSONResponse({"stat": "fail", "code": 404, "message": "You may have mistyped the address"}, status_code=404)
+    return await _ic2_gate(request) or {"stat": "ok", "response": _ic2_devices()}
+
+@app.get("/_ic2/rest/o/{org}/g/{group}/d/{dev}")
+async def ic2_device(org: str, group: int, dev: int, request: Request):
+    d = next((x for x in _ic2_devices() if x["id"] == dev), None)
+    if d is None:
+        return JSONResponse({"stat": "fail", "code": 404, "message": "Device not found"}, status_code=404)
+    return await _ic2_gate(request) or {"stat": "ok", "response": {
+        **{k: d[k] for k in ("id", "group_id", "sn", "name", "status", "product_name")},
+        "gps_support": True, "gps_exist": True, "group_timezone_label": "America/New_York",
+        "admin_conf": {"admin_name": "admin", "admin_password": "must-never-be-stored"}}}
+
+@app.get("/_ic2/rest/o/{org}/g/{group}/d/{dev}/loc")
+async def ic2_device_loc(org: str, group: int, dev: int, request: Request):
+    d = next((x for x in _ic2_devices() if x["id"] == dev), None)
+    return await _ic2_gate(request) or {"stat": "ok", "response": d["points"] if d else []}
+
+@app.post("/_ic2/mode/{mode}")
+async def ic2_mode(mode: str):
+    IC2["mode"] = "ok" if mode == "stop" else mode
+    IC2["stopped_at"] = time.time() if mode == "stop" else None
+    return {"mode": mode}
+
+@app.get("/_ic2/calls")
+async def ic2_calls(): return IC2["calls"][-200:]

@@ -110,7 +110,8 @@ export function modelPanel({ panel, button, site, globe, onSite }) {
         <div class="mp-hint">This runs in the background at low priority; alarms aren't affected. You can close this panel.</div></div>`;
     } else if (job?.status === "failed") {
       body = `<div class="mp-sec mp-error"><b>${esc(job.name)} couldn't be used</b><div>${esc(job.error || "")}</div>
-        <button type="button" data-mp="dismiss">OK</button></div>`;
+        <div class="mp-row">${job.retry ? '<button type="button" class="go" data-mp="retry" title="Convert the same upload again">Try again</button>' : ""}
+        <button type="button" data-mp="dismiss">${job.retry ? "Discard" : "OK"}</button></div></div>`;
     }
     if (!upload && job?.status !== "converting" && job?.status !== "uploading") {
       body += r && !replacing ? placementForm(r) : uploadForm(!!r);
@@ -229,6 +230,10 @@ export function modelPanel({ panel, button, site, globe, onSite }) {
     else if (act === "keep") { replacing = false; render(); }
     else if (act === "dismiss") {
       await api(`/api/sites/${s.id}/model?job_only=1`, { method: "DELETE" }).catch(() => {});
+      refresh();
+    } else if (act === "retry") {
+      try { onSite({ id: s.id, model: await api(`/api/sites/${s.id}/model/retry`, { method: "POST" }) }); }
+      catch (err) { toast(esc(err.message), { kind: "error" }); }
       refresh();
     } else if (act === "rebuild") {
       stopEdit();

@@ -60,6 +60,8 @@ class Settings(BaseSettings):
     clip_max_window_s: int = 300         # operators can widen the window up to this total
     media_cache_dir: str = "./media-cache"
     media_cache_max_mb: int = 4096       # oldest clips are evicted beyond this
+    # Guard tracking: Peplink InControl2 API (dev points it at tools/fake_nx.py's fake IC2)
+    peplink_api_base: str = "https://api.ic.peplink.com"
     # Site 3D models (app/routers/site_models.py): uploads and their converted 3D Tiles
     model_dir: str = "./site-models"
     model_max_mb: int = 3072             # largest upload
