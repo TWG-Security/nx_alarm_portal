@@ -176,7 +176,7 @@ async def _finish(site_id: int, version: int, result: dict) -> None:
             keep = old and job.get("rebuild_of") == old.get("version")          # a rebuild keeps where it was put
             ready = {"version": version, "tileset": result["tileset"], "name": job.get("name"), "bytes": result.get("bytes"),
                      "kind": result["kind"], "pieces": result.get("pieces"), "faces": result.get("faces"), "up": result.get("up"),
-                     "size_m": result.get("size_m"), "georef": geo.get("label"), "anchor": result.get("anchor"),
+                     "size_m": result.get("size_m"), "georef": geo.get("label"), "anchor": result.get("anchor"), "lod": result.get("lod"), "textured": result.get("textured"),
                      "origin": origin, "placement": dict(old["placement"]) if keep else dict(origin),
                      "uploaded_at": job.get("started_at"), "uploaded_by": job.get("by_name")}
             _set(site, ready=ready, job=None)

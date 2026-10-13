@@ -19,3 +19,5 @@ webauthn>=2.0           # passkeys (py_webauthn)
 trimesh>=4.4            # site 3D models: reads OBJ/glTF/PLY/STL, writes GLB (app/services/model_build.py)
 numpy>=1.26             # (trimesh)
 pyproj>=3.6             # site 3D models: Terra metadata.xml coordinate systems (UTM etc.) -> lat/lng
+scipy>=1.13             # site 3D models: texture charts (connected components) for the level-of-detail tiles
+meshoptimizer==0.2.30a0 # site 3D models: simplification that keeps texture seams (sdist only: Dockerfile builds the wheel)

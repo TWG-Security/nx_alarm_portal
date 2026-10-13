@@ -93,7 +93,7 @@ with sync_playwright() as p:
     pg.wait_for_selector("#model-panel [data-mp=edit]", timeout=90000)
     check(True, f"uploaded and converted in {time.time() - t:.1f} s")
     check("Terra metadata.xml (EPSG:32618)" in pg.inner_text("#model-panel"), "panel says it was positioned from Terra's metadata.xml")
-    pg.wait_for_function(f"({TILESET})()?.loaded >= 2", timeout=30000)
+    pg.wait_for_function(f"({TILESET})()?.loaded >= 1", timeout=30000)
     check(pg.is_visible("#globe-model-show"), "Model on/off button appears")
     pg.click("#model-panel [data-mp=fly]"); pg.wait_for_timeout(2500)
     pg.screenshot(path=str(out / "model-placed.png"))

@@ -260,7 +260,10 @@ export async function openGlobe(el, { pins, cameras = () => [], models = () => [
       if (!e) {
         e = { url: m.url, anchor: m.anchor, placement: m.placement, tileset: null };
         modelsE.set(m.siteId, e);
-        Cesium.Cesium3DTileset.fromUrl(m.url, { maximumScreenSpaceError: 16, cacheBytes: 256 * 1024 * 1024 }).then((ts) => {
+        // Converted models have levels of detail (app/services/model_lod.py): from afar only a coarse tile loads.
+        // The cache holds a close-up's tiles, so moving around doesn't evict and reload them.
+        Cesium.Cesium3DTileset.fromUrl(m.url, { maximumScreenSpaceError: 16, cacheBytes: 768 * 1024 * 1024,
+                                                maximumCacheOverflowBytes: 512 * 1024 * 1024 }).then((ts) => {
           if (modelsE.get(m.siteId) !== e || viewer.isDestroyed()) { ts.destroy(); return; }
           e.tileset = ts;
           ts.show = modelsShown;
