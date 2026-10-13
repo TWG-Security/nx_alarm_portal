@@ -47,7 +47,9 @@ export function createSharer(token, { everyS = 10, onState = () => {} } = {}) {
 
   function onPosition(p) {
     const c = p.coords;
-    last = { lat: c.latitude, lng: c.longitude, accuracy: c.accuracy, ts: p.timestamp || Date.now(),
+    // Safari's timestamp isn't always milliseconds since 1970: use this phone's clock unless it's plausible.
+    const ts = Number(p.timestamp) && Math.abs(Date.now() - Number(p.timestamp)) < 600000 ? Number(p.timestamp) : Date.now();
+    last = { lat: c.latitude, lng: c.longitude, accuracy: c.accuracy, ts,
              speed: c.speed != null && c.speed >= 0 ? c.speed : null, heading: c.heading != null && !Number.isNaN(c.heading) ? c.heading : null };
     send();
   }

@@ -330,6 +330,13 @@ class Alarm(Base):
     site: Mapped[Site] = relationship(lazy="joined")
     acked_by: Mapped[User | None] = relationship(foreign_keys=[acked_by_id], lazy="joined")
     verdict_by: Mapped[User | None] = relationship(foreign_keys=[verdict_by_id], lazy="joined")
+    # A call: once a guard is dispatched the alarm is a call, and a Real event stays on screen (Active calls) until
+    # someone presses End call. "" = no call, "active", "ended". False alarm / Dismissed end it (app/services/calls.py).
+    call_state: Mapped[str] = mapped_column(String(10), default="", index=True)
+    call_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    call_ended_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    call_end_note: Mapped[str] = mapped_column(Text, default="")
+    call_ended_by: Mapped[User | None] = relationship(foreign_keys=[call_ended_by_id], lazy="joined")
 
 
 class AlarmNote(Base):

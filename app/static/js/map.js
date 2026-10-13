@@ -592,6 +592,45 @@ feed.addEventListener("keydown", (e) => {
   if (li && e.key === "Enter") focusAlarm(openAlarms.get(Number(li.dataset.id)));
 });
 
+// ---------------------------------------------------------------- active calls (a guard was sent; open until End call)
+const calls = new Map();
+let callsSoon = null;
+async function loadCalls() {
+  try {
+    const rows = await api("/api/alarms?state=active&limit=100");
+    calls.clear();
+    rows.filter(inView).forEach((a) => calls.set(a.id, a));
+  } catch { return; }
+  renderCalls();
+}
+function renderCalls() {
+  const box = document.getElementById("calls");
+  // Acknowledged calls only: one still waiting for an operator is in the live feed below (no duplicates).
+  const rows = [...calls.values()].filter((a) => a.state !== "new").sort((a, b) => a.event_ts_ms - b.event_ts_ms);
+  box.hidden = !rows.length;
+  document.getElementById("calls-count").textContent = rows.length || "";
+  const html = rows.map((a) => `
+    <li class="feed-item call-item" data-call="${a.id}" tabindex="0">
+      <div class="feed-top"><span class="chip call-chip">Call</span>${a.verdict === "real" ? '<span class="chip p1">Real event</span>' : ""}${timerHtml(a.event_ts_ms)}</div>
+      <div class="title">${esc(a.caption)}</div>
+      <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b></div>
+      <div class="feed-actions"><button class="btn btn-sm btn-primary" data-call-open="${a.id}">Open call</button></div>
+    </li>`).join("");
+  const list = document.getElementById("calls-list");
+  if (list.dataset.html !== html) { list.innerHTML = html; list.dataset.html = html; }      // only redraw on a change
+}
+const reloadCalls = () => { clearTimeout(callsSoon); callsSoon = setTimeout(loadCalls, 300); };
+["alarm.timeline", "alarm.updated", "alarm.acked", "reconnect", "store"].forEach((ev) => on(ev, reloadCalls));
+document.getElementById("calls-list").addEventListener("click", (e) => {
+  const li = e.target.closest("[data-call]");
+  if (li) focusAlarm(calls.get(Number(li.dataset.call)));
+});
+document.getElementById("calls-list").addEventListener("keydown", (e) => {
+  const li = e.target.closest("[data-call]");
+  if (li && e.key === "Enter") focusAlarm(calls.get(Number(li.dataset.call)));
+});
+loadCalls();
+
 // ---------------------------------------------------------------- data + live updates
 async function loadSites() {
   const rows = await api("/api/sites");

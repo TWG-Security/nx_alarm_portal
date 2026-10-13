@@ -372,3 +372,99 @@ async def test_dispatch_several_guards_mdt_status_and_a_live_timeline(session, c
     assert (await client.post(f"/api/a/{nolink}/status", json={"status": "clear"})).status_code == 400
     await login(client, p["acme"].email)
     assert (await client.get(f"/api/alarms/{alarm.id}/timeline")).status_code == 404
+
+
+@respx.mock
+async def test_a_dispatched_real_alarm_stays_open_as_a_call_until_ended(session, client):
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMk"}))
+    guard = await track(session, t.id, "Guard 1", 300, g["guard"])
+    await login(client, "admin@twgsecurity.com")
+    tenant = await session.get(Tenant, t.id)
+    tenant.settings = {"auto_dispatch": False}
+    await session.commit()
+
+    a = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    assert (await client.post(f"/api/alarms/{a.id}/end-call", json={})).status_code == 400          # no call yet
+    await client.post(f"/api/alarms/{a.id}/dispatch", json={"tracker_id": guard.id})
+    assert (await client.get(f"/api/alarms/{a.id}")).json()["call_state"] == "active"
+    r = await client.post(f"/api/alarms/{a.id}/end-call", json={})
+    assert r.status_code == 400 and "Acknowledge" in r.json()["detail"]                              # acknowledge first
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "real", "note": "Intruder"})
+    assert [x["id"] for x in (await client.get("/api/alarms?state=active")).json()] == [a.id]       # still on screen
+    await sms.drain()
+    n = len(twilio.calls)
+
+    r = await client.post(f"/api/alarms/{a.id}/end-call", json={"note": "Police took over"})
+    assert r.status_code == 200 and r.json()["call_state"] == "ended" and r.json()["call_end_note"] == "Police took over"
+    assert (await client.get("/api/alarms?state=active")).json() == []
+    await sms.drain()
+    assert sent_to(twilio)[n:] == ["+15705558001"]
+    body = body_of(twilio.calls[n])
+    assert body.startswith("TWG CALL ENDED: Panic button at TWG Security Office.") and "Note: Police took over" in body
+    rows = (await client.get(f"/api/alarms/{a.id}/timeline")).json()
+    ended = next(e for e in rows if e["what"] == "Call ended")
+    assert ended["who"] == "admin" and "Police took over" in ended["detail"]
+    assert any(e["what"] == "Call-ended text" for e in rows)
+
+    # A guard who already tapped Clear isn't texted; another company can't end it.
+    b = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{b.id}/dispatch", json={"tracker_id": guard.id})
+    await sms.drain()
+    from app import alarm_links
+    link = re.search(r"/a/([^/ \n]+)/", body_of(twilio.calls[-1])).group(1)
+    await client.post(f"/api/alarms/{b.id}/ack", json={"verdict": "real"})
+    client.cookies.clear()
+    await client.post(f"/api/a/{link}/status", json={"status": "clear"})
+    await login(client, p["acme"].email)
+    assert (await client.post(f"/api/alarms/{b.id}/end-call", json={})).status_code == 404
+    await login(client, "admin@twgsecurity.com")
+    n = len(twilio.calls)
+    assert (await client.post(f"/api/alarms/{b.id}/end-call", json={})).status_code == 200
+    await sms.drain()
+    assert len(twilio.calls) == n
+
+
+@respx.mock
+async def test_a_false_alarm_ends_the_call_and_stands_the_guard_down(session, client):
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMf"}))
+    guard = await track(session, t.id, "Guard 1", 300, g["guard"])
+    await login(client, "admin@twgsecurity.com")
+    a = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{a.id}/dispatch", json={"tracker_id": guard.id})
+    await sms.drain()
+    n = len(twilio.calls)
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "false"})
+    await sms.drain()
+    got = (await client.get(f"/api/alarms/{a.id}")).json()
+    assert got["call_state"] == "ended" and got["call_ended_by"] == "admin"
+    assert sent_to(twilio)[n:] == ["+15705558001"] and body_of(twilio.calls[n]).startswith("TWG STAND DOWN:")
+    assert "marked a false alarm by admin" in body_of(twilio.calls[n])
+
+
+def test_safari_fix_times_never_break_a_position():
+    """Safari sent a timestamp that isn't milliseconds (a year-58753 date crashed the endpoint with a 500)."""
+    import time as _t
+    from app.routers.share import fix_time
+    now = _t.time()
+    assert abs(fix_time(now * 1000).timestamp() - now) < 1                  # milliseconds (Chrome, Brave)
+    assert abs(fix_time(now * 1_000_000).timestamp() - now) < 1             # microseconds
+    assert fix_time(1_771_234_567_890_123_456) is None and fix_time(None) is None and fix_time(5) is None
+
+
+async def test_a_bad_fix_time_is_ignored_not_an_error(session, client):
+    t, site, p = await world(session)
+    tr = await track(session, t.id, "Phone", 10, p["all"], source="phone")
+    from app import guard_share
+    token = guard_share.share_url(tr).rstrip("/").rsplit("/", 1)[-1]
+    await session.commit()
+    lat, lng = north(40)
+    r = await client.post(f"/api/g/{token}/pos", json={"lat": lat, "lng": lng, "ts": 1.85e15 * 1000})
+    assert r.status_code == 200 and r.json()["taken"]

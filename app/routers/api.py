@@ -385,7 +385,7 @@ class BulkIn(BaseModel):
 
 @router.get("/alarms")
 async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db),
-                      state: str = Query("open", pattern="^(open|acknowledged|disarmed|all)$"),
+                      state: str = Query("open", pattern="^(open|active|acknowledged|disarmed|all)$"),
                       site_id: int | None = None, category: str | None = Query(None, pattern="^(security|system)$"),
                       priority: int | None = Query(None, ge=1, le=3),
                       q: str | None = Query(None, max_length=200),
@@ -403,6 +403,8 @@ async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depe
         stmt = stmt.where(Alarm.tenant_id == tenant_id)
     if state == "open":
         stmt = stmt.where(Alarm.state == "new")
+    elif state == "active":                          # calls in progress: a guard was sent, nobody has ended it yet
+        stmt = stmt.where(Alarm.call_state == "active")
     elif state in ("acknowledged", "disarmed"):
         stmt = stmt.where(Alarm.state == state)
     if site_id:
@@ -489,6 +491,23 @@ async def ack_alarm(alarm_id: int, body: AckIn, request: Request, scope: Scope =
         alarm = await ack_service.acknowledge(db, alarm, scope.user, body.note, ip=client_ip(request), verdict=body.verdict)
     except ack_service.AlreadyAcknowledged as exc:
         raise HTTPException(409, "Alarm was already acknowledged") from exc
+    return alarm_dict(alarm)
+
+
+class EndCallIn(BaseModel):
+    note: str = Field(default="", max_length=4000)
+
+
+@router.post("/alarms/{alarm_id}/end-call")
+async def end_call(alarm_id: int, body: EndCallIn, request: Request, scope: Scope = Depends(get_scope),
+                   db: AsyncSession = Depends(get_db)):
+    """End a call (a dispatched alarm): it leaves Active calls; dispatched guards who haven't cleared are told."""
+    from app.services import calls
+    alarm = await _get_alarm(db, scope, alarm_id, write=True)
+    try:
+        alarm = await calls.end(db, alarm, scope.user, body.note, ip=client_ip(request))
+    except calls.CallError as e:
+        raise HTTPException(400, str(e)) from None
     return alarm_dict(alarm)
 
 

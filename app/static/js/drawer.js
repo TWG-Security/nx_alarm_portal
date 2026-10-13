@@ -113,14 +113,25 @@ async function loadTimeline(a) {
   try { rows = await api(`/api/alarms/${a.id}/timeline`); } catch { return; }
   if (current?.id !== a.id) return;
   box.hidden = false;
-  box.innerHTML = `<div class="media-label">Timeline <span class="muted">live · ${rows.length} entries · also in the incident report</span></div>
-    <ol class="timeline">${rows.map((e) => `<li class="tl tl--${esc(e.kind)}"><time>${esc(new Date(e.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</time>
+  box.innerHTML = `<div class="media-label">Timeline <span class="muted">newest first · live · ${rows.length} entries · also in the incident report</span></div>
+    <ol class="timeline">${[...rows].reverse().map((e) => `<li class="tl tl--${esc(e.kind)}"><time>${esc(new Date(e.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</time>
       <span><b>${esc(e.what)}</b> <span class="muted">· ${esc(e.who)}</span>${e.detail ? `<div class="muted small-print">${esc(e.detail)}</div>` : ""}</span></li>`).join("")}</ol>`;
 }
 on("alarm.timeline", ({ alarm_id }) => {
   if (!current || current.id !== alarm_id || drawer.hidden) return;
   clearTimeout(timelineSoon);
-  timelineSoon = setTimeout(() => { if (current?.id === alarm_id) { loadTimeline(current); loadGuards(current); } }, 250);
+  timelineSoon = setTimeout(async () => {
+    if (current?.id !== alarm_id) return;
+    loadTimeline(current); loadGuards(current);
+    try {
+      const a = await api(`/api/alarms/${alarm_id}`);
+      if (current?.id === alarm_id && (a.call_state !== current.call_state || a.state !== current.state)) {
+        const keep = drawer.querySelector("#call-note")?.value || "";
+        current = a; render(a);
+        if (keep && drawer.querySelector("#call-note")) drawer.querySelector("#call-note").value = keep;
+      }
+    } catch { /* the next event or the 15 s refresh catches up */ }
+  }, 250);
 });
 function startGuards(a) {
   stopGuards();
@@ -152,6 +163,34 @@ export function closeDrawer() {
   backdrop.hidden = true;
 }
 
+// A call: a guard was dispatched. A Real event stays open (Active calls) until End call.
+function callHtml(a) {
+  if (a.call_state === "active" && a.state !== "new") {
+    return `<div class="call-box"><h2>Call in progress</h2>
+      <p class="muted">A guard was sent. This alarm stays on the map's <b>Active calls</b> until you end the call.
+        Ending it texts the guards who haven't tapped Clear.</p>
+      <div class="field"><label for="call-note">How it ended <span class="muted">(optional, on the report)</span></label>
+        <textarea id="call-note" maxlength="4000" rows="2" placeholder="e.g. Police took over; site secured; keyholder on site"></textarea></div>
+      <button type="button" class="btn btn-primary call-end" id="call-end">End call</button></div>`;
+  }
+  if (a.call_state === "active" && a.state === "new") {
+    return '<p class="call-hint">A guard is dispatched. <b>Real event</b> keeps this open as an active call until you end it; <b>False alarm</b> or <b>Dismiss</b> ends it and tells the guard to stand down.</p>';
+  }
+  if (a.call_state === "ended") {
+    return `<p class="muted">Call ended${a.call_ended_by ? ` by ${esc(a.call_ended_by)}` : ""}${a.call_ended_at ? ` · ${esc(fmtTime(a.call_ended_at))}` : ""}${a.call_end_note ? `: “${esc(a.call_end_note)}”` : ""}</p>`;
+  }
+  return "";
+}
+async function endCall(btn) {
+  if (!confirm("End this call? The guards still on it get a CALL ENDED text.")) return;
+  btn.disabled = true;
+  try {
+    const a = await api(`/api/alarms/${current.id}/end-call`, { method: "POST", body: { note: drawer.querySelector("#call-note")?.value || "" } });
+    current = a; applyAlarm(a); render(a); loadTimeline(a); loadGuards(a);
+    toast("Call ended");
+  } catch (err) { toast(esc(err.message), { kind: "error" }); btn.disabled = false; }
+}
+
 function render(a) {
   const acked = a.state === "acknowledged";
   const disarmed = a.state === "disarmed";
@@ -166,12 +205,13 @@ function render(a) {
   drawer.querySelector(".drawer-top").innerHTML = `
     <div class="drawer-head">
       <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
+        ${a.call_state === "active" ? ' <span class="chip call-chip">Call in progress</span>' : a.call_state === "ended" ? ' <span class="chip">Call ended</span>' : ""}
         <h1 style="margin-top:8px">${esc(a.caption)}</h1>
         ${isMine(a) ? "" : `<div><span class="chip tenant-chip">${esc(a.tenant_name || "Another company")}</span></div>`}
         <div><b>${esc(a.site_name)}</b>${a.site_address ? ` <span class="muted">· ${esc(a.site_address)}</span>` : ""}</div>
         ${a.source_name ? `<div class="muted">${esc(a.source_name)}</div>` : ""}</div>
       <div class="drawer-head-actions"><span class="drawer-next-slot">${nextHtml(a)}</span>
-        <button class="btn btn-sm" id="drawer-close" aria-label="Close">✕</button></div>
+        <button class="btn btn-sm drawer-back" id="drawer-close" aria-label="Close">← ${location.pathname === "/" ? "Back to map" : "Back"}</button></div>
     </div>
     <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
@@ -184,6 +224,7 @@ function render(a) {
       <dt>In NX</dt><dd>${a.nx_ack_required ? "Acknowledging here also clears it in NX" : "A bookmark is added in NX on acknowledge (not when dismissed)"}</dd>
     </dl>
     <div class="ack-box">
+      ${callHtml(a)}
       ${disarmed ? `
         <h2>Received while the site was disarmed</h2>
         <p class="muted">This event was recorded but not raised: no sound, no pop-up, no live feed card. Nothing to acknowledge.
@@ -310,7 +351,8 @@ export async function openDrawer(id, fallback) {
 }
 
 drawer.addEventListener("click", async (e) => {
-  if (e.target.id === "drawer-close") return closeDrawer();
+  if (e.target.closest("#drawer-close")) return closeDrawer();
+  if (e.target.id === "call-end") return endCall(e.target);
   const next = e.target.closest("[data-next]");
   if (next) { const a = openAlarms.get(Number(next.dataset.next)); return openDrawer(Number(next.dataset.next), a); }
   const disp = e.target.closest("[data-dispatch]");

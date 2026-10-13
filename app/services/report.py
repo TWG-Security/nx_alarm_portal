@@ -190,7 +190,7 @@ async def gather(alarm: Alarm, pre: int, post: int, quality: str, need_clip: boo
 
 GUARD_STATUS = {"en_route": "En route", "on_scene": "On scene", "clear": "Clear"}
 TEXT_PURPOSE = {"alarm": "Alarm text", "confirmed": "Confirmed text", "dispatch": "Dispatch text",
-                "stand_down": "Stand-down text", "summary": "Summary text"}
+                "stand_down": "Stand-down text", "summary": "Summary text", "call_ended": "Call-ended text"}
 
 
 async def timeline(db: AsyncSession, alarm: Alarm) -> list[dict]:
@@ -246,6 +246,10 @@ def _audit_row(a: AuditLog) -> dict:
         away = f", {d['distance']} away" if d.get("distance") else (", position unknown" if "distance" in d else "")
         return {"ts": ts, "what": f"Dispatched {d.get('guard', '')}" + (" (automatic, on confirm)" if d.get("auto") else ""),
                 "who": who, "kind": "operator", "detail": f"text to {d.get('to', '')}{away}"}
+    if a.action == "alarm.call_ended":
+        how = {"false": "marked false alarm: guards told to stand down", "dismissed": "dismissed: guards told to stand down"}
+        return {"ts": ts, "what": "Call ended", "who": who, "kind": "operator",
+                "detail": how.get(d.get("verdict"), "guards told the call is over") + (f" · “{d['note']}”" if d.get("note") else "")}
     if a.action == "alarm.acknowledged":
         nx = d.get("nx") or {}
         detail = f"NX write-back: {nx.get('method') or '-'}{' (failed: ' + str(nx.get('error')) + ')' if nx.get('ok') is False else ''}"

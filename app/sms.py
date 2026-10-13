@@ -283,6 +283,20 @@ def dispatch_text(alarm: Alarm, link: str, by: str, distance_m: float | None, sh
     return "\n".join(lines)
 
 
+def call_ended_text(alarm: Alarm, by: str, verdict: str = "") -> str:
+    """End of a call, to the guards sent to it: CALL ENDED (End call) or STAND DOWN (marked false / dismissed)."""
+    site = _ascii(alarm.site.name if alarm.site else "", 60)
+    what = _ascii(alarm.caption or alarm.event_type, 60)
+    who = _ascii(by, 40) or "Dispatch"
+    if verdict:
+        word = {"false": "a false alarm", "dismissed": "dismissed"}.get(verdict, verdict)
+        return (f"TWG STAND DOWN: {what} at {site} was marked {word} by {who}, {_clock(alarm, utcnow())}. "
+                f"You can clear.\nReply STOP to opt out.")
+    note = _ascii(alarm.call_end_note, 120)
+    return (f"TWG CALL ENDED: {what} at {site}. {who} ended the call, {_clock(alarm, utcnow())}. You can clear."
+            + (f"\nNote: {note}" if note else "") + "\nReply STOP to opt out.")
+
+
 def share_invite_text(company: str, url: str) -> str:
     return (f"TWG: {_ascii(company, 60)} dispatch asks you to share your location while you're on duty, "
             f"so the closest guard can be sent to an alarm.\n\n{SHARE_LABEL}\n{url} \n\nReply STOP to opt out.")
@@ -882,7 +896,7 @@ async def _handle_withdrawn(changes: list[tuple[int, str]], by_id: int) -> None:
             if cfg is None:
                 return
             rows = (await db.execute(select(SmsLog.user_id, SmsLog.alarm_id).where(
-                SmsLog.alarm_id.in_(list(verdicts)), SmsLog.purpose.in_(("confirmed", "dispatch")),
+                SmsLog.alarm_id.in_(list(verdicts)), SmsLog.purpose == "confirmed",
                 SmsLog.outcome.in_(("sent", "delivered"))).distinct())).all()
             got: dict[int, list[int]] = {}
             for uid, aid in rows:

@@ -24,6 +24,7 @@ function syncUrl() {
 function matches(a) {
   if (!inView(a)) return false;              // the store also carries your own company's alarms
   if (filt.state === "open" && a.state !== "new") return false;
+  if (filt.state === "active" && a.call_state !== "active") return false;
   if ((filt.state === "acknowledged" || filt.state === "disarmed") && a.state !== filt.state) return false;
   if (filt.site_id && String(a.site_id) !== filt.site_id) return false;
   if (filt.priority && String(a.priority) !== filt.priority) return false;

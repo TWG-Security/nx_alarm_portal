@@ -82,6 +82,9 @@ async def acknowledge(db: AsyncSession, alarm: Alarm, user: User, note: str, ip:
     alarm.nx_ack_result = result
     audit(db, alarm.tenant_id, "alarm.acknowledged", user_id=user.id, site_id=alarm.site_id,
           alarm_id=alarm.id, ip=ip, note=note, nx=result, verdict=verdict, **({"bulk": bulk} if bulk else {}))
+    if verdict in ("false", "dismissed"):           # a guard was sent: the call ends, they're told to stand down
+        from app.services import calls
+        calls.mark_ended(db, alarm, user, verdict=verdict, ip=ip)
     await db.commit()
     await db.refresh(alarm)
     bus.publish(alarm.tenant_id, "alarm.acked", alarm_dict(alarm))
@@ -101,4 +104,7 @@ async def set_verdict(db: AsyncSession, alarm: Alarm, user: User, verdict: str, 
     alarm.verdict, alarm.verdict_by_id, alarm.verdict_at = verdict, user.id, datetime.now(timezone.utc)
     audit(db, alarm.tenant_id, "alarm.verdict", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id, ip=ip,
           old=old, new=verdict, note=(note or "").strip()[:4000], **({"bulk": bulk} if bulk else {}))
+    if verdict in ("false", "dismissed"):
+        from app.services import calls
+        calls.mark_ended(db, alarm, user, verdict=verdict, ip=ip)
     return True

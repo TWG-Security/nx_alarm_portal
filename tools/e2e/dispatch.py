@@ -2,6 +2,9 @@
 end against the fake NX + fake Twilio in tools/fake_nx.py.
 
     POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.dispatch [screenshot_dir]
+    Safari's engine (WebKit) from the Playwright image (the host lacks WebKit's libraries):
+    docker run --rm --network host -e E2E_BROWSER=webkit -v $PWD:/repo:ro -v /tmp:/out -w /repo \
+      mcr.microsoft.com/playwright/python:v1.63.0-noble sh -c "pip -q install pillow && python -m tools.e2e.dispatch /out"
 
 Two guards without routers are added on the Sites page; each gets a text with a location link, opens it on a
 (simulated) phone with GPS and taps Start sharing; their markers appear on the operator's map. Three alarms: the
@@ -11,6 +14,7 @@ A guard stopping shows OFFLINE at the last position; History draws where they we
 """
 import base64
 import hashlib
+import os
 import hmac
 import json
 import sys
@@ -76,7 +80,7 @@ API = """async ([url, method, body]) => { const t = document.querySelector('meta
     return [r.status, await r.json()]; }"""
 
 with sync_playwright() as p:
-    b = p.chromium.launch()
+    b = getattr(p, os.environ.get("E2E_BROWSER", "chromium")).launch()      # E2E_BROWSER=webkit: Safari's engine
     ctx = b.new_context(viewport={"width": 1500, "height": 950})
     pg = ctx.new_page()
     errors = []
@@ -234,8 +238,33 @@ with sync_playwright() as p:
     new = texts()[n0:]
     check(len(new) == 1 and new[0]["to"] == GUARDS["near"][0] and new[0]["body"].startswith("TWG DISPATCH:"),
           f"confirming texts only the closest guard, automatically ({took:.0f} ms after the click) {[(x['to'], x['body'][:20]) for x in new]}")
-    pg.keyboard.press("Escape")
-    pg.click("#drawer-close") if pg.is_visible("#drawer-close") else None
+    # Real event + a dispatched guard: the alarm stays open as an active call until End call.
+    pg.wait_for_selector("#drawer .call-box #call-end", timeout=8000)
+    w = pg.evaluate("[document.getElementById('drawer').getBoundingClientRect().width, innerWidth]")
+    check(abs(w[0] - w[1]) < 2 and "Back to map" in pg.inner_text("#drawer-close"), f"alarm details full screen with Back to map {w}")
+    crit_id = pg.evaluate("Number(document.querySelector('#drawer [data-dispatch]')?.closest('#drawer') && 0) || null")
+    pg.click("#drawer-close")
+    pg.wait_for_selector("#calls:not([hidden]) .call-item", timeout=8000)
+    check(pg.locator("#calls-list .call-item").count() == 1 and "Soft trigger" in pg.inner_text("#calls-list"),
+          "map: the confirmed, dispatched alarm is under Active calls")
+    pg.screenshot(path=f"{out}/dispatch9-active-calls.png")
+    pg.click("#calls-list .call-item [data-call-open]")
+    pg.wait_for_selector("#drawer .call-box #call-end", timeout=8000)
+    pg.wait_for_selector(".drawer-timeline .timeline .tl", timeout=8000)
+    tl = pg.eval_on_selector_all(".timeline .tl b", "els => els.map(e => e.textContent)")
+    check(tl and tl[0] != "Event occurred in NX" and tl[-1] == "Event occurred in NX", f"timeline newest first ({tl[0]!r} … {tl[-1]!r})")
+    pg.fill("#call-note", "Police took over, site secured")
+    n0 = len(texts())
+    pg.click("#call-end")
+    pg.wait_for_function("!document.querySelector('#call-end')", timeout=8000)
+    t = wait_texts(n0 + 1)
+    check(t[-1]["to"] == GUARDS["near"][0] and t[-1]["body"].startswith("TWG CALL ENDED:") and "Police took over" in t[-1]["body"],
+          "End call: the dispatched guard gets CALL ENDED with the note")
+    pg.wait_for_function("document.querySelector('.timeline .tl b')?.textContent === 'Call-ended text' || document.querySelector('.timeline .tl b')?.textContent === 'Call ended'", timeout=8000)
+    check(True, "timeline: Call ended at the top")
+    pg.click("#drawer-close")
+    pg.wait_for_selector("#calls", state="hidden", timeout=8000)
+    check(True, "Active calls empties once the call is ended")
 
     # ---- 6. Ana stops sharing: OFFLINE at her last position
     pos = pg.evaluate("[...document.querySelectorAll('.guard-icon .guard')].find(e => e.textContent.includes('Ana'))?.getBoundingClientRect().x")

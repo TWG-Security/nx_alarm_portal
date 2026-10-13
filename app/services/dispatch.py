@@ -150,6 +150,8 @@ async def dispatch(alarm_id: int, tracker_id: int, by: User | None, *, auto: boo
         away = sms.distance_words(dist)
         text = (f"Dispatched {t.name}" + (f" ({u.label})" if u.label != t.name else "")
                 + (f", {away} away" if away else ", position unknown") + (" (automatically, on confirm)" if auto else ""))
+        from app.services import calls
+        calls.start(alarm)                       # a dispatched alarm is a call until it's ended
         note = AlarmNote(tenant_id=alarm.tenant_id, alarm_id=alarm.id, user_id=by.id if by else None, text=text)
         note.user = by
         db.add(note)

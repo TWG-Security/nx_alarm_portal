@@ -48,13 +48,31 @@ async def share_page(token: str, request: Request, db: AsyncSession = Depends(ge
     return response
 
 
+def fix_time(ts) -> "datetime | None":
+    """The browser's fix time, or None (use the arrival time). Safari's GeolocationPosition.timestamp came in a
+    different unit (2026-10-13: a date in the year 58753 crashed this with a 500 on every position from an iPhone),
+    so milliseconds and microseconds are both tried; anything not within 10 minutes of now is ignored."""
+    from datetime import datetime, timezone
+    if not ts:
+        return None
+    now = utcnow()
+    for scale in (1_000, 1_000_000, 1):
+        try:
+            at = datetime.fromtimestamp(ts / scale, timezone.utc)
+        except (ValueError, OverflowError, OSError):
+            continue
+        if abs((now - at).total_seconds()) <= 600:
+            return at
+    return None
+
+
 class PosIn(BaseModel):
     lat: float = Field(ge=-90, le=90)
     lng: float = Field(ge=-180, le=180)
     accuracy: float | None = Field(default=None, ge=0, le=100_000)
     speed: float | None = Field(default=None, ge=0, le=150)
     heading: float | None = Field(default=None, ge=0, le=360)
-    ts: int | None = None                          # ms since 1970, from the browser's fix
+    ts: float | None = None                        # the browser's fix time (ms since 1970; Safari's differs: fix_time)
 
 
 async def _live(request: Request, db: AsyncSession, token: str):
@@ -69,12 +87,7 @@ async def _live(request: Request, db: AsyncSession, token: str):
 @router.post("/api/g/{token}/pos")
 async def share_position(token: str, body: PosIn, request: Request, db: AsyncSession = Depends(get_db)):
     tid = await _live(request, db, token)
-    at = None
-    if body.ts:
-        from datetime import datetime, timezone
-        at = datetime.fromtimestamp(body.ts / 1000, timezone.utc)
-        if (utcnow() - at).total_seconds() > 600:  # a phone with a wrong clock: use the arrival time
-            at = None
+    at = fix_time(body.ts)
     outcome = await trackers.phone_fix(tid, body.lat, body.lng, speed=body.speed, heading=body.heading,
                                        accuracy=body.accuracy, at=at)
     if outcome == "gone":
