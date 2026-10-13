@@ -101,6 +101,11 @@ with sync_playwright() as p:
                          arg=before, timeout=60000)
     check(True, f"the patrol car moved on the map {time.time() - t0:.0f} s later (fake IC2 reports every 20 s, polled every 15 s)")
     check(pg.locator(".leaflet-guards-pane path").count() >= 1, "its trail is drawn")
+    check(pg.eval_on_selector("#guard-list [data-trail]", "s => s.value") == "5", "the trail shows the last 5 minutes by default")
+    with pg.expect_request(lambda r: "trail_min=30" in r.url):
+        pg.select_option("#guard-list [data-trail]", "30")
+    check(pg.evaluate("localStorage.getItem('twg-guard-trail-min')") == "30", "Trail: 30 min fetches longer history and is remembered")
+    pg.select_option("#guard-list [data-trail]", "5")
     t0 = time.time()
     pg.click("#guard-list li:has-text('Patrol Car 1') [data-refresh]")
     pg.wait_for_selector(".toast:has-text('position from')", timeout=10000)

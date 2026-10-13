@@ -729,7 +729,9 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .guard-icon { background: none; border: 0; }
 .guard { position: relative; width: 18px; height: 18px; transform: translate(-50%, -50%); white-space: nowrap; pointer-events: auto; }
 .guard-dot { position: relative; width: 18px; height: 18px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 1px #1A1A1A, 0 2px 6px rgba(0,0,0,.5); background: var(--guard-c, #8a8a8a); flex: 0 0 auto; }
-.guard-arrow { position: absolute; left: 50%; top: 50%; width: 0; height: 0; margin: -16px 0 0 -6px; border: 6px solid transparent; border-bottom: 9px solid var(--guard-c, #8a8a8a); transform-origin: 6px 16px; }
+.guard-arrow { position: absolute; inset: -3px; pointer-events: none; }   /* turned to the heading around the dot's centre */
+.guard-arrow::before { content: ""; position: absolute; left: 50%; top: -12px; margin-left: -6px; border-left: 6px solid transparent; border-right: 6px solid transparent;
+  border-bottom: 10px solid #fff; filter: drop-shadow(0 0 1px #1A1A1A) drop-shadow(0 0 1px #1A1A1A); }
 .guard-label { position: absolute; left: 22px; top: -4px; font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #fff; background: rgba(13,13,13,.82); padding: 3px 6px; border-radius: 4px; }
 .guard-label small { display: block; font-weight: 400; color: #cfcfcf; }
 .guard--live { --guard-c: #2FA36B; }
@@ -785,3 +787,6 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .guard-refresh:hover { color: var(--text); border-color: var(--orange, #E08A30); }
 .guard-refresh.spinning { animation: guard-spin .8s linear infinite; }
 @keyframes guard-spin { to { transform: rotate(360deg); } }
+.guard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.guard-trail { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); margin: 0; }
+.guard-trail select { width: auto; height: 26px; padding: 0 6px; font-size: 12px; }
