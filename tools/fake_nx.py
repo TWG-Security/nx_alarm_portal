@@ -201,7 +201,7 @@ async def twilio_mode(mode: str):
 import math as _math
 from datetime import datetime as _dt, timezone as _tz
 from zoneinfo import ZoneInfo as _Zone
-IC2 = {"mode": "ok", "tokens": set(), "stopped_at": None, "calls": [], "names": {}}
+IC2 = {"mode": "ok", "tokens": set(), "stopped_at": None, "calls": [], "names": {}, "status": {}}
 IC2_STEP_S, IC2_SITE = 20, (40.2665, -76.8838)
 
 def _ic2_local(t):
@@ -227,8 +227,10 @@ TRAILER_T = time.time() - 86400                      # last reported a day ago
 
 def _ic2_devices(org_wide=True):
     """org_wide: like IC2's org-wide /loc, positions are a cache 30 min old with UTC timestamps.
-    Names can be changed with POST /_ic2/rename/{device}?name=... (like renaming a router in InControl2)."""
-    return [{**d, "name": IC2["names"].get(d["id"], d["name"])} for d in _ic2_devices_raw(org_wide)]
+    Names can be changed with POST /_ic2/rename/{device}?name=... (like renaming a router in InControl2), and a
+    router switched off with POST /_ic2/status/{device}?status=offline."""
+    return [{**d, "name": IC2["names"].get(d["id"], d["name"]), "status": IC2["status"].get(d["id"], d["status"])}
+            for d in _ic2_devices_raw(org_wide)]
 
 def _ic2_devices_raw(org_wide=True):
     trailer = {**TRAILER, "ts": _ic2_utc(TRAILER_T) if org_wide else _ic2_local(TRAILER_T)}
@@ -293,9 +295,15 @@ async def ic2_device_loc(org: str, group: int, dev: int, request: Request):
 async def ic2_mode(mode: str):
     if mode == "reset":
         IC2["names"].clear()
+        IC2["status"].clear()
     IC2["mode"] = "ok" if mode in ("stop", "reset") else mode
     IC2["stopped_at"] = time.time() if mode == "stop" else None
     return {"mode": mode}
+
+@app.post("/_ic2/status/{dev}")
+async def ic2_status(dev: int, status: str):
+    IC2["status"][dev] = status
+    return {"ok": True}
 
 @app.post("/_ic2/rename/{dev}")
 async def ic2_rename(dev: int, name: str):

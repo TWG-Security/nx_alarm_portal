@@ -392,9 +392,12 @@ async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depe
                       verdict: str | None = Query(None, pattern="^(real|false|dismissed|none)$"),
                       tenant_id: int | None = None,
                       alerting: bool = False,
-                      before_id: int | None = None, limit: int = Query(100, ge=1, le=500)):
+                      before_id: int | None = None, after_id: int | None = None,
+                      order: str = Query("newest", pattern="^(newest|oldest)$"),
+                      limit: int = Query(100, ge=1, le=500)):
     """alerting=1 (the page's open-alarm store) also includes the user's own company while they view
-    another one, so their own alarms keep sounding."""
+    another one, so their own alarms keep sounding. order=oldest (pages with after_id) is the Alarms page's
+    open list: the oldest waiting alarm first."""
     stmt = select(Alarm).where(scope.alerting_where(Alarm.tenant_id) if alerting else scope.where(Alarm.tenant_id))
     if tenant_id:
         stmt = stmt.where(Alarm.tenant_id == tenant_id)
@@ -415,7 +418,9 @@ async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depe
         stmt = stmt.where(Alarm.verdict == ("" if verdict == "none" else verdict))
     if before_id:
         stmt = stmt.where(Alarm.id < before_id)
-    rows = (await db.scalars(stmt.order_by(Alarm.id.desc()).limit(limit))).unique().all()
+    if after_id:
+        stmt = stmt.where(Alarm.id > after_id)
+    rows = (await db.scalars(stmt.order_by(Alarm.id.asc() if order == "oldest" else Alarm.id.desc()).limit(limit))).unique().all()
     return [alarm_dict(a) for a in rows]
 
 

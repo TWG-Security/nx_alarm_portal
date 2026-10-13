@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block title %}Share your location{% endblock %}
+{% block content %}
+<div class="page link-page share-page">
+  <div class="link-head">
+    <span class="logo-chip"><img src="https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png" alt="TWG Security" width="110" height="34"></span>
+    <span class="brand-title">Guard location</span>
+  </div>
+  {% if state == "ok" %}
+  <div class="card link-card">
+    <h1>{{ guard_name }}</h1>
+    <p class="muted" style="margin-top:0">Shares this phone's location with <b>{{ company }}</b> dispatch, so the closest guard can be sent to an alarm.
+      Only your position is sent, only while sharing is on.</p>
+    <div id="share-state" class="share-state share-state--off" role="status" aria-live="polite">Not sharing</div>
+    <div class="share-facts muted" id="share-facts"></div>
+    <div class="row share-actions">
+      <button class="btn btn-primary share-big" type="button" id="share-start">Start sharing</button>
+      <button class="btn share-big" type="button" id="share-stop" hidden>Stop sharing</button>
+    </div>
+    <div class="alert share-tip"><b>Keep this page open and the screen on.</b> Phones stop sending your location when the
+      browser is closed, another app is in front, or the phone locks. The screen is kept awake while sharing when the phone allows it.</div>
+    <details class="muted small-print"><summary>Location blocked?</summary>
+      <ul>
+        <li><b>iPhone:</b> Settings → Privacy &amp; Security → Location Services → Safari Websites → <b>While Using the App</b>. Then reload this page.</li>
+        <li><b>Android (Chrome):</b> tap the icon left of the address → Permissions → Location → <b>Allow</b>. Then reload.</li>
+      </ul></details>
+  </div>
+  {% elif state == "expired" %}
+  <div class="card link-card"><h1>This location link has expired</h1>
+    <p>Ask dispatch to send you a new one.</p></div>
+  {% else %}
+  <div class="card link-card"><h1>This link doesn't work</h1>
+    <p>Check that the whole link was copied. Links stop working when they expire or when access is removed.</p></div>
+  {% endif %}
+</div>
+{% endblock %}
+{% block scripts %}{% if state == "ok" %}
+<script>window.PORTAL = {{ {"token": token, "everyS": every_s} | tojson }};</script>
+<script type="module" src="{{ asset('js/share.js') }}"></script>{% endif %}{% endblock %}

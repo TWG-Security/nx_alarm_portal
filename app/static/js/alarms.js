@@ -133,9 +133,11 @@ if (BULK) {
 }
 
 async function load(append = false) {
-  const p = new URLSearchParams({ state: filt.state, limit: PAGE });
+  // Open alarms: the oldest waiting first (work the queue top down). History: newest first.
+  const oldestFirst = filt.state === "open";
+  const p = new URLSearchParams({ state: filt.state, limit: PAGE, order: oldestFirst ? "oldest" : "newest" });
   ["site_id", "priority", "q", "verdict"].forEach((k) => { if (filt[k]) p.set(k, filt[k]); });
-  if (append && oldestId) p.set("before_id", oldestId);
+  if (append && oldestId) p.set(oldestFirst ? "after_id" : "before_id", oldestId);
   const data = await api(`/api/alarms?${p}`);
   rows = append ? rows.concat(data) : data;
   oldestId = data.length === PAGE ? data[data.length - 1].id : null;
@@ -146,7 +148,11 @@ async function load(append = false) {
 function upsert(a, draw = true) {
   const i = rows.findIndex((r) => r.id === a.id);
   if (i >= 0) { if (matches(a)) rows[i] = a; else rows.splice(i, 1); if (draw) render(); }
-  else if (matches(a)) { rows.unshift(a); if (draw) { render(); listEl.querySelector(`[data-id="${a.id}"]`)?.classList.add("fresh"); } }
+  else if (matches(a)) {
+    if (filt.state === "open") { if (oldestId) return; rows.push(a); }      // oldest first: new ones go last (once all are loaded)
+    else rows.unshift(a);
+    if (draw) { render(); listEl.querySelector(`[data-id="${a.id}"]`)?.classList.add("fresh"); }
+  }
 }
 
 listEl.addEventListener("click", async (e) => {

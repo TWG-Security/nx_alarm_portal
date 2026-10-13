@@ -43,6 +43,7 @@
     </form>
     <div class="card">
       <div class="card-head"><h2>Tracked guards and vehicles</h2></div>
+      <p class="muted" style="margin-top:0"><b>Texts go to</b> is the person a <b>Dispatch</b> text goes to (they need a phone number and must have replied YES to texts).</p>
       <div class="table-wrap"><table>
         <thead><tr><th>Name</th><th>Router</th><th>Last position</th><th></th></tr></thead>
         <tbody id="gt-trackers"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
@@ -57,6 +58,25 @@
         <div class="field"><label for="gt-filter">Search routers</label><input id="gt-filter" type="search" placeholder="Name or serial" disabled></div>
       </div>
       <div id="gt-devices"></div>
+    </div>
+    <div class="card manage-only">
+      <h2>Add a guard without a router (phone)</h2>
+      <p class="muted" style="margin-top:0">The guard gets a text with a link. They open it on their phone, tap <b>Start sharing</b>, and their marker
+        moves on the map like a router's. It works while that page stays open with the screen on (phones stop browser location
+        when locked). Every dispatch text to them carries the link again.</p>
+      <div class="gt-pick">
+        <div class="field"><label for="gt-person">Person</label><select id="gt-person"></select></div>
+        <div class="field"><label for="gt-person-name">Name on the map</label><input id="gt-person-name" type="text" maxlength="100" placeholder="Their name"></div>
+        <div class="field"><label for="gt-person-kind">Kind</label><select id="gt-person-kind"><option value="guard">Guard</option><option value="vehicle">Vehicle</option></select></div>
+      </div>
+      <button class="btn btn-primary" type="button" id="gt-add-phone">Add and text the link</button>
+      <div id="gt-phone-result" style="margin-top:8px"></div>
+    </div>
+    <div class="card manage-only">
+      <h2>Dispatch</h2>
+      <p class="muted" style="margin-top:0">Every alarm's details list the guards closest to it, with a <b>Dispatch</b> button that texts that guard.</p>
+      <label class="check"><input type="checkbox" id="gt-auto"> When an operator marks an alarm <b>Real event</b>, text only the <b>closest guard</b>
+        (instead of every guard set to get confirmed texts). If no guard has a recent position, all of them get the confirmed text.</label>
     </div>
   </div>
   {% endif %}

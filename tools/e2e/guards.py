@@ -90,8 +90,9 @@ with sync_playwright() as p:
     pg.wait_for_selector(".guard-icon .guard--live", timeout=15000)
     check("Patrol Car 1" in pg.inner_text(".guard--live .guard-label") and "mph" in pg.inner_text(".guard--live .guard-label"),
           "live marker with name and speed")
-    check(pg.locator(".guard-icon .guard--stale").count() == 1 and "last seen" in pg.inner_text(".guard--stale .guard-label"),
-          "the trailer that reported yesterday is grey: 'last seen …'")
+    check(pg.locator(".guard-icon .guard--offline").count() == 1 and "OFFLINE (router offline)" in pg.inner_text(".guard--offline .guard-label")
+          and "last seen" in pg.inner_text(".guard--offline .guard-label"),
+          "the trailer whose router is off (InControl2: offline) shows OFFLINE, last seen yesterday, at its last position")
     check(pg.locator("#guard-list li").count() == 2, "Guards list in the side panel")
     pg.click("#guard-list li:has-text('Patrol Car 1')"); pg.wait_for_timeout(1200)
     check("following" in pg.get_attribute("#guard-list li:has-text('Patrol Car 1')", "class"), "clicking a guard zooms to it and follows")

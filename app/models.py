@@ -542,6 +542,17 @@ class Tracker(Base):
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # The person carrying it: dispatch texts go to their phone (app/services/dispatch.py).
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Router online in InControl2 / phone page sharing. None = not known yet. The last position is kept when offline.
+    online: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    offline_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # source "phone": the guard's browser shares its location from /g/<token> (app/routers/share.py). The token's
+    # SHA-256 finds the tracker; the token itself is kept encrypted so the same link can be texted again.
+    share_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    share_enc: Mapped[str] = mapped_column(Text, default="")
+    share_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    share_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TrackerPoint(Base):

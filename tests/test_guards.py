@@ -23,8 +23,7 @@ def fake_ic2(monkeypatch):
     monkeypatch.setattr(get_settings(), "peplink_api_base", "http://ic2.test/_ic2")
     monkeypatch.setattr(svc, "transport", httpx.ASGITransport(app=fake_nx.app))
     monkeypatch.setattr(svc, "_clients", {})
-    fake_nx.IC2.update(mode="ok", stopped_at=None, calls=[], names={})
-    monkeypatch.setattr(svc, "_names_at", {})
+    fake_nx.IC2.update(mode="ok", stopped_at=None, calls=[], names={}, status={})
     monkeypatch.setattr(svc, "_refreshed_at", {})
     yield fake_nx.IC2
     fake_nx.IC2.update(mode="ok", stopped_at=None)
@@ -286,3 +285,17 @@ async def test_tracking_a_router_switches_tracking_on(client, session):
     fake_nx.IC2["stopped_at"] = time.time()
     await svc.poll_once()
     assert (await client.get("/api/trackers")).json()[0]["lat"] is not None
+
+
+async def test_a_router_switched_off_shows_offline_at_its_last_position(client, session):
+    tenant, _ = await _setup(client, session)
+    await svc.poll_once()
+    t = (await client.get("/api/trackers")).json()[0]
+    assert t["online"] is True and t["lat"] is not None
+    fake_nx.IC2["status"][3] = "offline"
+    await svc.poll_once()
+    t2 = (await client.get("/api/trackers")).json()[0]
+    assert t2["online"] is False and t2["offline_since"] and (t2["lat"], t2["lng"]) == (t["lat"], t["lng"])
+    fake_nx.IC2["status"][3] = "online"
+    await svc.poll_once()
+    assert (await client.get("/api/trackers")).json()[0]["online"] is True

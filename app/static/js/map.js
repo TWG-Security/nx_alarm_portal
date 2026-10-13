@@ -1,5 +1,5 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
@@ -80,9 +80,7 @@ function renderDetail() {
 // ---------------------------------------------------------------- right: live feed
 const FEED_MAX = 100;
 function feedRows() {
-  return [...openAlarms.values()]
-    .filter((a) => inView(a) && (!selectedId || a.site_id === selectedId))
-    .sort((a, b) => a.priority - b.priority || b.event_ts_ms - a.event_ts_ms);
+  return alarmQueue((a) => !selectedId || a.site_id === selectedId);       // critical first, then oldest first
 }
 
 function renderFeed() {

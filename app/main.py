@@ -15,7 +15,7 @@ from app import platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, guards, links, pages, platform, site_models, sso, stream, tenants, tiles
+from app.routers import account, api, auth, guards, links, pages, platform, share, site_models, sso, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -28,7 +28,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # Sign-in pages a banned IP may not use. Signed-in sessions are never cut off by a ban.
-BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/")   # /a/: texted alarm links
+BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/", "/g/")   # /a/, /g/: texted links
 
 
 class BanGate:
@@ -140,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(links.router)
     app.include_router(site_models.router)
     app.include_router(guards.router)
+    app.include_router(share.router)
     return app
 
 

@@ -1,0 +1,215 @@
+"""Dispatch, guards sharing their location from a phone browser, Next / oldest-first, offline and history, end to
+end against the fake NX + fake Twilio in tools/fake_nx.py.
+
+    POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.dispatch [screenshot_dir]
+
+Two guards without routers are added on the Sites page; each gets a text with a location link, opens it on a
+(simulated) phone with GPS and taps Start sharing; their markers appear on the operator's map. Three alarms: the
+feed lists the critical first, then the oldest first; Next walks through them in that order. The alarm details
+list the guards closest first; Dispatch texts the closest. Real event texts only the closest guard automatically.
+A guard stopping shows OFFLINE at the last position; History draws where they were. Alarms are timed throughout.
+"""
+import base64
+import hashlib
+import hmac
+import json
+import sys
+import time
+import urllib.parse
+import urllib.request
+
+from playwright.sync_api import sync_playwright
+
+from tools.e2e.common import FAKE_NX, PORTAL, inject, login_and_add_site
+
+out = sys.argv[1] if len(sys.argv) > 1 else "/tmp"
+SID = "AC" + "1" * 32
+SITE = (40.2665, -76.8838)
+GUARDS = {"near": ("+15705550401", "Ana Near", 120), "far": ("+15705550402", "Ben Far", 900)}      # metres north of the site
+fails = []
+
+
+def check(ok, msg):
+    print(("PASS  " if ok else "FAIL  ") + msg)
+    if not ok:
+        fails.append(msg)
+
+
+def texts() -> list[dict]:
+    return json.load(urllib.request.urlopen(f"{FAKE_NX}/_twilio"))
+
+
+def wait_texts(n: int, timeout=10.0) -> list[dict]:
+    end = time.time() + timeout
+    while time.time() < end:
+        t = texts()
+        if len(t) >= n:
+            return t
+        time.sleep(0.05)
+    return texts()
+
+
+def twilio_reply(frm: str, body: str) -> int:
+    params = {"From": frm, "To": "+15705550000", "Body": body, "MessageSid": "SMreply", "AccountSid": SID}
+    url = f"{PORTAL}/twilio/sms"
+    sig = base64.b64encode(hmac.new(b"dev-token", (url + "".join(k + v for k, v in sorted(params.items()))).encode(),
+                                    hashlib.sha1).digest()).decode()
+    return urllib.request.urlopen(urllib.request.Request(url, data=urllib.parse.urlencode(params).encode(),
+                                                         headers={"X-Twilio-Signature": sig})).status
+
+
+def alarm_on_screen(pg, kind: str) -> float:
+    before = pg.locator(".feed-item").count()
+    t0 = time.time()
+    inject(kind)
+    pg.wait_for_function(f"document.querySelectorAll('.feed-item').length > {before}", timeout=10000, polling=10)
+    return (time.time() - t0) * 1000
+
+
+def link_after(body: str, label: str) -> str:
+    lines = body.split("\n")
+    return lines[lines.index(label) + 1].strip()
+
+
+API = """async ([url, method, body]) => { const t = document.querySelector('meta[name=csrf-token]').content;
+    const r = await fetch(url, {method, headers: {'Content-Type': 'application/json', 'X-CSRF-Token': t}, body: body ? JSON.stringify(body) : undefined});
+    return [r.status, await r.json()]; }"""
+
+with sync_playwright() as p:
+    b = p.chromium.launch()
+    ctx = b.new_context(viewport={"width": 1500, "height": 950})
+    pg = ctx.new_page()
+    errors = []
+    pg.on("pageerror", lambda e: errors.append(f"operator: {e}"))
+    pg.on("dialog", lambda d: d.accept())
+    login_and_add_site(pg)
+    pg.wait_for_timeout(2500)
+    st, _ = pg.evaluate(API, ["/api/platform/settings/email", "PUT", {"enabled": False, "portal_url": PORTAL}])
+    st2, _ = pg.evaluate(API, ["/api/platform/settings/sms", "PUT", {"enabled": True, "sid": SID, "token": "dev-token", "sender": "+15705550000"}])
+    check(st == 200 and st2 == 200, "portal address and Twilio set up")
+    for key, (phone, name, _) in GUARDS.items():
+        s, r = pg.evaluate(API, ["/api/users", "POST", {"email": f"{key}@twgsecurity.com", "display_name": name, "password": "Guard-password-123!",
+                                                        "phone": phone, "sms_level": "alarm", "sms_when": "confirmed"}])
+        check(s == 200, f"guard {name} added ({s})")
+        wait_texts(len(texts()) + 1, 3)
+        twilio_reply(phone, "YES")
+    time.sleep(0.5)
+
+    # ---- 1. Sites page: add both as phone guards; each is texted a location link
+    pg.goto(f"{PORTAL}/sites")
+    pg.wait_for_selector("#gt-person option[value]:not([value=''])", state="attached", timeout=10000)
+    links = {}
+    for key, (phone, name, _) in GUARDS.items():
+        n0 = len(texts())
+        pg.select_option("#gt-person", label=next(o for o in pg.eval_on_selector_all("#gt-person option", "os => os.map(o => o.label)") if o.startswith(name)))
+        pg.click("#gt-add-phone")
+        pg.wait_for_function("document.querySelector('#gt-phone-result .alert')?.textContent.includes('Link texted')", timeout=8000)
+        t = wait_texts(n0 + 1)
+        check(t[-1]["to"] == phone and "SHARE YOUR LOCATION" in t[-1]["body"], f"{name} gets a text with the location link")
+        links[key] = link_after(t[-1]["body"], "SHARE YOUR LOCATION (open, tap Start, keep it open):")
+    check(pg.locator("#gt-trackers tr:has-text('Phone (browser)')").count() == 2, "both listed as Phone (browser) guards")
+    check(pg.is_checked("#gt-auto"), "auto-dispatch on confirm is on by default")
+    pg.screenshot(path=f"{out}/dispatch1-sites.png", full_page=True)
+
+    # ---- 2. The guards open their links on phones with GPS and tap Start sharing
+    phones = {}
+    for key, (phone, name, north_m) in GUARDS.items():
+        pc = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True, permissions=["geolocation"],
+                           geolocation={"latitude": SITE[0] + north_m / 111320, "longitude": SITE[1], "accuracy": 8})
+        ph = pc.new_page()
+        ph.on("pageerror", lambda e, n=name: errors.append(f"{n}'s phone: {e}"))
+        ph.goto(links[key])
+        check(name in ph.inner_text("h1"), f"{name}'s link opens the sharing page")
+        ph.click("#share-start")
+        ph.wait_for_function("document.getElementById('share-state').textContent.includes('Sharing your location')", timeout=10000)
+        phones[key] = (pc, ph)
+    phones["near"][1].screenshot(path=f"{out}/dispatch2-phone-sharing.png")
+    check(True, "both phones are sharing")
+
+    pg.goto(f"{PORTAL}/")
+    pg.wait_for_function("document.querySelectorAll('.guard-icon .guard').length >= 2", timeout=10000)
+    check("Ana Near" in pg.inner_text("#guard-list") and "Ben Far" in pg.inner_text("#guard-list"), "both phone guards on the operator's map")
+    ms = alarm_on_screen(pg, "line")
+    check(ms < 1000, f"alarm on screen in {ms:.0f} ms with two phones sharing")
+
+    # ---- 3. Queue order: critical first, then oldest first; Next follows it
+    time.sleep(1.1)
+    alarm_on_screen(pg, "line")
+    time.sleep(1.1)
+    inject("panic")
+    pg.wait_for_selector("#critical-dialog[open]", timeout=10000)
+    pg.keyboard.press("Escape"); pg.wait_for_timeout(400)
+    feed = pg.eval_on_selector_all(".feed-item", "els => els.map(e => [Number(e.dataset.id), e.classList.contains('p1')])")
+    check(feed[0][1] and [i for i, _ in feed[1:]] == sorted(i for i, _ in feed[1:]), f"feed: critical first, then oldest first {feed}")
+    first_line = feed[1][0]
+    pg.click(f".feed-item[data-id='{first_line}'] [data-detail]")
+    pg.wait_for_selector("#drawer:not([hidden]) #drawer-next", timeout=5000)
+    check("2 more open" in pg.inner_text("#drawer-next"), "Next shows how many more are open")
+
+    # ---- 4. Guards closest first in the alarm details; Dispatch texts the closest
+    pg.wait_for_selector(".drawer-dispatch:not([hidden]) .dispatch-list li", timeout=8000)
+    rows = pg.eval_on_selector_all(".dispatch-list li", "els => els.map(e => e.innerText)")
+    check(rows[0].startswith("Ana Near") and "Closest" in rows[0] and "Ben Far" in rows[1], f"guards closest first: {rows}")
+    pg.screenshot(path=f"{out}/dispatch3-drawer-guards.png")
+    n0 = len(texts())
+    t0 = time.time()
+    pg.click(".dispatch-list li.closest [data-dispatch]")
+    t = wait_texts(n0 + 1)
+    took = (time.time() - t0) * 1000
+    body = t[-1]["body"]
+    check(t[-1]["to"] == GUARDS["near"][0] and body.startswith("TWG DISPATCH:"), f"Dispatch text reached Twilio {took:.0f} ms after the click")
+    check("away)" in body and "SHARE YOUR LOCATION" in body and "MAP (directions to the site):" in body,
+          "dispatch text: distance, directions, the location link again")
+    print("      text:", repr(body))
+    pg.wait_for_selector(".dispatched-row", timeout=8000)
+    check("Dispatched Ana Near" in pg.inner_text(".drawer-dispatch"), "the alarm shows who was dispatched")
+
+    # Next: the newer line alarm, then (end of the queue) back to the critical.
+    pg.click("#drawer-next")
+    pg.wait_for_function(f"document.querySelector('#drawer-next') && !document.querySelector('.dispatched-row')", timeout=5000)
+    second = pg.evaluate("document.querySelector('#drawer h1').textContent")
+    pg.click("#drawer-next")
+    pg.wait_for_function("document.querySelector('#drawer .chip.p1')", timeout=5000)
+    check(True, f"Next walks the queue ({second!r} → the critical)")
+
+    # ---- 5. Real event on the critical: only the closest guard is texted, automatically
+    n0 = len(texts())
+    t0 = time.time()
+    pg.click('#drawer [data-ack="real"]')
+    t = wait_texts(n0 + 1)
+    took = (time.time() - t0) * 1000
+    time.sleep(1.5)
+    new = texts()[n0:]
+    check(len(new) == 1 and new[0]["to"] == GUARDS["near"][0] and new[0]["body"].startswith("TWG DISPATCH:"),
+          f"confirming texts only the closest guard, automatically ({took:.0f} ms after the click)")
+    pg.keyboard.press("Escape")
+    pg.click("#drawer-close") if pg.is_visible("#drawer-close") else None
+
+    # ---- 6. Ana stops sharing: OFFLINE at her last position
+    pos = pg.evaluate("[...document.querySelectorAll('.guard-icon .guard')].find(e => e.textContent.includes('Ana'))?.getBoundingClientRect().x")
+    phones["near"][1].click("#share-stop")
+    pg.wait_for_function("document.querySelector('#guard-list').innerText.includes('OFFLINE (stopped sharing)')", timeout=8000)
+    pos2 = pg.evaluate("[...document.querySelectorAll('.guard-icon .guard')].find(e => e.textContent.includes('Ana'))?.getBoundingClientRect().x")
+    check(pos2 is not None and abs((pos or 0) - pos2) < 2, "stopped sharing: shown OFFLINE, still at the last position")
+    pg.screenshot(path=f"{out}/dispatch4-offline.png")
+
+    # ---- 7. History from the server
+    pg.click("[data-history]:near(:text('Ben Far'))") if False else pg.click("li:has-text('Ben Far') [data-history]")
+    try:
+        pg.wait_for_selector("[data-hist-slider]", timeout=8000)
+    except Exception:
+        print("      history panel:", repr(pg.inner_text("#guard-list")[-400:]))
+        raise
+    check("position" in pg.inner_text(".guard-history"), "History: Ben's path from the server, with a time slider")
+    pg.screenshot(path=f"{out}/dispatch5-history.png")
+    pg.click("[data-hist-close]")
+
+    ms = alarm_on_screen(pg, "line")
+    check(ms < 1000, f"alarm on screen in {ms:.0f} ms after all of it")
+    check(not errors, f"no page errors {errors}")
+    for pc, _ in phones.values():
+        pc.close()
+    b.close()
+
+print("\nALL PASS" if not fails else f"\n{len(fails)} FAILED")
+sys.exit(1 if fails else 0)

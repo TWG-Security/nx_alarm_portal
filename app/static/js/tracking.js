@@ -8,6 +8,20 @@ const $ = (id) => document.getElementById(id);
 let data = null;
 
 const KIND = { vehicle: "Vehicle", guard: "Guard" };
+const CONSENT = { yes: "", pending: " (hasn't replied YES)", none: " (texts not set up)", stopped: " (replied STOP)" };
+function personOptions(selected, onlyPhones = false) {
+  const people = data.people.filter((p) => !onlyPhones || p.phone);
+  return `<option value="">${onlyPhones ? "Pick a person with a phone number" : "Nobody"}</option>` + people.map((p) =>
+    `<option value="${p.id}" ${p.id === selected ? "selected" : ""}>${esc(p.name)}${p.phone ? ` · ${esc(p.phone)}${CONSENT[p.consent] ?? ""}` : " (no phone)"}</option>`).join("");
+}
+function linkState(t) {
+  if (t.source !== "phone") return "";
+  const live = t.online && t.share_seen_at;
+  return `<div class="small-print">${live ? '<span style="color:var(--ok)">Sharing now</span>' : t.share_seen_at ? `Last shared ${esc(relTime(t.share_seen_at))}` : "Link not opened yet"}
+    ${t.share_expires_at ? `<span class="muted"> · link valid until ${esc(new Date(t.share_expires_at).toLocaleDateString())}</span>` : ""}</div>
+    <div class="row" style="gap:4px;margin-top:4px"><button class="btn btn-sm" type="button" data-share>Text the link</button>
+      <button class="btn btn-sm" type="button" data-share-renew title="The old link stops working">New link</button></div>`;
+}
 
 function paint() {
   $("gt-enabled").checked = data.enabled;
@@ -17,23 +31,55 @@ function paint() {
   $("gt-secret").placeholder = data.secret_set ? "Saved (type to replace)" : "";
   $("gt-secret-hint").textContent = data.secret_set ? "Leave blank to keep the saved secret." : "";
   const ok = data.last_ok_at && (!data.last_error_at || data.last_ok_at > data.last_error_at);
-  $("gt-status").innerHTML = !data.enabled ? (data.trackers.length
-      ? '<div class="alert alert-error"><b>Tracking is off</b>, so the guards below get no positions. Tick <b>Track guards</b> and <b>Save</b>.</div>'
-      : '<div class="alert">Guard tracking is off.</div>')
+  const routers = data.trackers.filter((t) => t.source !== "phone");
+  $("gt-status").innerHTML = !data.enabled ? (routers.length
+      ? '<div class="alert alert-error"><b>Router tracking is off</b>, so the routers below get no positions. Tick <b>Track guards</b> and <b>Save</b>.</div>'
+      : '<div class="alert">Router tracking (InControl2) is off. Guards tracked by phone work without it.</div>')
     : ok ? `<div class="alert alert-ok">Working: last read from InControl2 ${esc(relTime(data.last_ok_at))}.</div>`
     : data.last_error ? `<div class="alert alert-error">InControl2 problem ${esc(relTime(data.last_error_at))}: ${esc(data.last_error)}</div>`
     : '<div class="alert">On. Waiting for the first read (add a tracker below).</div>';
   $("gt-trackers").innerHTML = data.trackers.map((t) => `<tr data-id="${t.id}">
     <td>${MANAGE ? `<input type="text" value="${esc(t.name)}" maxlength="100" data-f="name" aria-label="Name">` : `<b>${esc(t.name)}</b>`}
       ${MANAGE ? `<select data-f="kind" aria-label="Kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${k === t.kind ? "selected" : ""}>${v}</option>`).join("")}</select>` : `<div class="muted small-print">${KIND[t.kind]}</div>`}</td>
-    <td>${esc(t.device_name || "")}<div class="muted small-print mono">${esc(t.serial)}</div></td>
+    <td>${t.source === "phone" ? `<b>Phone (browser)</b>${linkState(t)}` : `${esc(t.device_name || "")}<div class="muted small-print mono">${esc(t.serial)}</div>`}
+      ${MANAGE ? `<label class="small-print" style="display:block;margin-top:4px">Texts go to <select data-f="user_id" aria-label="Texts go to">${personOptions(t.user_id)}</select></label>` : ""}
+      ${t.online === false ? `<div class="small-print guard-offline-text">OFFLINE since ${esc(relTime(t.offline_since))}</div>` : ""}</td>
     <td>${t.fix_at ? `${esc(relTime(t.fix_at))}<div class="muted small-print">${t.lat.toFixed(5)}, ${t.lng.toFixed(5)}</div>` : '<span class="muted">none yet</span>'}
       ${t.error ? `<div class="alert alert-error small-print" style="margin:4px 0 0">${esc(t.error)}</div>` : ""}</td>
-    <td class="actions">${MANAGE ? `<button class="btn btn-sm" type="button" data-refresh title="Get its position from InControl2 now">↻ Refresh</button>
+    <td class="actions">${MANAGE ? `${t.source === "phone" ? "" : '<button class="btn btn-sm" type="button" data-refresh title="Get its position from InControl2 now">↻ Refresh</button>'}
       <label class="check" style="margin:0"><input type="checkbox" data-f="enabled" ${t.enabled ? "checked" : ""}> On</label>
       <button class="btn btn-sm btn-danger" type="button" data-remove>Remove</button>` : ""}</td></tr>`).join("")
-    || '<tr><td colspan="4" class="empty">Nothing tracked yet. Use <b>Find routers</b> below.</td></tr>';
+    || '<tr><td colspan="4" class="empty">Nothing tracked yet. Add a router or a phone below.</td></tr>';
+  $("gt-auto").checked = data.auto_dispatch;
+  const keep = $("gt-person").value;
+  $("gt-person").innerHTML = personOptions(Number(keep) || null, true);
 }
+
+function shareResult(r) {
+  $("gt-phone-result").innerHTML = `<div class="alert ${r.texted ? "alert-ok" : ""}">${r.texted ? "Link texted." : `Not texted: ${esc(r.reason)}. Send them this link another way:`}
+    <div class="row" style="gap:6px;margin-top:6px"><input type="text" readonly value="${esc(r.link)}" class="mono" style="flex:1" aria-label="Location link">
+    <button class="btn btn-sm" type="button" data-copy="${esc(r.link)}">Copy</button></div></div>`;
+}
+$("gt-phone-result").addEventListener("click", (e) => {
+  if (e.target.dataset.copy) navigator.clipboard?.writeText(e.target.dataset.copy).then(() => toast("Copied"), () => {});
+});
+$("gt-person").addEventListener("change", () => {
+  const p = data.people.find((x) => String(x.id) === $("gt-person").value);
+  if (p && !$("gt-person-name").value) $("gt-person-name").value = p.name;
+});
+$("gt-add-phone").addEventListener("click", async () => {
+  const uid = Number($("gt-person").value);
+  if (!uid) { toast("Pick the person first", { kind: "error" }); return; }
+  try {
+    const r = await api("/api/tracking/phones", { method: "POST", body: { user_id: uid, name: $("gt-person-name").value.trim(), kind: $("gt-person-kind").value } });
+    data = r; paint(); shareResult(r.share);
+    $("gt-person-name").value = "";
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+$("gt-auto").addEventListener("change", async () => {
+  try { data = await api("/api/tracking/dispatch", { method: "PUT", body: { auto: $("gt-auto").checked } }); paint(); toast("Saved"); }
+  catch (err) { toast(esc(err.message), { kind: "error" }); paint(); }
+});
 
 async function load() {
   data = await api("/api/tracking");
@@ -144,12 +190,20 @@ $("gt-devices").addEventListener("click", async (e) => {
 $("gt-trackers").addEventListener("change", async (e) => {
   const f = e.target.dataset.f, id = e.target.closest("tr")?.dataset.id;
   if (!f || !id) return;
-  const v = f === "enabled" ? e.target.checked : e.target.value.trim();
+  const v = f === "enabled" ? e.target.checked : f === "user_id" ? (Number(e.target.value) || null) : e.target.value.trim();
   if (f === "name" && !v) { paint(); return; }
   try { data = await api(`/api/tracking/trackers/${id}`, { method: "PUT", body: { [f]: v } }); paint(); toast("Saved"); }
   catch (err) { toast(esc(err.message), { kind: "error" }); paint(); }
 });
 $("gt-trackers").addEventListener("click", async (e) => {
+  if (e.target.matches("[data-share], [data-share-renew]")) {
+    const renew = e.target.matches("[data-share-renew]"), id = e.target.closest("tr").dataset.id;
+    if (renew && !confirm("Make a new link? The old one stops working.")) return;
+    try { const r = await api(`/api/tracking/trackers/${id}/share`, { method: "POST", body: { renew } }); data = r; paint(); shareResult(r.share);
+      $("gt-phone-result").scrollIntoView({ block: "nearest" }); }
+    catch (err) { toast(esc(err.message), { kind: "error" }); }
+    return;
+  }
   if (e.target.matches("[data-refresh]")) {
     const id = e.target.closest("tr").dataset.id;
     e.target.disabled = true; e.target.textContent = "Refreshing…";

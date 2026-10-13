@@ -1,5 +1,6 @@
 """Live guard / patrol-vehicle locations: polls Peplink InControl2 for each tracker's GPS position and pushes
-moves to browsers (bus event "tracker.moved").
+moves to browsers (bus event "tracker.moved"). Guards without a router share their phone's location from a web page
+instead (app/routers/share.py → phone_fix / phone_stop here).
 
 Alarm safety: this is one background task with timeouts on every call; it never holds a DB connection while
 waiting on InControl2 (fetch first, then one short write), and a failing or slow InControl2 only marks the
@@ -26,7 +27,7 @@ log = logging.getLogger("portal.trackers")
 
 POLL_MIN_S = 15
 CONCURRENCY = 4
-TRAIL_KEEP_DAYS = 7
+TRAIL_KEEP_DAYS = 30         # position history kept on the server (the map's History picks any range in it)
 MIN_MOVE_M = 3.0             # a new trail point when it moved this far...
 POINT_EVERY_S = 300          # ...or this long since the last one (shows it's parked, not lost)
 
@@ -34,9 +35,7 @@ _clients: dict[int, tuple[tuple[str, str], peplink.Client]] = {}     # source id
 _last_prune: float | None = None
 transport = None                                # tests: an httpx transport for the IC2 client
 _wake: asyncio.Event | None = None
-NAME_SYNC_S = 600                # router names are re-read from InControl2 this often (and on a manual refresh)
 REFRESH_MIN_S = 5.0              # a manual refresh asks IC2 at most this often per tracker
-_names_at: dict[tuple, float] = {}             # (tenant, org, group) -> last name read (monotonic)
 _refreshed_at: dict[int, float] = {}           # tracker id -> last manual refresh
 
 
@@ -68,7 +67,9 @@ def tracker_dict(t: Tracker) -> dict:
             "lat": t.lat, "lng": t.lng, "speed": t.speed, "heading": t.heading,
             "fix_at": aware(t.fix_at).isoformat() if t.fix_at else None,
             "checked_at": aware(t.checked_at).isoformat() if t.checked_at else None,
-            "error": t.error, "serial": t.serial, "device_name": t.device_name}
+            "error": t.error, "serial": t.serial, "device_name": t.device_name, "source": t.source or "peplink",
+            "user_id": t.user_id, "online": t.online,
+            "offline_since": aware(t.offline_since).isoformat() if t.offline_since else None}
 
 
 def client_for(src: TrackerSource) -> peplink.Client | None:
@@ -97,33 +98,28 @@ async def _fetch(client: peplink.Client, t: dict, slots: asyncio.Semaphore) -> d
             return {"id": t["id"], "error": str(e)}
 
 
-async def _names(client: peplink.Client, org: str, group: int) -> dict[int, str]:
-    """Router names in one group (the group location list carries them; never the device list)."""
+async def _group(client: peplink.Client, org: str, group: int) -> dict[int, tuple[str, bool | None]]:
+    """Router name and online state for every router in one group (the group location list carries both; never
+    the device list, which carries admin passwords). Empty if InControl2 didn't answer."""
     try:
-        return {int(d["id"]): d["name"] for d in await client.group_locations(org, group) if d.get("id") is not None and d.get("name")}
+        return {int(d["id"]): (d.get("name") or "", None if d.get("status") is None else d["status"] == "online")
+                for d in await client.group_locations(org, group) if d.get("id") is not None}
     except peplink.PeplinkError as e:
-        log.info("IC2 names for %s/%s unavailable: %s", org, group, e)
+        log.info("IC2 group %s/%s unavailable: %s", org, group, e)
         return {}
 
 
-async def _with_names(clients: dict, trackers: list[dict], results: list[dict], force: bool = False) -> None:
-    """Attach each router's current InControl2 name to its result, re-reading each group every NAME_SYNC_S."""
-    now = time.monotonic()
-    due = {(t["tenant"], t["org"], t["group"]) for t in trackers
-           if force or now - _names_at.get((t["tenant"], t["org"], t["group"]), -1e9) > NAME_SYNC_S}
-    if not due:
-        return
-    keys = list(due)
-    found = await asyncio.gather(*(_names(clients[k[0]], k[1], k[2]) for k in keys))
-    names = {}
-    for k, got in zip(keys, found):
-        if got:
-            _names_at[k] = now
-        names[k] = got
+async def _with_names(clients: dict, trackers: list[dict], results: list[dict]) -> None:
+    """Attach each router's current InControl2 name and online state to its result (one call per group per round:
+    a router that's switched off shows as offline at its last position)."""
+    keys = list({(t["tenant"], t["org"], t["group"]) for t in trackers})
+    found = dict(zip(keys, await asyncio.gather(*(_group(clients[k[0]], k[1], k[2]) for k in keys))))
     for t, r in zip(trackers, results):
-        name = names.get((t["tenant"], t["org"], t["group"]), {}).get(t["device"])
+        name, online = found.get((t["tenant"], t["org"], t["group"]), {}).get(t["device"], ("", None))
         if name:
             r["device_name"] = name
+        if online is not None:
+            r["online"] = online
 
 
 async def poll_once() -> float:
@@ -165,8 +161,10 @@ async def _store(results: list[dict]) -> None:
             t = await db.get(Tracker, r["id"])
             if t is None:
                 continue
-            before = (t.error, t.fix_at, t.name)
+            before = (t.error, t.fix_at, t.name, t.online)
             t.checked_at = now
+            if "online" in r:
+                _set_online(t, r["online"], now)
             new_name = r.get("device_name")
             if new_name and new_name != t.device_name:
                 # Renamed in InControl2: a guard still called by the router's name follows it; a name given in
@@ -185,7 +183,7 @@ async def _store(results: list[dict]) -> None:
                     t.error = "The router hasn't reported a GPS position (no fix, or GPS is off)"
                 elif t.fix_at is None or fix.at > aware(t.fix_at):
                     _move(db, t, fix)
-            if (t.error, t.fix_at, t.name) != before:
+            if (t.error, t.fix_at, t.name, t.online) != before:
                 moved.append(t)
         for src in (await db.scalars(select(TrackerSource).where(TrackerSource.tenant_id.in_(list(counts))))).all():
             errs = errors.get(src.tenant_id, [])
@@ -197,6 +195,14 @@ async def _store(results: list[dict]) -> None:
         out = [(t.tenant_id, tracker_dict(t)) for t in moved]
     for tenant_id, data in out:
         bus.publish(tenant_id, "tracker.moved", data)
+
+
+def _set_online(t: Tracker, online: bool, now: datetime) -> None:
+    if online and t.online is not True:
+        t.online, t.offline_since = True, None
+    elif not online and t.online is not False:
+        t.online, t.offline_since = False, now
+        log.info("tracker %s (%s) went offline; last position kept", t.id, t.name)
 
 
 def _move(db, t: Tracker, fix: peplink.Fix) -> None:
@@ -226,10 +232,72 @@ async def refresh_one(tracker_id: int) -> dict | None:
     _refreshed_at[tracker_id] = time.monotonic()
     result = await _fetch(client, row, asyncio.Semaphore(1))
     result["tenant"] = row["tenant"]
-    await _with_names({row["tenant"]: client}, [row], [result], force=True)
+    await _with_names({row["tenant"]: client}, [row], [result])
     await _store([result])
     async with sessionmaker()() as db:
         return tracker_dict(await db.get(Tracker, tracker_id))
+
+
+# ---------------------------------------------------------------- phones (browser location sharing)
+PHONE_MIN_S = 2.0                # a phone's position is taken at most this often
+PHONE_MAX_ACCURACY_M = 250       # fixes vaguer than this (cell / Wi-Fi guesses) are ignored
+_phone_at: dict[int, float] = {}
+
+
+async def phone_fix(tracker_id: int, lat: float, lng: float, *, speed: float | None, heading: float | None,
+                    accuracy: float | None, at: datetime | None = None) -> str:
+    """A position from the guard's location-sharing page. Returns "ok", "ignored" (too soon / too vague) or "gone"."""
+    if accuracy is not None and accuracy > PHONE_MAX_ACCURACY_M:
+        return "ignored"
+    now_m = time.monotonic()
+    if now_m - _phone_at.get(tracker_id, -1e9) < PHONE_MIN_S:
+        return "ignored"
+    _phone_at[tracker_id] = now_m
+    now = utcnow()
+    at = min(at or now, now)
+    async with sessionmaker()() as db:
+        t = await db.get(Tracker, tracker_id)
+        if t is None or not t.enabled:
+            return "gone"
+        t.checked_at = t.share_seen_at = now
+        t.error = ""
+        _set_online(t, True, now)
+        if t.fix_at is None or at > aware(t.fix_at):
+            _move(db, t, peplink.Fix(lat=lat, lng=lng, at=at, speed=speed, alt=None))
+            if heading is not None and speed and speed > 0.5:
+                t.heading = round(heading % 360, 1)
+        await db.commit()
+        data = (t.tenant_id, tracker_dict(t))
+    bus.publish(data[0], "tracker.moved", data[1])
+    return "ok"
+
+
+async def phone_stop(tracker_id: int) -> None:
+    """The guard pressed Stop or closed the page: offline, last position kept."""
+    async with sessionmaker()() as db:
+        t = await db.get(Tracker, tracker_id)
+        if t is None:
+            return
+        _set_online(t, False, utcnow())
+        await db.commit()
+        data = (t.tenant_id, tracker_dict(t))
+    bus.publish(data[0], "tracker.moved", data[1])
+
+
+PHONE_QUIET_S = 180              # a sharing page that hasn't reported this long is shown offline
+
+
+async def _phones_quiet() -> None:
+    cutoff = utcnow() - timedelta(seconds=PHONE_QUIET_S)
+    async with sessionmaker()() as db:
+        rows = (await db.scalars(select(Tracker).where(Tracker.source == "phone", Tracker.online.is_(True),
+                                                       Tracker.share_seen_at < cutoff))).all()
+        for t in rows:
+            _set_online(t, False, utcnow())
+        await db.commit()
+        out = [(t.tenant_id, tracker_dict(t)) for t in rows]
+    for tenant_id, data in out:
+        bus.publish(tenant_id, "tracker.moved", data)
 
 
 async def run() -> None:
@@ -240,6 +308,7 @@ async def run() -> None:
     while True:
         _wake.clear()                   # before the round: a wake-up during it means "go again right away"
         try:
+            await _phones_quiet()
             wait = await poll_once()
         except asyncio.CancelledError:
             raise

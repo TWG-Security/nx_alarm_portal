@@ -111,6 +111,13 @@ export async function loadOpenAlarms() {
   }
   storeLoaded = true;
 }
+// Open alarms in working order: the most urgent level first, then the OLDEST first (the user, 2026-10-13: "the
+// oldest alarm should be up top first, so if there are multiple alarms at multiple sites the oldest is first").
+// The map's live feed and the alarm details' Next button both follow it.
+export function alarmQueue(keep = () => true) {
+  return [...openAlarms.values()].filter((a) => inView(a) && keep(a))
+    .sort((a, b) => a.priority - b.priority || a.event_ts_ms - b.event_ts_ms || a.id - b.id);
+}
 // Open alarms in view (optionally for one site).
 export function openCounts(siteId) {
   const c = { 1: 0, 2: 0, 3: 0 };

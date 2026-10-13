@@ -62,6 +62,9 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
     sa, sb = world["sites"]["Acme Security"], world["sites"]["Bravo Guards"]
     aa, ab = world["alarms"]["Acme Security"], world["alarms"]["Bravo Guards"]
     sb.camera_places = {"cam-b": {"name": "Bravo cam", "lat": 40, "lng": -75, "heading": 0, "fov": 60, "range_m": 40}}
+    from app.models import Tracker
+    bt = Tracker(tenant_id=world["b"].id, name="Bravo guard", source="phone", user_id=world["b_op"].id, lat=40, lng=-75)
+    session.add(bt)
     await session.commit()
     await _as(client, world["a_admin"].email)
 
@@ -104,9 +107,15 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("POST", f"/api/sites/{sb.id}/model/rebuild", {"up": "y"}), ("DELETE", f"/api/sites/{sb.id}/model", None),
         ("GET", f"/media/sites/{sb.id}/model/1/tiles/tileset.json", None),
         ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.webm", None),
+        ("GET", f"/api/alarms/{ab.id}/guards", None), ("POST", f"/api/alarms/{ab.id}/dispatch", {"tracker_id": bt.id}),
+        ("GET", f"/api/trackers/{bt.id}/trail?start=2026-01-01T00:00:00Z", None), ("POST", f"/api/trackers/{bt.id}/refresh", None),
+        ("PUT", f"/api/tracking/trackers/{bt.id}", {"name": "x"}), ("DELETE", f"/api/tracking/trackers/{bt.id}", None),
+        ("POST", f"/api/tracking/trackers/{bt.id}/share", {"renew": True}),
     ]:
         r = await client.request(method, path, json=body)
         assert r.status_code == 404, (method, path, r.status_code, r.text[:200])
+    # Their people can't be linked to our guards or tracked by our company.
+    assert (await client.post("/api/tracking/phones", json={"user_id": world["b_op"].id})).status_code == 400
     r = await client.post("/api/alarms/bulk", json={"ids": [ab.id], "verdict": "false"})
     assert r.json()["unchanged"] == [ab.id]
 
