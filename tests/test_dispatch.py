@@ -468,3 +468,40 @@ async def test_a_bad_fix_time_is_ignored_not_an_error(session, client):
     lat, lng = north(40)
     r = await client.post(f"/api/g/{token}/pos", json={"lat": lat, "lng": lng, "ts": 1.85e15 * 1000})
     assert r.status_code == 200 and r.json()["taken"]
+
+
+@respx.mock
+async def test_locate_a_guard_without_an_alarm(session, client, monkeypatch):
+    """Map → Guards → 📍 Locate: a phone guard is texted their location link (once a minute at most), a router is asked
+    for its position at once; operators can do it, other companies can't."""
+    from app.routers import guards as guards_router
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMl"}))
+    phone = await track(session, t.id, "Guard phone", 100, g["guard"], source="phone")
+    router = await track(session, t.id, "Patrol car", 300, g["both"])
+    unlinked = await track(session, t.id, "Nobody", 10, source="phone")
+    monkeypatch.setattr(guards_router, "_located", {})
+    asked = []
+
+    async def fake_refresh(tid):
+        asked.append(tid)
+        return {"id": tid, "name": "Patrol car", "lat": 40.0, "lng": -75.0, "error": "", "fix_at": None}
+    monkeypatch.setattr(guards_router.svc, "refresh_one", fake_refresh)
+    await login(client, "mike@twgsecurity.com")
+
+    r = await client.post(f"/api/trackers/{phone.id}/locate")
+    assert r.status_code == 200 and r.json()["kind"] == "texted"
+    await sms.drain()
+    body = body_of(twilio.calls[-1])
+    assert sent_to(twilio) == ["+15705558001"] and body.startswith("TWG: mike at TWG Security asks where you are.")
+    assert sms.SHARE_LABEL in body and "/g/" in body
+    again = await client.post(f"/api/trackers/{phone.id}/locate")
+    assert again.status_code == 429 and "less than a minute" in again.json()["detail"]
+    assert (await client.post(f"/api/trackers/{router.id}/locate")).json()["kind"] == "refreshed" and asked == [router.id]
+    assert (await client.post(f"/api/trackers/{unlinked.id}/locate")).status_code == 400
+    log = (await session.scalars(select(AuditLog).where(AuditLog.action == "tracker.location_requested"))).all()
+    assert len(log) == 1 and log[0].detail["to"] == "guard"
+    await login(client, p["acme"].email)
+    assert (await client.post(f"/api/trackers/{phone.id}/locate")).status_code == 404

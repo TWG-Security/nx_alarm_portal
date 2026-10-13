@@ -297,6 +297,12 @@ def call_ended_text(alarm: Alarm, by: str, verdict: str = "") -> str:
             + (f"\nNote: {note}" if note else "") + "\nReply STOP to opt out.")
 
 
+def locate_text(company: str, by: str, url: str) -> str:
+    """Dispatch wants to see where a guard is, without an alarm (map → Guards → Locate)."""
+    return (f"TWG: {_ascii(by, 40) or 'Dispatch'} at {_ascii(company, 60)} asks where you are. Open the link, tap "
+            f"Start sharing and keep the page open.\n\n{SHARE_LABEL}\n{url} \n\nReply STOP to opt out.")
+
+
 def share_invite_text(company: str, url: str) -> str:
     return (f"TWG: {_ascii(company, 60)} dispatch asks you to share your location while you're on duty, "
             f"so the closest guard can be sent to an alarm.\n\n{SHARE_LABEL}\n{url} \n\nReply STOP to opt out.")

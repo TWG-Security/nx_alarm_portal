@@ -285,6 +285,14 @@ with sync_playwright() as p:
     pg.screenshot(path=f"{out}/dispatch5-history.png")
     pg.click("[data-hist-close]")
 
+    # Locate with no alarm: 📍 next to Ben texts him his location link.
+    n0 = len(texts())
+    pg.click("li:has-text('Ben Far') [data-locate]")
+    t = wait_texts(n0 + 1)
+    check(t[-1]["to"] == GUARDS["far"][0] and "asks where you are" in t[-1]["body"] and "/g/" in t[-1]["body"],
+          "📍 Locate (no alarm): Ben is texted his location link")
+    pg.wait_for_selector(".toast:has-text('Asked Ben Far')", timeout=5000)
+
     ms = alarm_on_screen(pg, "line")
     check(ms < 1000, f"alarm on screen in {ms:.0f} ms after all of it")
     check(not errors, f"no page errors {errors}")

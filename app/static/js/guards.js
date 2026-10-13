@@ -188,7 +188,7 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
       const f = freshness(t);
       return `<li data-guard="${t.id}" class="${follow === t.id ? "following" : ""}" tabindex="0" title="${esc(t.error || t.device_name || "")}">
         <span class="guard-pip guard--${f}"></span><b>${esc(t.name)}</b>
-        ${t.source === "phone" ? "" : `<button type="button" class="guard-refresh" data-refresh="${t.id}" title="Get ${esc(t.name)}'s position from InControl2 now" aria-label="Refresh ${esc(t.name)}'s position">↻</button>`}
+        <button type="button" class="guard-refresh guard-locate" data-locate="${t.id}" title="${t.source === "phone" ? `Text ${esc(t.name)} asking them to share their location now` : `Get ${esc(t.name)}'s position from InControl2 now`}" aria-label="Locate ${esc(t.name)}">📍</button>
         <button type="button" class="guard-refresh" data-history="${t.id}" title="Where ${esc(t.name)} was: pick a time range" aria-label="${esc(t.name)}'s history">🕘</button>
         <span class="muted small-print${f === "offline" ? " guard-offline-text" : ""}">${esc(statusText(t, f) ?? `${speedText(t)} · ${relTime(t.fix_at)}`)}</span>
         ${t.error ? '<span class="chip offline" title="' + esc(t.error) + '">!</span>' : ""}</li>`;
@@ -204,6 +204,20 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
   }
 
   listEl.addEventListener("click", async (e) => {
+    const loc = e.target.closest("[data-locate]");
+    if (loc) {
+      e.stopPropagation();
+      loc.disabled = true;
+      try {
+        const r = await api(`/api/trackers/${loc.dataset.locate}/locate`, { method: "POST" });
+        if (r.kind === "texted") toast(`Asked ${esc(r.name)} for their location (text to ${esc(r.phone)}). Their marker moves once they tap Start sharing.`);
+        else { upsert(r.tracker); toast(r.tracker.error ? `${esc(r.tracker.name)}: ${esc(r.tracker.error)}` : `${esc(r.tracker.name)}: position from ${esc(relTime(r.tracker.fix_at))}`, r.tracker.error ? { kind: "error" } : {}); }
+        const g = guards.get(Number(loc.dataset.locate));
+        if (g && g.t.lat != null && follow !== g.t.id) focus(g.t.id);   // show (and follow) them
+      } catch (err) { toast(esc(err.message), { kind: "error" }); }
+      finally { loc.disabled = false; }
+      return;
+    }
     const histBtn = e.target.closest("[data-history]");
     if (histBtn) { e.stopPropagation(); openHistory(Number(histBtn.dataset.history)); return; }
     if (e.target.closest(".guard-history")) return;
