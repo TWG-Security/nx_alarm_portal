@@ -85,6 +85,9 @@ async def acknowledge(db: AsyncSession, alarm: Alarm, user: User, note: str, ip:
     await db.commit()
     await db.refresh(alarm)
     bus.publish(alarm.tenant_id, "alarm.acked", alarm_dict(alarm))
+    if verdict == "real" and not bulk:          # bulk edits text once for the batch (api.bulk_edit)
+        from app import sms
+        sms.notify_verdicts([alarm.id], [], user.id)
     return alarm
 
 

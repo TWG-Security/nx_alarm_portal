@@ -174,6 +174,8 @@ async def gather(alarm: Alarm, pre: int, post: int, quality: str, need_clip: boo
                 ev.frames.append(Frame(o, t, jpeg, ann, sorted({b[4] for b in boxes})))
     try:   # NX's own frame at the exact event time, at a higher resolution than the SD clip
         jpeg = await manager.client_for(alarm.site).get_thumbnail(alarm.device_id, alarm.event_ts_ms, width=1280)
+        if jpeg[:2] != b"\xff\xd8":     # 200 with 0 bytes: no recording at that moment
+            raise ValueError("no recording at the event time")
         boxes = _boxes_at(ev.objects, alarm.event_ts_ms)
         ev.event_frame = Frame(0, alarm.event_ts_ms, jpeg, await asyncio.to_thread(_annotate, jpeg, boxes),
                                sorted({b[4] for b in boxes}), "nx")

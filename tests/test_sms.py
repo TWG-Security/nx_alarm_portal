@@ -71,7 +71,8 @@ async def make_alarm(session, site, priority=2, caption="Panic button", **kw):
     global n
     n += 1
     a = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=f"k{n}", event_type="softTrigger", priority=priority,
-              caption=caption, source_name="Front Door Cam", device_id="dev-1", event_ts_ms=1_760_282_602_000, **kw)
+              caption=caption, source_name="Front Door Cam", device_id="dev-1",
+              event_ts_ms=kw.pop("event_ts_ms", 1_760_282_602_000), **kw)
     session.add(a)
     await session.commit()
     return await session.get(Alarm, a.id)
@@ -106,13 +107,18 @@ async def test_alarm_text_is_plain_and_short(session):
         "TWG Security Office",
         "100 Test Rd, Harrisburg, PA",
         "Front Door Cam, 11:23:22 AM EDT",
-        "Directions: https://www.google.com/maps/dir/?api=1&destination=40.00000,-75.00000",
-        "View alarm: https://alarmportal.twgsecurity.net/a/" + "x" * 24,
+        "",
+        "VIDEO (alarm clip + live cameras):",
+        "https://alarmportal.twgsecurity.net/a/" + "x" * 24,
+        "",
+        "MAP (directions to the site):",
+        "https://www.google.com/maps/dir/?api=1&destination=40.00000,-75.00000",
+        "",
         "Reply STOP to opt out.",
     ]
     site.lat = site.lng = None
     assert sms.directions_url(site) == "https://www.google.com/maps/dir/?api=1&destination=100%20Test%20Rd,%20Harrisburg,%20PA"
-    assert text.isascii() and len(text) <= 306           # plain text: at most 2 SMS segments
+    assert text.isascii() and len(text) <= 459           # plain text (GSM-7): at most 3 SMS segments; MMS has no segments
 
 
 # ---------------------------------------------------------------- who gets texted
@@ -141,7 +147,7 @@ async def test_alarm_texts_the_right_people_with_a_working_link(session, client)
     assert log[0].user_id == p["all"].id and log[0].alarm_id == alarm.id
 
     # The link opens that alarm without signing in, privately.
-    link = body_of(twilio.calls[0]).split("View alarm: ")[1].split("\n")[0]
+    link = link_in(body_of(twilio.calls[0]))
     token = link.rsplit("/", 1)[-1]
     assert link.startswith("https://alarmportal.twgsecurity.net/a/") and len(token) == 24
     r = await client.get(f"/a/{token}")
@@ -442,6 +448,12 @@ def jpeg(w=640, h=360):
     return buf.getvalue()
 
 
+def link_in(body: str) -> str:
+    """The alarm link: the line after the VIDEO label."""
+    lines = body.split("\n")
+    return lines[lines.index(sms.VIDEO_LABEL) + 1]
+
+
 def nx_picture(ts):
     respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
     respx.get(f"{NX}/rest/v4/devices/dev-1/image").mock(return_value=httpx.Response(200, content=jpeg(),
@@ -619,3 +631,288 @@ async def test_carrier_refusal_is_recorded(session, monkeypatch):
     log = await session.scalar(select(SmsLog))
     assert log.outcome == "undelivered" and "30007" in log.error and "spam" in log.error
     assert len(respx.calls) == 2                                   # no resend: there was no picture to blame
+
+
+# ---------------------------------------------------------------- confirmed by an operator (mobile guards)
+async def guards(session, t, site):
+    """guard: only confirmed texts; both: both kinds; mike: confirmed texts too, but he's the one confirming."""
+    mk = lambda email, phone, **kw: User(tenant_id=t.id, email=email, display_name=email.split("@")[0],  # noqa: E731
+                                         password_hash=hash_password(PASSWORD), role="admin", phone=phone,
+                                         sms_consent="yes", **kw)
+    g = {"guard": mk("guard@twgsecurity.com", "+15705558001", sms_level="alarm", sms_when="confirmed"),
+         "both": mk("both@twgsecurity.com", "+15705558002", sms_level="critical", sms_when="both"),
+         "mike": mk("mike@twgsecurity.com", "+15705558003", sms_level="alarm", sms_when="confirmed"),
+         "offguard": mk("offguard@twgsecurity.com", "+15705558004", sms_level="off", sms_when="confirmed"),
+         "elsewhere": mk("elsewhere@twgsecurity.com", "+15705558005", sms_level="alarm", sms_when="confirmed",
+                         sms_sites=[site.id + 1000])}
+    session.add_all(g.values())
+    await session.commit()
+    return g
+
+
+def nx_ok():
+    respx.route(url__startswith=NX).mock(return_value=httpx.Response(200, json={"token": "tok", "id": "bm-1"}))
+
+
+def now_ms():
+    return int(time.time() * 1000)
+
+
+@respx.mock
+async def test_guard_is_texted_only_when_an_operator_confirms(session, client):
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMc"}))
+    await login(client, "mike@twgsecurity.com")
+
+    alarm = await make_alarm(session, site, priority=2, event_ts_ms=now_ms())
+    sms.notify([alarm])
+    await sms.drain()
+    assert sent_to(twilio) == ["+15705551111"]            # goes off: the usual people; no guard (both = critical only)
+
+    r = await client.post(f"/api/alarms/{alarm.id}/ack", json={"note": "Man in black hoodie at the loading dock",
+                                                              "verdict": "real"})
+    assert r.status_code == 200
+    await sms.drain()
+    confirmed = twilio.calls[1:]
+    assert sorted(sent_to(twilio)[1:]) == ["+15705558001", "+15705558002"]   # not mike (confirmed it), off, other site
+    text = body_of(confirmed[0]).split("\n")
+    assert text[0] == "TWG CONFIRMED: Panic button" and text[1] == "TWG Security Office"
+    assert text[4].startswith("Confirmed real by mike, ") and text[5] == "Note: Man in black hoodie at the loading dock"
+    assert text[6:9] == ["", sms.VIDEO_LABEL, text[8]] and text[8].startswith("https://alarmportal.twgsecurity.net/a/")
+    assert text[9:11] == ["", sms.MAP_LABEL] and text[11].startswith("https://www.google.com/maps/dir/")
+    assert text[-1] == "Reply STOP to opt out."
+    log = (await session.scalars(select(SmsLog).where(SmsLog.purpose == "confirmed"))).all()
+    assert len(log) == 2 and all(r.alarm_id == alarm.id and r.outcome == "sent" for r in log)
+
+    # The guard's link shows it confirmed, with the note.
+    token = link_in(body_of(confirmed[0])).rsplit("/", 1)[-1]
+    page = (await client.get(f"/a/{token}")).text
+    assert "Confirmed real by mike" in page and "Man in black hoodie" in page
+
+    # False alarm / dismissed: no confirmed texts. A confirmed warning does text (any level).
+    for verdict in ("false", "dismissed"):
+        a = await make_alarm(session, site, priority=2, event_ts_ms=now_ms())
+        await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": verdict})
+    await sms.drain()
+    assert len(twilio.calls) == 3
+    warn = await make_alarm(session, site, priority=3, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{warn.id}/ack", json={"verdict": "real"})
+    await sms.drain()
+    assert sorted(sent_to(twilio)[3:]) == ["+15705558001", "+15705558002"]
+
+
+@respx.mock
+async def test_stand_down_when_a_confirmation_is_withdrawn(session, client):
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMs"}))
+    await login(client, "mike@twgsecurity.com")
+    a = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    other = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())   # never confirmed
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "real"})
+    await sms.drain()
+    assert len(twilio.calls) == 2
+
+    r = await client.post("/api/alarms/bulk", json={"ids": [a.id, other.id], "verdict": "false", "note": "employee"})
+    assert r.status_code == 200
+    await sms.drain()
+    assert sorted(sent_to(twilio)[2:]) == ["+15705558001", "+15705558002"]   # only the people told it was real
+    assert body_of(twilio.calls[2]).startswith("TWG STAND DOWN: Panic button at TWG Security Office is no longer confirmed real. "
+                                               "mike marked it a false alarm, ")
+    assert len((await session.scalars(select(SmsLog).where(SmsLog.purpose == "stand_down"))).all()) == 2
+
+
+@respx.mock
+async def test_bulk_confirmations_text_once_and_old_alarms_never(session, client):
+    t, site, p = await world(session)
+    await guards(session, t, site)
+    await texts_on(session, sms_max_per_10min=1)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMb"}))
+    await login(client, "mike@twgsecurity.com")
+
+    old = await make_alarm(session, site, event_ts_ms=now_ms() - (sms.CONFIRM_MAX_AGE_S + 60) * 1000)
+    await client.post(f"/api/alarms/{old.id}/ack", json={"verdict": "real"})
+    await sms.drain()
+    assert twilio.calls.call_count == 0                       # re-marking old alarms never sends guards out
+
+    ids = [(await make_alarm(session, site, event_ts_ms=now_ms())).id for _ in range(3)]
+    r = await client.post("/api/alarms/bulk", json={"ids": ids, "verdict": "real"})
+    assert len(r.json()["acknowledged"]) == 3
+    await sms.drain()
+    assert sorted(sent_to(twilio)) == ["+15705558001", "+15705558002"]   # one each, for the newest
+    body = body_of(twilio.calls[0])
+    assert "(+2 more confirmed alarms, see the portal)" in body
+    newest = await session.scalar(select(AlarmLink).where(AlarmLink.alarm_id == max(ids)))
+    assert newest is not None
+
+    # Flood control never holds a confirmed text back (limit 1 per window, already used).
+    a = await make_alarm(session, site, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "real"})
+    await sms.drain()
+    assert twilio.calls.call_count == 4
+
+
+@respx.mock
+async def test_a_hanging_twilio_never_delays_the_acknowledgement(session, client):
+    t, site, p = await world(session)
+    await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    hang = asyncio.Event()
+
+    async def slow(request):
+        await hang.wait()
+        return httpx.Response(201, json={"sid": "SMh"})
+    respx.post(TWILIO).mock(side_effect=slow)
+    await login(client, "mike@twgsecurity.com")
+    a = await make_alarm(session, site, event_ts_ms=now_ms())
+    t0 = time.perf_counter()
+    r = await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "real"})
+    took = time.perf_counter() - t0
+    assert r.status_code == 200 and took < 0.5, took
+    await asyncio.sleep(0.2)
+    assert sms._tasks
+    hang.set()
+    await sms.drain()
+    assert len((await session.scalars(select(SmsLog).where(SmsLog.purpose == "confirmed"))).all()) == 2
+
+
+async def test_users_api_when_to_text(session, client):
+    t, site, p = await world(session)
+    await login(client, "admin@twgsecurity.com")
+    uid = p["all"].id
+    assert (await client.get("/api/users")).json()[1]["sms_when"] == "raised"          # everyone so far
+    r = await client.put(f"/api/users/{uid}", json={"sms_when": "confirmed"})
+    assert r.status_code == 200 and r.json()["sms_when"] == "confirmed"
+    assert (await client.put(f"/api/users/{uid}", json={"sms_when": "later"})).status_code == 422
+    r = await client.post("/api/users", json={"email": "patrol@twgsecurity.com", "password": "A-long-password-1!",
+                                             "phone": "5705550199", "sms_level": "alarm", "sms_when": "both"})
+    assert r.status_code == 200 and r.json()["sms_when"] == "both"
+    audit = (await session.scalars(select(AuditLog).where(AuditLog.action == "user.updated"))).all()
+    assert any("sms_when" in (a.detail or {}).get("fields", []) for a in audit)
+
+
+# ---------------------------------------------------------------- empty frames (production 2026-10-12/13, site 1's Duo camera)
+def nx_frames(answer):
+    """NX's image endpoint answering answer(timestampMs) -> bytes (b"" = NX's "no recording there" 200)."""
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    calls = []
+
+    def image(request):
+        ts = request.url.params["timestampMs"]
+        calls.append(ts)
+        return httpx.Response(200, content=answer(ts), headers={"content-type": "image/jpeg"})
+    respx.get(url__regex=rf"{NX}/rest/v4/devices/[^/]+/image").mock(side_effect=image)
+    respx.get(f"{NX}/rest/v4/analytics/objectTracks").mock(return_value=httpx.Response(200, json=[]))
+    return calls
+
+
+@respx.mock
+async def test_a_camera_not_recording_yet_waits_for_the_frame(session, client, monkeypatch):
+    """A motion-recording camera has no frame at the alarm moment for a second or two: NX answers 200 with 0 bytes.
+    That used to become the MMS picture (Twilio 63019). Now the picture waits for the real frame."""
+    from app.routers import stream
+    from app.services.poller import manager
+    stream._SNAP_CACHE.clear()
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    tries = {"n": 0}
+
+    def answer(ts):
+        tries["n"] += 1
+        return b"" if tries["n"] <= 2 else jpeg()
+    calls = nx_frames(answer)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMw"}))
+    alarm = await make_alarm(session, site)
+    sms.notify([alarm])
+    await sms.drain()
+    assert "-1" not in calls and len(calls) == 3                      # the alarm-moment frame, third time lucky
+    media = parse_qs(twilio.calls.last.request.content.decode())["MediaUrl"][0].replace("https://alarmportal.twgsecurity.net", "")
+    r = await client.get(media)
+    assert r.status_code == 200 and r.content[:2] == b"\xff\xd8" and len(r.content) > 100
+    assert (await client.head(media)).status_code == 200                # Twilio checks the URL with HEAD too
+    await manager.shutdown()
+
+
+@respx.mock
+async def test_no_recording_at_all_sends_a_live_picture(session, client, monkeypatch):
+    import io
+    from PIL import Image
+    from app.routers import stream
+    from app.services.poller import manager
+    stream._SNAP_CACHE.clear()
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(sms, "ARCHIVE_WAIT_S", 0.3)
+    calls = nx_frames(lambda ts: jpeg() if ts == "-1" else b"")
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMl"}))
+    alarm = await make_alarm(session, site)
+    t0 = time.perf_counter()
+    sms.notify([alarm])
+    await sms.drain()
+    assert time.perf_counter() - t0 < sms.PICTURE_BUDGET_S
+    assert calls[-1] == "-1"
+    media = parse_qs(twilio.calls.last.request.content.decode())["MediaUrl"][0].replace("https://alarmportal.twgsecurity.net", "")
+    r = await client.get(media)
+    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+    corner = [img.getpixel((x, y)) for x in range(0, 120) for y in range(0, 40)]
+    assert sum(1 for r_, g, b in corner if r_ > 150 and g < 100) > 500      # the red LIVE tag
+    # The empty answer was never cached as the alarm's frame: the link page's still is refused, not blank.
+    assert alarm.id not in stream._SNAP_CACHE
+    assert (await client.get(media.replace("alarm.jpg", "snapshot.jpg"))).status_code == 502
+    await manager.shutdown()
+
+
+@respx.mock
+async def test_no_picture_at_all_still_texts(session, monkeypatch):
+    from app.routers import stream
+    from app.services.poller import manager
+    stream._SNAP_CACHE.clear()
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(sms, "ARCHIVE_WAIT_S", 0.2)
+    nx_frames(lambda ts: b"")
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMe"}))
+    sms.notify([await make_alarm(session, site)])
+    await sms.drain()
+    assert twilio.calls and "MediaUrl" not in parse_qs(twilio.calls.last.request.content.decode())
+    await manager.shutdown()
+
+
+# ---------------------------------------------------------------- the link's live cameras
+@respx.mock
+async def test_link_shows_the_sites_cameras_live(session, client):
+    from app.routers import links
+    from app.services.poller import manager
+    links._camera_lists.clear()
+    _, site, p = await world(session)
+    other_site = await make_site(session, (await session.get(Tenant, site.tenant_id)), name="Second")
+    nx_frames(lambda ts: jpeg())
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[
+        {"id": "{dev-2}", "name": "Back Lot", "deviceType": "Camera"},
+        {"id": "{dev-1}", "name": "Front Door Cam", "deviceType": "Camera"},
+        {"id": "{srv}", "name": "Server", "deviceType": "server"}]))
+    alarm = await make_alarm(session, site)
+    token = await alarm_links.mint(session, alarm, p["all"], 24)
+    await session.commit()
+
+    r = await client.get(f"/api/a/{token}/cameras")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    cams = r.json()["cameras"]
+    assert [(c["device_id"], c["alarm"]) for c in cams] == [("dev-1", True), ("dev-2", False)]   # alarm camera first, no servers
+    assert await session.scalar(select(AuditLog).where(AuditLog.action == "alarm.link_cameras"))
+    r = await client.get(f"/media/a/{token}/cameras/dev-2/live.jpg")
+    assert r.status_code == 200 and r.content[:2] == b"\xff\xd8"
+    assert (await client.get(f"/media/a/{token}/cameras/not-here/live.jpg")).status_code == 404     # only this site's cameras
+    assert (await client.get(f"/media/a/{token}/cameras/not-here/live.webm")).status_code == 404
+    assert (await client.get(f"/api/a/{'x' * 24}/cameras")).status_code == 404
+    page = (await client.get(f"/a/{token}")).text
+    assert 'data-view="live"' in page and 'data-view="cameras"' in page
+    assert other_site.id != site.id
+    await manager.shutdown()

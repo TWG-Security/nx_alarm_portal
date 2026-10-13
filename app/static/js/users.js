@@ -36,6 +36,7 @@ document.addEventListener("click", (e) => {
 // ---------------------------------------------------------------- alarm texts
 const fmtPhone = (p) => (/^\+1\d{10}$/.test(p || "") ? `(${p.slice(2, 5)}) ${p.slice(5, 8)}-${p.slice(8)}` : p || "");
 const LEVEL = { off: "No texts", critical: "Critical only", alarm: "Critical + Alarm" };
+const WHEN = { raised: "", confirmed: "Only when confirmed", both: "+ when confirmed" };
 const TEXTED = { sent: ["text sent", ""], delivered: ["text delivered", ""], failed: ["text FAILED", "text-failed"],
   undelivered: ["text NOT DELIVERED", "text-failed"], disabled: ["texts are off", ""] };
 const CONSENT = {
@@ -79,7 +80,8 @@ function textSummary(u) {
   if (!u.phone) return '<span class="muted">No number</span>';
   const [cWord, cCls] = CONSENT[u.sms_consent] || CONSENT.none;
   return `<div class="nowrap">${esc(fmtPhone(u.phone))}</div>
-    <div class="chips"><span class="chip">${LEVEL[u.sms_level] || u.sms_level}</span>
+    <div class="chips"><span class="chip">${u.sms_level !== "off" && u.sms_when === "confirmed" ? "Any level" : LEVEL[u.sms_level] || u.sms_level}</span>
+      ${u.sms_level === "off" || !WHEN[u.sms_when] ? "" : `<span class="chip" title="Texted when an operator marks an alarm Real event">${WHEN[u.sms_when]}</span>`}
       ${u.sms_level === "off" ? "" : `<span class="chip" title="${esc(u.sms_sites == null ? "Every site, including ones added later" : u.sms_sites.map(siteName).join(", "))}">${esc(sitesLabel(u))}</span>`}
       <span class="chip ${cCls}" title="${esc(consentNote(u))}">${cWord}</span></div>
     ${["failed", "undelivered"].includes(u.last_text?.outcome) ? lastText(u) : ""}`;
@@ -119,7 +121,7 @@ function openEdit(u) {
   $("ed-title").textContent = u.display_name || u.email;
   $("ed-email").textContent = u.email;
   $("ed-name").value = u.display_name; $("ed-role").value = u.role;
-  $("ed-phone").value = fmtPhone(u.phone); $("ed-sms").value = u.sms_level;
+  $("ed-phone").value = fmtPhone(u.phone); $("ed-sms").value = u.sms_level; $("ed-when").value = u.sms_when || "raised";
   paintSites("ed", u.sms_sites);
   $("ed-link").innerHTML = "";
   paintEditExtras();
@@ -159,6 +161,7 @@ $("edit-form").addEventListener("submit", async (e) => {
   // A first number with "No texts" picked defaults to Critical + Alarm (that's why it was added).
   const lvl = !u.phone && phone && level === "off" ? "alarm" : level;
   if (lvl !== u.sms_level) body.sms_level = lvl;
+  if ($("ed-when").value !== (u.sms_when || "raised")) body.sms_when = $("ed-when").value;
   const picked = readSites("ed");
   if (!sameSites(picked, u.sms_sites)) Object.assign(body, picked == null ? { sms_all_sites: true } : { sms_sites: picked });
   if (!Object.keys(body).length) { edDlg.close(); return; }
@@ -213,7 +216,7 @@ $("user-form").addEventListener("submit", async (e) => {
   try {
     const r = await api("/api/users", { method: "POST", body: { email: $("u-email").value, display_name: $("u-name").value,
       password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value,
-      phone: $("u-phone").value, sms_level: $("u-sms").value, sms_sites: readSites("u") } });
+      phone: $("u-phone").value, sms_level: $("u-sms").value, sms_when: $("u-when").value, sms_sites: readSites("u") } });
     toast(r.setup_link ? "User invited" : "User created");
     if (r.setup_link) { $("u-link").innerHTML = linkBox(r); $("u-submit").hidden = true; }     // keep it open: the admin may copy the link
     else addDlg.close();

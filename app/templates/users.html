@@ -42,6 +42,12 @@
       <div class="field"><label for="u-sms">Text them</label><select id="u-sms">
         <option value="alarm">Critical + Alarm</option><option value="critical">Critical only</option><option value="off">No texts</option></select></div>
     </div>
+    <div class="field"><label for="u-when">Send</label><select id="u-when">
+        <option value="raised">When the alarm goes off</option>
+        <option value="confirmed">Only when an operator confirms it's real (e.g. a mobile guard)</option>
+        <option value="both">Both: when it goes off, and again when confirmed</option></select>
+      <small>A confirmed text goes when an operator marks an alarm <b>Real event</b>, for any alarm level, with their note.
+        If it's changed to False alarm later, they get a STAND DOWN text.</small></div>
     <div class="field sites-pick" data-prefix="u"><label>Sites that text them</label>
       <label class="radio inline"><input type="radio" name="u-scope" value="all" checked><span>All sites <small>(and any added later)</small></span></label>
       <label class="radio inline"><input type="radio" name="u-scope" value="some"><span>Only these sites</span></label>
@@ -75,6 +81,12 @@
       <div class="field"><label for="ed-sms">Text them</label><select id="ed-sms">
         <option value="off">No texts</option><option value="critical">Critical only</option><option value="alarm">Critical + Alarm</option></select></div>
     </div>
+    <div class="field"><label for="ed-when">Send</label><select id="ed-when">
+        <option value="raised">When the alarm goes off</option>
+        <option value="confirmed">Only when an operator confirms it's real (e.g. a mobile guard)</option>
+        <option value="both">Both: when it goes off, and again when confirmed</option></select>
+      <small>A confirmed text goes when an operator marks an alarm <b>Real event</b>, for any alarm level, with their note.
+        If it's changed to False alarm later, they get a STAND DOWN text.</small></div>
     <div class="field sites-pick" data-prefix="ed"><label>Sites that text them</label>
       <label class="radio inline"><input type="radio" name="ed-scope" value="all" checked><span>All sites <small>(and any added later)</small></span></label>
       <label class="radio inline"><input type="radio" name="ed-scope" value="some"><span>Only these sites</span></label>

@@ -654,9 +654,32 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .link-facts dd { margin: 0; overflow-wrap: anywhere; }
 .link-desc { white-space: pre-line; }
 .link-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 14px 0 10px; }
+.link-actions .btn, .link-nav .btn { height: 44px; padding: 0 16px; font-size: 15px; }   /* thumb-sized on phones */
+.link-views { display: flex; gap: 0; margin: 4px 0 10px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.link-view { flex: 1; height: 44px; border: 0; border-right: 1px solid var(--border); background: var(--surface-2, var(--surface));
+  color: var(--text); font: inherit; font-size: 15px; font-weight: 600; cursor: pointer; }
+.link-view:last-child { border-right: 0; }
+.link-view[hidden] { display: none; }
+.link-view.on { background: var(--orange); color: var(--on-orange); }
+.link-view .live-dot { color: var(--red); }
+.link-view.on .live-dot { color: var(--on-orange); }
+.link-nav { display: flex; gap: 8px; flex-wrap: wrap; position: sticky; top: 0; z-index: 5; padding: 6px 0;
+  background: var(--surface); }
+.link-nav .btn[hidden] { display: none; }
+.cam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; margin-top: 10px; }
+.cam-tile { display: flex; flex-direction: column; gap: 6px; padding: 0; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; overflow: hidden; }
+.cam-tile--alarm { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-soft); }
+.cam-shot { position: relative; display: block; aspect-ratio: 16 / 9; background: #000; }
+.cam-shot img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.cam-shot img:not([src]) { visibility: hidden; }
+.cam-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.cam-wait[hidden] { display: none; }
+.cam-name { padding: 0 8px 8px; font-size: 14px; overflow-wrap: anywhere; }
 @media (max-width: 560px) {
   .link-page { padding: 10px; }
   .link-page .player-controls { flex-wrap: wrap; }
+  .cam-grid { grid-template-columns: 1fr 1fr; gap: 8px; }
 }
 
 /* ---------- Users page: compact table, Add / Edit dialogs ---------- */

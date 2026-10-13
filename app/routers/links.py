@@ -3,17 +3,20 @@
 - GET /a/{token}                               the page: one alarm's details, clip and live video
 - GET /api/a/{token}/clip, /objects            clip status and analytics boxes (same as the signed-in ones)
 - GET /media/a/{token}/snapshot.jpg, alarm.jpg (frame + boxes: the MMS picture), live.jpg, live.webm, clips/{name}.mp4
+- GET /api/a/{token}/cameras, /media/a/{token}/cameras/{device}/live.jpg|live.webm   the site's other cameras, live
 - POST /twilio/sms                            replies to our number (YES / STOP / HELP), Twilio-signed
 - GET /sms-terms                              the public text-message terms (carriers and Twilio ask for it)
 
-Everything is limited to the link's one alarm. An unknown token is recorded as a failed sign-in
+Everything is limited to the link's one alarm and the live view of its site's cameras. An unknown token is recorded as a failed sign-in
 (kind "alarm_link"), so an address that guesses gets banned (BanGate guards these paths). Opening the
 page is audit-logged in the alarm's company under the name of the person it was texted to.
 Pages are never cached or indexed and send no Referer (the token is the key).
 """
 
+import asyncio
 import logging
 import re
+import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -132,16 +135,21 @@ async def link_snapshot(token: str, request: Request, db: AsyncSession = Depends
     return Response(await stream.snapshot_bytes(alarm), media_type="image/jpeg", headers=PRIVATE)
 
 
-@router.get("/media/a/{token}/alarm.jpg")
+@router.api_route("/media/a/{token}/alarm.jpg", methods=["GET", "HEAD"])
 async def link_picture(token: str, request: Request, db: AsyncSession = Depends(get_db)):
-    """The alarm frame with its boxes: the picture in the MMS (Twilio fetches it) and on the link page."""
+    """The alarm frame with its boxes: the picture in the MMS (Twilio fetches it, and checks it with HEAD too)."""
+    t0 = time.monotonic()
     alarm = await _alarm(request, db, token)
     if not alarm.device_id:
         raise HTTPException(404)
     await db.commit()
     pic = await sms.alarm_picture(alarm, budget_s=20)
+    took = int((time.monotonic() - t0) * 1000)
     if pic is None:
+        log.warning("alarm %s picture: %s from %s got none after %d ms", alarm.id, request.method, client_ip(request), took)
         raise HTTPException(502, "The camera picture isn't available")
+    log.info("alarm %s picture: %s from %s, %d bytes in %d ms (%s)", alarm.id, request.method, client_ip(request),
+             len(pic), took, (request.headers.get("user-agent") or "")[:60])
     return Response(pic, media_type="image/jpeg", headers=PRIVATE)
 
 
@@ -161,6 +169,70 @@ async def link_live(token: str, request: Request, db: AsyncSession = Depends(get
         raise HTTPException(404)
     await db.commit()          # a live stream runs for minutes: don't pin a DB connection
     return await stream._live_webm(alarm.site, alarm.device_id)
+
+
+# ------------------------------------------------------------------ the site's other cameras, live
+# A guard on a phone wants to look around, not only at the alarm camera. The link shows every camera of the
+# alarm's site (nothing else): stills that refresh, and live video of the one they tap. Live video shares
+# the 6-per-site cap with the portal; stills are limited per site so a phone can't crowd the NX relay.
+CAMERA_LIST_TTL_S = 60
+STILL_SLOTS = 4
+_camera_lists: dict[int, tuple[float, dict[str, str]]] = {}
+_still_slots: dict[int, asyncio.Semaphore] = {}
+
+
+async def _cameras(site) -> dict[str, str]:
+    """{device id: name} of the site's cameras (NX's list, at most CAMERA_LIST_TTL_S old)."""
+    from app.routers.api import _site_cameras
+    hit = _camera_lists.get(site.id)
+    if hit and time.monotonic() - hit[0] < CAMERA_LIST_TTL_S:
+        return hit[1]
+    names = await _site_cameras(site)
+    if names:
+        _camera_lists[site.id] = (time.monotonic(), names)
+    return names
+
+
+async def _site_camera(request: Request, db: AsyncSession, token: str, device_id: str) -> tuple[Alarm, str]:
+    alarm = await _alarm(request, db, token)
+    device_id = device_id.strip("{}")
+    await db.commit()
+    if device_id != (alarm.device_id or "").strip("{}") and device_id not in await _cameras(alarm.site):
+        raise HTTPException(404)
+    return alarm, device_id
+
+
+@router.get("/api/a/{token}/cameras")
+async def link_cameras(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """The alarm's site cameras, the alarm's own camera first."""
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(404 if status == "invalid" else 410)
+    audit(db, alarm.tenant_id, "alarm.link_cameras", user_id=link.user_id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request))
+    await db.commit()
+    names = await _cameras(alarm.site)
+    own = (alarm.device_id or "").strip("{}")
+    cams = sorted(({"device_id": d, "name": n or d, "alarm": d == own} for d, n in names.items()),
+                  key=lambda c: (not c["alarm"], c["name"].lower()))
+    if own and own not in names:
+        cams.insert(0, {"device_id": own, "name": alarm.source_name or "Alarm camera", "alarm": True})
+    return JSONResponse({"site": alarm.site.name if alarm.site else "", "cameras": cams}, headers=PRIVATE)
+
+
+@router.get("/media/a/{token}/cameras/{device_id}/live.jpg")
+async def link_camera_still(token: str, device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    alarm, device_id = await _site_camera(request, db, token, device_id)
+    slots = _still_slots.setdefault(alarm.site_id, asyncio.Semaphore(STILL_SLOTS))
+    async with slots:
+        data = await stream.camera_frame(alarm.site, device_id, -1)
+    return Response(data, media_type="image/jpeg", headers=PRIVATE)
+
+
+@router.get("/media/a/{token}/cameras/{device_id}/live.webm")
+async def link_camera_live(token: str, device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    alarm, device_id = await _site_camera(request, db, token, device_id)
+    return await stream._live_webm(alarm.site, device_id)
 
 
 # ------------------------------------------------------------------ text-message consent (public)
