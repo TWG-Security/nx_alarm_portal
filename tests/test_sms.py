@@ -107,13 +107,18 @@ async def test_alarm_text_is_plain_and_short(session):
         "TWG Security Office",
         "100 Test Rd, Harrisburg, PA",
         "Front Door Cam, 11:23:22 AM EDT",
-        "Directions: https://www.google.com/maps/dir/?api=1&destination=40.00000,-75.00000",
-        "View alarm: https://alarmportal.twgsecurity.net/a/" + "x" * 24,
+        "",
+        "VIDEO (alarm clip + live cameras):",
+        "https://alarmportal.twgsecurity.net/a/" + "x" * 24,
+        "",
+        "MAP (directions to the site):",
+        "https://www.google.com/maps/dir/?api=1&destination=40.00000,-75.00000",
+        "",
         "Reply STOP to opt out.",
     ]
     site.lat = site.lng = None
     assert sms.directions_url(site) == "https://www.google.com/maps/dir/?api=1&destination=100%20Test%20Rd,%20Harrisburg,%20PA"
-    assert text.isascii() and len(text) <= 306           # plain text: at most 2 SMS segments
+    assert text.isascii() and len(text) <= 459           # plain text (GSM-7): at most 3 SMS segments; MMS has no segments
 
 
 # ---------------------------------------------------------------- who gets texted
@@ -142,7 +147,7 @@ async def test_alarm_texts_the_right_people_with_a_working_link(session, client)
     assert log[0].user_id == p["all"].id and log[0].alarm_id == alarm.id
 
     # The link opens that alarm without signing in, privately.
-    link = body_of(twilio.calls[0]).split("View alarm: ")[1].split("\n")[0]
+    link = link_in(body_of(twilio.calls[0]))
     token = link.rsplit("/", 1)[-1]
     assert link.startswith("https://alarmportal.twgsecurity.net/a/") and len(token) == 24
     r = await client.get(f"/a/{token}")
@@ -443,6 +448,12 @@ def jpeg(w=640, h=360):
     return buf.getvalue()
 
 
+def link_in(body: str) -> str:
+    """The alarm link: the line after the VIDEO label."""
+    lines = body.split("\n")
+    return lines[lines.index(sms.VIDEO_LABEL) + 1]
+
+
 def nx_picture(ts):
     respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
     respx.get(f"{NX}/rest/v4/devices/dev-1/image").mock(return_value=httpx.Response(200, content=jpeg(),
@@ -670,12 +681,14 @@ async def test_guard_is_texted_only_when_an_operator_confirms(session, client):
     text = body_of(confirmed[0]).split("\n")
     assert text[0] == "TWG CONFIRMED: Panic button" and text[1] == "TWG Security Office"
     assert text[4].startswith("Confirmed real by mike, ") and text[5] == "Note: Man in black hoodie at the loading dock"
-    assert text[6].startswith("Directions: ") and text[7].startswith("View alarm: ") and text[-1] == "Reply STOP to opt out."
+    assert text[6:9] == ["", sms.VIDEO_LABEL, text[8]] and text[8].startswith("https://alarmportal.twgsecurity.net/a/")
+    assert text[9:11] == ["", sms.MAP_LABEL] and text[11].startswith("https://www.google.com/maps/dir/")
+    assert text[-1] == "Reply STOP to opt out."
     log = (await session.scalars(select(SmsLog).where(SmsLog.purpose == "confirmed"))).all()
     assert len(log) == 2 and all(r.alarm_id == alarm.id and r.outcome == "sent" for r in log)
 
     # The guard's link shows it confirmed, with the note.
-    token = body_of(confirmed[0]).split("View alarm: ")[1].split("\n")[0].rsplit("/", 1)[-1]
+    token = link_in(body_of(confirmed[0])).rsplit("/", 1)[-1]
     page = (await client.get(f"/a/{token}")).text
     assert "Confirmed real by mike" in page and "Man in black hoodie" in page
 
@@ -783,3 +796,123 @@ async def test_users_api_when_to_text(session, client):
     assert r.status_code == 200 and r.json()["sms_when"] == "both"
     audit = (await session.scalars(select(AuditLog).where(AuditLog.action == "user.updated"))).all()
     assert any("sms_when" in (a.detail or {}).get("fields", []) for a in audit)
+
+
+# ---------------------------------------------------------------- empty frames (production 2026-10-12/13, site 1's Duo camera)
+def nx_frames(answer):
+    """NX's image endpoint answering answer(timestampMs) -> bytes (b"" = NX's "no recording there" 200)."""
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    calls = []
+
+    def image(request):
+        ts = request.url.params["timestampMs"]
+        calls.append(ts)
+        return httpx.Response(200, content=answer(ts), headers={"content-type": "image/jpeg"})
+    respx.get(url__regex=rf"{NX}/rest/v4/devices/[^/]+/image").mock(side_effect=image)
+    respx.get(f"{NX}/rest/v4/analytics/objectTracks").mock(return_value=httpx.Response(200, json=[]))
+    return calls
+
+
+@respx.mock
+async def test_a_camera_not_recording_yet_waits_for_the_frame(session, client, monkeypatch):
+    """A motion-recording camera has no frame at the alarm moment for a second or two: NX answers 200 with 0 bytes.
+    That used to become the MMS picture (Twilio 63019). Now the picture waits for the real frame."""
+    from app.routers import stream
+    from app.services.poller import manager
+    stream._SNAP_CACHE.clear()
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    tries = {"n": 0}
+
+    def answer(ts):
+        tries["n"] += 1
+        return b"" if tries["n"] <= 2 else jpeg()
+    calls = nx_frames(answer)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMw"}))
+    alarm = await make_alarm(session, site)
+    sms.notify([alarm])
+    await sms.drain()
+    assert "-1" not in calls and len(calls) == 3                      # the alarm-moment frame, third time lucky
+    media = parse_qs(twilio.calls.last.request.content.decode())["MediaUrl"][0].replace("https://alarmportal.twgsecurity.net", "")
+    r = await client.get(media)
+    assert r.status_code == 200 and r.content[:2] == b"\xff\xd8" and len(r.content) > 100
+    assert (await client.head(media)).status_code == 200                # Twilio checks the URL with HEAD too
+    await manager.shutdown()
+
+
+@respx.mock
+async def test_no_recording_at_all_sends_a_live_picture(session, client, monkeypatch):
+    import io
+    from PIL import Image
+    from app.routers import stream
+    from app.services.poller import manager
+    stream._SNAP_CACHE.clear()
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(sms, "ARCHIVE_WAIT_S", 0.3)
+    calls = nx_frames(lambda ts: jpeg() if ts == "-1" else b"")
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMl"}))
+    alarm = await make_alarm(session, site)
+    t0 = time.perf_counter()
+    sms.notify([alarm])
+    await sms.drain()
+    assert time.perf_counter() - t0 < sms.PICTURE_BUDGET_S
+    assert calls[-1] == "-1"
+    media = parse_qs(twilio.calls.last.request.content.decode())["MediaUrl"][0].replace("https://alarmportal.twgsecurity.net", "")
+    r = await client.get(media)
+    img = Image.open(io.BytesIO(r.content)).convert("RGB")
+    corner = [img.getpixel((x, y)) for x in range(0, 120) for y in range(0, 40)]
+    assert sum(1 for r_, g, b in corner if r_ > 150 and g < 100) > 500      # the red LIVE tag
+    # The empty answer was never cached as the alarm's frame: the link page's still is refused, not blank.
+    assert alarm.id not in stream._SNAP_CACHE
+    assert (await client.get(media.replace("alarm.jpg", "snapshot.jpg"))).status_code == 502
+    await manager.shutdown()
+
+
+@respx.mock
+async def test_no_picture_at_all_still_texts(session, monkeypatch):
+    from app.routers import stream
+    from app.services.poller import manager
+    stream._SNAP_CACHE.clear()
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(sms, "ARCHIVE_WAIT_S", 0.2)
+    nx_frames(lambda ts: b"")
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMe"}))
+    sms.notify([await make_alarm(session, site)])
+    await sms.drain()
+    assert twilio.calls and "MediaUrl" not in parse_qs(twilio.calls.last.request.content.decode())
+    await manager.shutdown()
+
+
+# ---------------------------------------------------------------- the link's live cameras
+@respx.mock
+async def test_link_shows_the_sites_cameras_live(session, client):
+    from app.routers import links
+    from app.services.poller import manager
+    links._camera_lists.clear()
+    _, site, p = await world(session)
+    other_site = await make_site(session, (await session.get(Tenant, site.tenant_id)), name="Second")
+    nx_frames(lambda ts: jpeg())
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[
+        {"id": "{dev-2}", "name": "Back Lot", "deviceType": "Camera"},
+        {"id": "{dev-1}", "name": "Front Door Cam", "deviceType": "Camera"},
+        {"id": "{srv}", "name": "Server", "deviceType": "server"}]))
+    alarm = await make_alarm(session, site)
+    token = await alarm_links.mint(session, alarm, p["all"], 24)
+    await session.commit()
+
+    r = await client.get(f"/api/a/{token}/cameras")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    cams = r.json()["cameras"]
+    assert [(c["device_id"], c["alarm"]) for c in cams] == [("dev-1", True), ("dev-2", False)]   # alarm camera first, no servers
+    assert await session.scalar(select(AuditLog).where(AuditLog.action == "alarm.link_cameras"))
+    r = await client.get(f"/media/a/{token}/cameras/dev-2/live.jpg")
+    assert r.status_code == 200 and r.content[:2] == b"\xff\xd8"
+    assert (await client.get(f"/media/a/{token}/cameras/not-here/live.jpg")).status_code == 404     # only this site's cameras
+    assert (await client.get(f"/media/a/{token}/cameras/not-here/live.webm")).status_code == 404
+    assert (await client.get(f"/api/a/{'x' * 24}/cameras")).status_code == 404
+    page = (await client.get(f"/a/{token}")).text
+    assert 'data-view="live"' in page and 'data-view="cameras"' in page
+    assert other_site.id != site.id
+    await manager.shutdown()

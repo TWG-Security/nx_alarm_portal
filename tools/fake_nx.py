@@ -14,6 +14,8 @@ Every injected event also gets an analytics object track with a box that moves a
 Also a fake Twilio (dev_up.sh points TWILIO_API_BASE here): texts land in GET /_twilio;
 POST /_twilio/mode/{ok|fail|hang|mediafail} makes it accept, reject (400, code 30034), hang for 30 s, or accept
 an MMS and then report it failed (63019, picture not downloadable) on GET .../Messages/{sid}.json.
+POST /_frames/{normal|late|none} makes recorded frames (timestampMs != -1) answer 200 with 0 bytes, like NX for a
+motion-recording camera that isn't recording yet: "late" for 1.5 s after each injected event, "none" always.
 """
 import json, os, subprocess, tempfile, time, uuid
 import asyncio
@@ -66,8 +68,16 @@ RULES = {k: {"id": "{%s}" % uuid.uuid5(uuid.NAMESPACE_URL, k), "comment": c, "en
 @app.get("/rest/v4/events/rules")
 async def rules(): return list(RULES.values())
 _FRAME: list = []
+FRAMES = {"mode": "normal", "last_inject": 0.0}
+@app.post("/_frames/{mode}")
+async def frames_mode(mode: str):
+    FRAMES["mode"] = mode
+    return FRAMES
 @app.get("/rest/v4/devices/{d}/image")
-async def image(d: str):
+async def image(d: str, timestampMs: int = -1):
+    if timestampMs != -1 and (FRAMES["mode"] == "none" or
+                              (FRAMES["mode"] == "late" and time.time() - FRAMES["last_inject"] < 1.5)):
+        return Response(b"", media_type="image/jpeg")       # NX: no recording at or after that moment (yet)
     if not _FRAME:   # a real 1280x720 test-pattern frame (the 1x1 JPG is the fallback without ffmpeg)
         try:
             _FRAME.append(subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=1",
@@ -127,7 +137,7 @@ async def metadata(tid: str):
 async def state(): return {"acks": ACKS, "bookmarks": BOOKMARKS, "events": len(EVENTS)}
 @app.post("/_inject/{kind}")
 async def inject(kind: str):
-    ts = int(time.time()*1000); aid = str(uuid.uuid4())
+    ts = int(time.time()*1000); aid = str(uuid.uuid4()); FRAMES["last_inject"] = time.time()
     base = {"timestampMs": ts, "ruleId": RULES.get(kind, RULES["panic"])["id"], "flags": "noFlags", "aggregatedInfo": {"total": 1}}
     dev = DEV[0]["id"] if kind != "dock" else DEV[1]["id"]
     if kind in ("panic", "panic24"):

@@ -126,7 +126,7 @@ with sync_playwright() as p:
     check(lines[0].startswith("TWG CONFIRMED: ") and any(l.startswith("Confirmed real by ") for l in lines)
           and "Note: Person forcing the back door, police called" in lines, "text: CONFIRMED, who confirmed it, the note")
     check(t[-1]["media"].endswith("/alarm.jpg"), "confirmed text carries the alarm picture")
-    link = next(l for l in lines if l.startswith("View alarm: ")).split(": ", 1)[1]
+    link = lines[lines.index("VIDEO (alarm clip + live cameras):") + 1]
     phone = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
     m = phone.new_page()
     m.goto(link)

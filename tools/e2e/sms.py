@@ -3,7 +3,8 @@
     POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.sms [screenshot_dir]
 
 Platform page → Text messages (save, test text), Users page (mobile number, alarm level, Test), an alarm
-→ text with a link → the link on a phone-sized browser with no sign-in (details, clip, live), and the
+→ text with a link → the link on a phone-sized browser with no sign-in (details, clip, live, all the site's
+cameras, back to the alarm), a camera that isn't recording yet (NX answers 0 bytes: production 63019), and the
 failure paths: Twilio rejecting texts and Twilio hanging, with the alarm's time to the screen measured
 each time (texts must never slow alarms down).
 """
@@ -165,10 +166,13 @@ with sync_playwright() as p:
     lines = text["body"].split("\n")
     check(lines[0].startswith("TWG ALARM: ") and lines[1] == "Fake Test Site" and lines[2] == "Harrisburg, PA",
           "text: alarm, then site name, then address, one per line")
-    check(any(l.startswith("Directions: https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380") for l in lines),
-          "text has a tap-to-navigate Directions link")
+    check("MAP (directions to the site):" in lines and lines[lines.index("MAP (directions to the site):") + 1]
+          == "https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380",
+          "text has the labelled MAP link on its own line")
+    check("VIDEO (alarm clip + live cameras):" in lines and lines.index("VIDEO (alarm clip + live cameras):")
+          < lines.index("MAP (directions to the site):"), "the labelled VIDEO link comes first")
     check(lines[-1] == "Reply STOP to opt out.", "text ends with the opt-out line")
-    link = next(l for l in lines if l.startswith("View alarm: ")).split(": ", 1)[1]
+    link = lines[lines.index("VIDEO (alarm clip + live cameras):") + 1]
     check(text["media"].endswith("/alarm.jpg"), "text is an MMS with the alarm picture")
     pic = urllib.request.urlopen(text["media"])
     check(pic.status == 200 and pic.headers["content-type"] == "image/jpeg", f"picture loads for Twilio ({len(pic.read())} bytes)")
@@ -187,10 +191,45 @@ with sync_playwright() as p:
     print(f"      clip playing {time.time() - t0:.1f} s after opening the link")
     check(m.evaluate("document.documentElement.scrollWidth <= innerWidth"), "no sideways scrolling at 390 px")
     m.screenshot(path=f"{out}/sms3-link-phone.png", full_page=True)
-    m.click('[data-c="live"]')
-    m.wait_for_function("(() => { const v = document.querySelector('.player-live video'); return v && v.readyState >= 2; })()", timeout=15000)
-    check(True, "Live button plays the camera live on the link page")
+    check(m.locator('.link-view.on[data-view="clip"]').count() == 1, "opens on the Alarm clip tab")
+    playing = "(() => { const v = document.querySelector('%s video'); return v && v.readyState >= 2; })()"
+    m.click('[data-view="live"]')
+    m.wait_for_function(playing % "#link-player .live-pane", timeout=15000)
+    check(m.locator("#link-player .player").count() == 0 and m.evaluate("location.hash") == "#live",
+          "Live tab swaps the clip for the alarm camera, live")
     m.screenshot(path=f"{out}/sms4-link-live.png")
+    m.click('[data-view="clip"]')
+    m.wait_for_selector("#link-player .player video:not([hidden])", timeout=15000)
+    check(m.locator("#link-player .live-pane").count() == 0, "Alarm clip tab brings the clip back (live stopped)")
+
+    # All cameras: stills of every camera of the site, the alarm camera first; tap one for live video.
+    m.click('[data-view="cameras"]')
+    m.wait_for_function("document.querySelectorAll('.cam-tile img[src]').length === 2", timeout=15000)
+    names = m.locator(".cam-name").all_inner_texts()
+    check(m.locator("#link-alarm").is_hidden() and len(names) == 2 and "Alarm camera" in names[0] and "Front Gate PTZ" in names[0]
+          and "Loading Dock" in names[1], f"All cameras: both site cameras, alarm camera first {names}")
+    first = m.get_attribute(".cam-tile:nth-child(2) img", "src")
+    m.wait_for_function(f"document.querySelector('.cam-tile:nth-child(2) img').src !== {json.dumps(first)}", timeout=10000)
+    check(True, "camera stills refresh by themselves")
+    check(m.evaluate("document.documentElement.scrollWidth <= innerWidth"), "All cameras: no sideways scrolling at 390 px")
+    m.screenshot(path=f"{out}/sms4b-all-cameras.png", full_page=True)
+    ms = alarm_on_screen(pg, "panic")
+    check(ms < 1000, f"alarm on the operator's screen in {ms:.0f} ms while a phone watches all cameras")
+    pg.wait_for_selector("#critical-dialog[open]", timeout=5000)
+    pg.click('#critical-dialog [data-verdict="dismissed"]')
+    m.click(".cam-tile:nth-child(2)")
+    m.wait_for_function(playing % "#link-cams-body .live-pane", timeout=15000)
+    check(m.inner_text("#link-cams-title") == "Loading Dock" and m.locator('[data-go="cameras"]').is_visible()
+          and m.locator('[data-go="clip"]').is_visible(), "tapping a camera plays it live, with 'All cameras' and 'Back to alarm'")
+    m.screenshot(path=f"{out}/sms4c-one-camera.png")
+    ms = alarm_on_screen(pg, "line")
+    check(ms < 1000, f"alarm on the operator's screen in {ms:.0f} ms while a phone plays another camera live")
+    m.go_back()
+    m.wait_for_function("document.querySelectorAll('.cam-tile img[src]').length === 2", timeout=15000)
+    check(m.locator("#link-cams-body .live-pane").count() == 0, "the phone's Back button returns to All cameras (live stopped)")
+    m.click('[data-go="clip"]')
+    m.wait_for_selector("#link-player .player video:not([hidden])", timeout=15000)
+    check(m.locator("#link-alarm").is_visible() and m.locator("#link-cameras").is_hidden(), "Back to alarm shows the alarm and its clip")
     check(m.locator("a:has-text('Sign in to acknowledge')").count() == 1, "offers Sign in to acknowledge")
     other = m.goto(f"{PORTAL}/api/alarms/1/clip")
     check(other.status == 401, "the link gives no access to the rest of the portal")
@@ -203,6 +242,29 @@ with sync_playwright() as p:
           "public text-message terms page, signed out")
     m.screenshot(path=f"{out}/sms7-terms.png", full_page=True)
     phone.close()
+
+    # --- 4a. A camera that isn't recording yet (motion recording): NX answers 0 bytes (production 63019, site 1 Duo)
+    def frames(mode):
+        urllib.request.urlopen(urllib.request.Request(f"{FAKE_NX}/_frames/{mode}", method="POST"))
+
+    def jpeg_at(url):
+        data = urllib.request.urlopen(url).read()
+        return data[:2] == b"\xff\xd8" and len(data) > 1000, len(data)
+
+    pg.goto(f"{PORTAL}/"); pg.wait_for_timeout(1000)
+    for mode, what in (("late", "not recording for 1.5 s"), ("none", "never recording")):
+        frames(mode)
+        n0 = len(texts())
+        t_alarm = time.time()
+        ms = alarm_on_screen(pg, "line")
+        t = wait_texts(n0 + 1)
+        took = t[-1]["at_ms"] - t_alarm * 1000
+        ok, size = jpeg_at(t[-1]["media"]) if t[-1]["media"] else (False, 0)
+        print(f"      {what}: alarm on screen {ms:.0f} ms, text at Twilio {took:.0f} ms after the event, picture {size} bytes")
+        check(ms < 1000, f"{what}: alarm on screen in {ms:.0f} ms")
+        check(ok, f"{what}: the text's picture is a real JPEG ({size} bytes), never an empty one")
+        check(took < 4500, f"{what}: text at Twilio within 4.5 s ({took:.0f} ms)")
+    frames("normal")
 
     # --- 4b. Twilio accepts the MMS, then fails it because it couldn't fetch the picture (production, alarm 1880)
     twilio_mode("mediafail")

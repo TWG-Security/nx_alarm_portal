@@ -73,11 +73,29 @@ async def _alarm_for(db: AsyncSession, scope: Scope, alarm_id: int) -> Alarm:
     return alarm
 
 
-async def _frame(alarm: Alarm, ts: int) -> bytes:
+class NoFrame(Exception):
+    """NX answered, but with no picture: 200 OK and 0 bytes when the camera has no recording at or after
+    that moment (motion-only recording before the motion starts; seen on site 1's Duo camera, 2026-10-13)."""
+
+
+def is_jpeg(data: bytes) -> bool:
+    return data[:2] == b"\xff\xd8"          # NX answers 200 + 0 bytes when it has no picture
+
+
+async def camera_frame(site: Site, device_id: str, ts: int) -> bytes:
+    """A JPEG from the camera at ts (-1 = live). Raises HTTPException 502 if NX can't be reached or has no picture;
+    an empty reply is never passed on (or cached) as a picture."""
     try:
-        return await manager.client_for(alarm.site).get_thumbnail(alarm.device_id, ts)
+        data = await manager.client_for(site).get_thumbnail(device_id, ts)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(502, str(describe_http_error(exc))) from exc
+    if not is_jpeg(data):
+        raise HTTPException(502, "No recording at that moment yet") from NoFrame(f"{len(data)} bytes")
+    return data
+
+
+async def _frame(alarm: Alarm, ts: int) -> bytes:
+    return await camera_frame(alarm.site, alarm.device_id, ts)
 
 
 @router.get("/media/alarms/{alarm_id}/snapshot.jpg")
@@ -185,10 +203,7 @@ async def camera_live_video(site_id: int, device_id: str, scope: Scope = Depends
 @router.get("/media/sites/{site_id}/cameras/{device_id}/live.jpg")
 async def camera_live(site_id: int, device_id: str, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     site = await _placed_camera(db, scope, site_id, device_id)
-    try:
-        data = await manager.client_for(site).get_thumbnail(device_id.strip("{}"), -1)
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(502, str(describe_http_error(exc))) from exc
+    data = await camera_frame(site, device_id.strip("{}"), -1)
     return Response(data, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
 
 

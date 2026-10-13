@@ -157,6 +157,20 @@ def directions_url(site) -> str:
     return f"https://www.google.com/maps/dir/?api=1&destination={dest}"
 
 
+VIDEO_LABEL = "VIDEO (alarm clip + live cameras):"
+MAP_LABEL = "MAP (directions to the site):"
+
+
+def _links(link: str, site) -> list[str]:
+    """The two links, each under its own label with a blank line between, so a phone shows which is which.
+    The video link comes first: it's the one to tap."""
+    out = ["", VIDEO_LABEL, link]
+    nav = directions_url(site)
+    if nav:
+        out += ["", MAP_LABEL, nav]
+    return out + ["", "Reply STOP to opt out."]
+
+
 def alarm_text(alarm: Alarm, link: str) -> str:
     """One thing per line, easy to read on a lock screen:
 
@@ -164,8 +178,13 @@ def alarm_text(alarm: Alarm, link: str) -> str:
     TWG Security Office
     123 Main St, Harrisburg, PA
     Front Door Cam, 2:03:22 PM EDT
-    Directions: https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380
-    View alarm: https://alarmportal.twgsecurity.net/a/...
+
+    VIDEO (alarm clip + live cameras):
+    https://alarmportal.twgsecurity.net/a/...
+
+    MAP (directions to the site):
+    https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380
+
     Reply STOP to opt out.
     """
     site = alarm.site
@@ -175,11 +194,7 @@ def alarm_text(alarm: Alarm, link: str) -> str:
              _ascii(site.name if site else "", 60),
              _ascii(site.address if site else "", 100),
              ", ".join(p for p in (cam if cam and cam.lower() not in what.lower() else "", _clock(alarm)) if p)]
-    nav = directions_url(site)
-    if nav:
-        lines.append(f"Directions: {nav}")
-    lines += [f"View alarm: {link}", "Reply STOP to opt out."]
-    return "\n".join(line for line in lines if line)
+    return "\n".join([line for line in lines if line] + _links(link, site))
 
 
 def confirmed_text(alarm: Alarm, link: str, by: str, more: int = 0) -> str:
@@ -191,8 +206,13 @@ def confirmed_text(alarm: Alarm, link: str, by: str, more: int = 0) -> str:
     Front Door Cam, 2:03:22 PM EDT
     Confirmed real by Mike Miller, 2:04:10 PM EDT
     Note: man in black hoodie at the loading dock
-    Directions: https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380
-    View alarm: https://alarmportal.twgsecurity.net/a/...
+
+    VIDEO (alarm clip + live cameras):
+    https://alarmportal.twgsecurity.net/a/...
+
+    MAP (directions to the site):
+    https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380
+
     Reply STOP to opt out.
     """
     lines = alarm_text(alarm, link).split("\n")
@@ -203,7 +223,7 @@ def confirmed_text(alarm: Alarm, link: str, by: str, more: int = 0) -> str:
     note = _ascii(alarm.ack_note, 120)
     if note:
         extra.append(f"Note: {note}")
-    at = next((i for i, line in enumerate(lines) if line.startswith(("Directions:", "View alarm:"))), len(lines))
+    at = lines.index("")                  # the blank line before the links
     return "\n".join(lines[:at] + extra + lines[at:])
 
 
@@ -220,7 +240,7 @@ def stand_down_text(alarm: Alarm, verdict: str, by: str, more: int = 0) -> str:
 def summary_text(count: int, sites: list[str], since: Alarm, newest: Alarm, link: str) -> str:
     names = ", ".join(_ascii(s, 30) for s in sites[:3]) + (f" +{len(sites) - 3}" if len(sites) > 3 else "")
     return (f"TWG: {count} more alarm{'s' if count != 1 else ''} at {names} since {_clock(since)} "
-            f"(too many to text one by one). Newest: {link}")
+            f"(too many to text one by one).\n\nNEWEST ALARM VIDEO:\n{link}")
 
 
 PROGRAM = "TWG Security Alarm Portal"
@@ -464,23 +484,51 @@ _PICTURES_MAX = 100
 _picture_slots: asyncio.Semaphore | None = None
 
 
+ARCHIVE_WAIT_S = 2.5         # how long the picture waits for NX to have the alarm-moment frame before using a live one
+
+
 async def _build_picture(alarm: Alarm) -> bytes:
-    from app.routers.stream import snapshot_bytes
+    """The frame at the alarm moment with its boxes. A camera that records on motion only may not have that
+    frame yet when the text goes (NX answers 200 with 0 bytes; Twilio then fails the MMS with 63019): retry
+    for ARCHIVE_WAIT_S, then use a live frame labelled LIVE, so the text still carries a real picture."""
+    from app.routers.stream import camera_frame, snapshot_bytes
     from app.services import clips, report
+    deadline = time.monotonic() + ARCHIVE_WAIT_S
     frame = None
-    for attempt in range(8):            # right after the event NX may not have the frame yet: retry every 0.5 s
+    while frame is None:
         try:
-            frame = await snapshot_bytes(alarm)
-            break
+            frame = await snapshot_bytes(alarm)      # raises on errors and on NX's empty "no recording" answer
         except Exception:  # noqa: BLE001
-            await asyncio.sleep(0.5)
+            if time.monotonic() >= deadline:
+                break
+            await asyncio.sleep(0.4)
     if frame is None:
-        frame = await snapshot_bytes(alarm)
+        frame = await camera_frame(alarm.site, alarm.device_id, -1)
+        log.info("sms: alarm %s: no recorded frame after %.1f s, the picture is a live frame", alarm.id, ARCHIVE_WAIT_S)
+        return await asyncio.to_thread(_label_live, frame, f"LIVE {_clock(alarm, utcnow())}")
     try:
         objs = await clips.objects(alarm, alarm.event_ts_ms - 3000, alarm.event_ts_ms + 3000)
     except Exception:  # noqa: BLE001 - boxes are a bonus; the frame alone still helps
         objs = []
     return await asyncio.to_thread(report._annotate, frame, report._boxes_at(objs, alarm.event_ts_ms))
+
+
+def _label_live(jpeg: bytes, label: str) -> bytes:
+    """A red LIVE tag in the corner: this picture is from just after the alarm, not the alarm moment itself."""
+    import io
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.open(io.BytesIO(jpeg)).convert("RGB")
+    d = ImageDraw.Draw(img)
+    try:
+        font = ImageFont.load_default(size=max(14, img.width // 32))
+    except TypeError:                     # Pillow < 10.1: fixed-size bitmap font
+        font = ImageFont.load_default()
+    x0, y0, x1, y1 = d.textbbox((8, 6), label, font=font)
+    d.rectangle([x0 - 6, y0 - 4, x1 + 6, y1 + 4], fill=(192, 57, 43))
+    d.text((8, 6), label, fill=(255, 255, 255), font=font)
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", quality=88)
+    return buf.getvalue()
 
 
 async def alarm_picture(alarm: Alarm, budget_s: float | None = None) -> bytes | None:
@@ -501,6 +549,9 @@ async def alarm_picture(alarm: Alarm, budget_s: float | None = None) -> bytes | 
         pic = await asyncio.wait_for(build(), budget_s)
     except Exception as e:  # noqa: BLE001 - incl. timeout: the text goes without a picture
         log.warning("sms: no picture for alarm %s within %.0f s (%s)", alarm.id, budget_s, type(e).__name__)
+        return None
+    if not pic or pic[:2] != b"\xff\xd8":        # never hand Twilio an empty or broken picture
+        log.warning("sms: alarm %s: the picture isn't a JPEG (%d bytes); the text goes without it", alarm.id, len(pic or b""))
         return None
     _pictures[alarm.id] = pic
     while len(_pictures) > _PICTURES_MAX:

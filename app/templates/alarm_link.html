@@ -22,13 +22,27 @@
       {% if alarm.ack_note %}<dt>Operator note</dt><dd class="link-desc">{{ alarm.ack_note }}</dd>{% endif %}
       {% if alarm.description %}<dt>Details</dt><dd class="link-desc">{{ alarm.description }}</dd>{% endif %}
     </dl>
+    <div class="link-views" role="tablist" aria-label="Video">
+      <button class="link-view" type="button" role="tab" data-view="clip">&#9654; Alarm clip</button>
+      <button class="link-view" type="button" role="tab" data-view="live"><span class="live-dot">&#9679;</span> Live</button>
+      <button class="link-view" type="button" role="tab" data-view="cameras">All cameras</button>
+    </div>
     <div id="link-player"></div>
     <div class="link-actions">
-      {% if directions %}<a class="btn" href="{{ directions }}" target="_blank" rel="noopener noreferrer">Directions</a>{% endif %}
+      {% if directions %}<a class="btn" href="{{ directions }}" target="_blank" rel="noopener noreferrer">&#128205; Map / Directions</a>{% endif %}
       <a class="btn btn-primary" href="/login?next={{ ('/?alarm=' ~ alarm.id) | urlencode }}">Sign in to acknowledge</a>
     </div>
     <p class="muted small-print">This link was texted{% if sent_to %} to {{ sent_to }}{% endif %} and works until <span id="link-expires" data-iso="{{ expires_at }}"></span>.
-      Anyone who has it can see this alarm and its camera, so please don't forward it.</p>
+      Anyone who has it can see this alarm and the site's cameras, so please don't forward it.</p>
+  </div>
+  <div class="card link-card" id="link-cameras" hidden>
+    <div class="link-nav">
+      <button class="btn" type="button" data-go="clip">&#8592; Back to alarm</button>
+      <button class="btn" type="button" data-go="cameras" hidden>&#8592; All cameras</button>
+    </div>
+    <h1 id="link-cams-title">All cameras</h1>
+    <p class="muted" id="link-cams-note">Pictures refresh every few seconds. Tap a camera for live video.</p>
+    <div id="link-cams-body"></div>
   </div>
   {% elif state == "expired" %}
   <div class="card link-card">
