@@ -14,7 +14,7 @@ const LABELS = {
   "support.viewed": "TWG support opened this company", "tenant.created": "Company created", "tenant.updated": "Company edited", "tenant.logo": "Logo changed",
   "group.created": "Group created", "group.updated": "Group edited", "group.deleted": "Group deleted",
   "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
-  login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited",
+  login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited", "user.deleted": "User deleted",
 };
 
 function details(r) {
@@ -36,6 +36,7 @@ function details(r) {
       return esc([d.source === "manual" ? "by hand" : d.source === "timer" ? "disarm timer ran out" : `by ${d.source}`,
                   d.until_ms ? `re-arms ${fmtTime(d.until_ms)}` : "", d.note ? `“${d.note}”` : ""].filter(Boolean).join(" · "))
         + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
+    case "user.deleted": return esc([d.name !== d.target ? d.name : "", d.target].filter(Boolean).join(" · "));
     case "user.created": case "user.updated": return esc([d.email || d.target, d.role, (d.fields || []).join(", ")].filter(Boolean).join(" · "));
     default: return esc(d.detail_text || d.name || "") + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
   }

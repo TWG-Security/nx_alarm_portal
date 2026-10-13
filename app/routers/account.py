@@ -255,7 +255,7 @@ async def sign_out_everywhere(request: Request, user: User = Depends(current_use
 
 # ---------------------------------------------------------------- admins: a company's users
 async def _target(db: AsyncSession, scope: Scope, user_id: int, *, write: bool = False) -> User:
-    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
     if target is None:
         raise HTTPException(404)
     if write:

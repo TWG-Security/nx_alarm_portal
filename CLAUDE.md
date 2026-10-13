@@ -69,7 +69,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Area | Files |
 |---|---|
 | Settings (all env/.env) | `app/config.py` |
-| Models: tenants, users, groups, sites, alarms, alarm_notes, audit_log | `app/models.py` (every table has `tenant_id`); migrations `migrations/versions/0001-0016` |
+| Models: tenants, users, groups, sites, alarms, alarm_notes, audit_log | `app/models.py` (every table has `tenant_id`); migrations `migrations/versions/0001-0017` |
 | Backups | `tools/backup.sh` (pg_dump + .env + checksums, restore-verified, rotation) |
 | Alarm levels (critical 1 / alarm 2 / warning 3 / ignore) | `app/services/alarm_filter.py` |
 | NX row → portal fields, captions | `app/services/nx_events.py` |
@@ -89,6 +89,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Google sign-in (OIDC + PKCE) | `app/routers/sso.py` (`/auth/google`, `/auth/google/callback`), settings on `platform_settings.google_*` (migration 0011); tests `tests/test_google_sso.py` |
 | Companies / tenancy | `app/scope.py` (`Scope`, `get_scope`), `app/routers/tenants.py` (`/api/scope`, `/api/tenants`, logo, `/branding/{id}/logo`), `templates/companies.html` + `js/companies.js`; tests `tests/test_tenancy.py`, e2e `tools/e2e/tenancy.py` |
 | Verdicts (real / false / dismissed), bulk edit | `ack.py` (`acknowledge(verdict)`, `set_verdict`; `dismissed` skips the NX bookmark but still clears forced-ack events), `POST /api/alarms/bulk` (needs `alarms.bulk_edit`, ≤500 ids; `alarms.js` chunks); e2e `tools/e2e/dismiss.py` |
+| Deleting users | `api.delete_user` (`DELETE /api/users/{id}`, admins; Users → Edit → **Delete user**). Soft delete (migration 0017 `users.deleted_at`): the row stays because alarms (`acked_by_id`, `verdict_by_id`), notes and the audit log point at it, so history keeps the name (`display_name` = old label). Email becomes `deleted-<id>@deleted.invalid` (freed for re-adding), sessions revoked + token version bumped, recovery codes / passkeys / setup-reset tokens / group memberships deleted, TOTP cleared, password `!deleted`, phone + texts off (their texted `/a/` links stop: `alarm_links` checks `is_active`). Refused: yourself, or a company's last active admin. Every per-user lookup filters `User.deleted_at.is_(None)`; **do the same in new user queries**. Audit `user.deleted` (target = old email). Tests `tests/test_users.py`, e2e `tools/e2e/users.py` |
 | Groups & permissions | `app/permissions.py` (catalog, `require()`), `user_groups` / `user_group_members` (migration 0005), `/api/groups`; `deps.current_user` loads `user._perms`, pages get `CFG.perms` |
 | Live video | `GET /media/alarms/{id}/live.webm`: relays NX `/media/<dev>.webm?resolution=640x360` (≤6 per site, 20 min cap, commits the DB session first so no connection is pinned); `static/js/live.js` |
 | Incident report PDF / evidence ZIP | `app/services/report.py` (reportlab + Pillow; CPU work in `asyncio.to_thread`); `GET /api/alarms/{id}/export?format=pdf|zip&note&pre&post&quality` |
@@ -240,7 +241,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 180 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 188 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -255,6 +256,7 @@ POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.cameras /tmp
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.topdown /tmp # same on the top-down view, + alarm latency while open / panning, exit restores the street map
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.dismiss /tmp # Dismiss everywhere; 600-alarm burst, bulk dismiss, critical latency meanwhile
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.sms /tmp     # alarm texts: Platform tab, Users numbers, link on a phone (clip, Live tab, All cameras, Back), empty NX frames -> real picture, Twilio failing/hanging + alarm latency
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.users /tmp          # Edit → Delete user: confirm, row gone, their screen signed out, password dead, audit, email reusable, alarm latency after
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.sms_confirmed /tmp  # guard texted only on Real event (note, link), STAND DOWN on False alarm, Twilio hanging + ack/alarm latency
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.globe /tmp   # 3D view: software-GL refusal, forced open + watchdog, alarm latency while open, failed load
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms

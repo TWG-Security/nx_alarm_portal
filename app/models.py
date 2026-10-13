@@ -60,6 +60,8 @@ class User(Base):
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
     invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Deleted by an admin (api.delete_user): hidden, can't sign in or be texted; the row stays so history keeps the name
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Text messages (app/sms.py): E.164 mobile number and which alarms text them (off | critical | alarm)
     phone: Mapped[str] = mapped_column(String(20), default="")
     sms_level: Mapped[str] = mapped_column(String(10), default="off")

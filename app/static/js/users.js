@@ -142,7 +142,8 @@ function paintEditExtras() {
     <div class="ed-line">
       <button class="btn btn-sm" type="button" data-toggle="${u.id}">${u.is_active ? "Disable" : "Enable"}</button>
       ${u.invited ? `<button class="btn btn-sm" type="button" data-invite="${u.id}">New invite link</button>` : `<button class="btn btn-sm" type="button" data-reset="${u.id}">Reset password</button>`}
-      <button class="btn btn-sm" type="button" data-security="${u.id}">Sign-in security…</button></div>`;
+      <button class="btn btn-sm" type="button" data-security="${u.id}">Sign-in security…</button>
+      <button class="btn btn-sm btn-danger" type="button" data-delete="${u.id}" style="margin-left:auto">Delete user</button></div>`;
 }
 
 async function act(promise, ok) {
@@ -175,10 +176,14 @@ $("edit-form").addEventListener("submit", async (e) => {
 
 $("edit-dialog").addEventListener("click", async (e) => {
   const d = e.target.dataset, u = edUser;
-  if (!u || !(d.toggle || d.reset || d.invite || d.security || d.optIn || d.testText)) return;
+  if (!u || !(d.toggle || d.reset || d.invite || d.security || d.optIn || d.testText || d.delete)) return;
   if (d.toggle) {
     if (u.is_active && !confirm(`Disable ${u.email}? They're signed out and get no more alarm texts.`)) return;
     await act(api(`/api/users/${u.id}`, { method: "PUT", body: { is_active: !u.is_active } }), u.is_active ? "Disabled" : "Enabled");
+  } else if (d.delete) {
+    if (!confirm(`Delete ${u.display_name || u.email}? This can't be undone.\n\nThey're signed out everywhere, removed from groups and get no more alarm texts. `
+      + "Alarms they handled and the audit log still show their name. You can add the same email again later.")) return;
+    if (await act(api(`/api/users/${u.id}`, { method: "DELETE" }), "User deleted")) edDlg.close();
   } else if (d.reset) {
     const pw = prompt("New password. It must be at least 12 characters with upper and lower case, a number and a symbol. Their browsers are signed out.");
     if (pw) await act(api(`/api/users/${u.id}`, { method: "PUT", body: { password: pw } }), "Password reset");
