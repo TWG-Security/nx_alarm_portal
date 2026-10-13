@@ -59,11 +59,12 @@ const cssVar = (name, fallback) => getComputedStyle(document.documentElement).ge
  * library didn't load).
  *   pins: () => [{ id, name, lat, lng, state: "alarm"|"warn"|"offline"|"ok", count, disarmed }]
  *   cameras: () => [{ siteId, deviceId, name, lat, lng, heading, fov, range_m, alarm }]
+ *   models: () => [{ siteId, url, anchor, placement: { lat, lng, height, heading, scale } }]: site 3D models (3D Tiles)
  *   onPick(siteId): a site pin was clicked; onPickCamera(siteId, deviceId): a camera was clicked
  *   onView({ lat, lng, alt, heading }): the view stopped moving (for the HUD readout)
  *   onTooSlow(reason): frames are slow enough to delay alarms; the caller should close the view
  */
-export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCamera, onView, onTooSlow }) {
+export async function openGlobe(el, { pins, cameras = () => [], models = () => [], onPick, onPickCamera, onView, onTooSlow }) {
   const problem = graphicsProblem();
   if (problem) throw new Error(problem);
   const Cesium = await loadCesium();
@@ -222,11 +223,72 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
     }
   }
 
+  // ---- site 3D models (3D Tiles from app/routers/site_models.py). Content is in metres, east/north/up
+  // around the model's floor (converted models), or on the Earth already (georeferenced 3D Tiles: then
+  // `anchor` is where its floor is, and the placement moves that spot). Height is above the ground.
+  const modelsE = new Map();     // site id -> { url, tileset, placement }
+  let modelsShown = true, modelEdit = null;    // modelEdit = { siteId, st }
+  const enu = (lat, lng, h) => Cesium.Transforms.eastNorthUpToFixedFrame(Cesium.Cartesian3.fromDegrees(lng, lat, h));
+  function modelMatrix(p, anchor, groundH = 0) {
+    const M = Cesium.Matrix4;
+    let m = M.multiply(enu(p.lat, p.lng, groundH + (p.height || 0)),
+      M.fromRotation(Cesium.Matrix3.fromRotationZ(-Cesium.Math.toRadians(p.heading || 0))), new M());
+    m = M.multiply(m, M.fromUniformScale(p.scale || 1), m);
+    if (anchor) m = M.multiply(m, M.inverseTransformation(enu(anchor.lat, anchor.lng, anchor.h || 0), new M()), m);
+    return m;
+  }
+  async function placeModel(siteId) {
+    const e = modelsE.get(siteId);
+    if (!e?.tileset) return;
+    const p = modelEdit?.siteId === siteId ? modelEdit.st : e.placement;
+    const known = google ? ground.get(`${p.lat.toFixed(5)},${p.lng.toFixed(5)}`) : 0;
+    e.tileset.modelMatrix = modelMatrix(p, e.anchor, known ?? 0);
+    scene.requestRender();
+    if (google && known == null) {
+      const h = await groundHeight(p.lat, p.lng);
+      const now = modelEdit?.siteId === siteId ? modelEdit.st : modelsE.get(siteId)?.placement;
+      if (now && modelsE.get(siteId)?.tileset) { modelsE.get(siteId).tileset.modelMatrix = modelMatrix(now, e.anchor, h); scene.requestRender(); }
+    }
+  }
+  function updateModels() {
+    const seen = new Set();
+    for (const m of models()) {
+      seen.add(m.siteId);
+      let e = modelsE.get(m.siteId);
+      if (e && e.url !== m.url) { if (e.tileset) scene.primitives.remove(e.tileset); modelsE.delete(m.siteId); e = null; }
+      if (!e) {
+        e = { url: m.url, anchor: m.anchor, placement: m.placement, tileset: null };
+        modelsE.set(m.siteId, e);
+        Cesium.Cesium3DTileset.fromUrl(m.url, { maximumScreenSpaceError: 16, cacheBytes: 256 * 1024 * 1024 }).then((ts) => {
+          if (modelsE.get(m.siteId) !== e || viewer.isDestroyed()) { ts.destroy(); return; }
+          e.tileset = ts;
+          ts.show = modelsShown;
+          ts.tileLoad.addEventListener(() => scene.requestRender());
+          scene.primitives.add(ts);
+          placeModel(m.siteId);
+        }).catch((err) => { console.error("site model didn't load", err); e.failed = String(err?.message || err); });
+      } else {
+        e.anchor = m.anchor;
+        if (JSON.stringify(e.placement) !== JSON.stringify(m.placement)) { e.placement = m.placement; placeModel(m.siteId); }
+      }
+    }
+    for (const [id, e] of modelsE) if (!seen.has(id)) { if (e.tileset) scene.primitives.remove(e.tileset); modelsE.delete(id); }
+  }
+  function showModels(on) {
+    modelsShown = on;
+    for (const e of modelsE.values()) if (e.tileset) e.tileset.show = on;
+    scene.requestRender();
+  }
+  function flyToModel(siteId) {
+    const ts = modelsE.get(siteId)?.tileset;
+    if (ts) viewer.camera.flyToBoundingSphere(ts.boundingSphere, { offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-35), ts.boundingSphere.radius * 2.6), duration: 1.2 });
+  }
+
   // Ground-draped shapes are built in the background and can finish after the frame that asked
   // for them; with on-demand rendering nothing would redraw, so ask a few more times.
   let settle = null;
   function update() {
-    updatePins(); updateCameras(); scene.requestRender();
+    updatePins(); updateCameras(); updateModels(); scene.requestRender();
     clearInterval(settle);
     let n = 0;
     settle = setInterval(() => { scene.requestRender(); if (++n >= 6) clearInterval(settle); }, 250);
@@ -268,10 +330,13 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
     if (!google) return 0;
     const key = `${lat.toFixed(5)},${lng.toFixed(5)}`;
     if (!ground.has(key)) {
+      // Most-detailed sampling only advances while frames render; on-demand rendering would stall it.
+      const tick = setInterval(() => scene.requestRender(), 100);
       try {
-        const [c] = await scene.sampleHeightMostDetailed([Cesium.Cartographic.fromDegrees(lng, lat)]);
+        const [c] = await Promise.race([scene.sampleHeightMostDetailed([Cesium.Cartographic.fromDegrees(lng, lat)]),
+                                        new Promise((_, no) => setTimeout(() => no(new Error("timeout")), 15000))]);
         if (c?.height != null && Number.isFinite(c.height)) ground.set(key, c.height);
-      } catch { /* not loaded yet */ }
+      } catch { /* not loaded yet */ } finally { clearInterval(tick); }
     }
     return ground.get(key) ?? 0;
   }
@@ -385,6 +450,62 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
     update();
     return editor;
   }
+  // ---- model editor (admins): drag the white centre dot to move the model, the orange dot on the
+  // ring to turn it. Numbers (height, size, exact turn) come through set(). onCommit saves.
+  function editModel(siteId, placement, { onChange, onCommit } = {}) {
+    stopEditing();
+    const st = { heading: 0, height: 0, scale: 1, ...placement };
+    modelEdit = { siteId, st };
+    const ts = modelsE.get(siteId)?.tileset;
+    const ringR = () => Math.max(8, Math.min(400, (ts?.boundingSphere?.radius || 20) * 0.9 * (st.scale || 1) / (modelsE.get(siteId)?.placement?.scale || 1)));
+    const live = (fn) => new Cesium.CallbackProperty(fn, false);
+    const lift = 0.5;
+    const at = (bearingDeg, m) => { const [lng, lat] = offset(st.lat, st.lng, bearingDeg, m); return Cesium.Cartesian3.fromDegrees(lng, lat, lift); };
+    let drag = null;
+    const parts = [
+      viewer.entities.add({ polyline: { positions: live(() => Array.from({ length: 73 }, (_, i) => at(i * 5, ringR()))), width: 2,
+                                        material: ORANGE.withAlpha(0.8), depthFailMaterial: ORANGE.withAlpha(0.45) } }),
+      viewer.entities.add({ polyline: { positions: live(() => [Cesium.Cartesian3.fromDegrees(st.lng, st.lat, lift), at(st.heading, ringR())]), width: 2,
+                                        material: ORANGE, depthFailMaterial: ORANGE.withAlpha(0.45) } }),
+      viewer.entities.add({ position: live(() => Cesium.Cartesian3.fromDegrees(st.lng, st.lat, lift)),
+                            point: { pixelSize: 18, color: Cesium.Color.WHITE, outlineColor: INK, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY } }),
+      viewer.entities.add({ position: live(() => at(st.heading, ringR())),
+                            point: { pixelSize: 15, color: ORANGE, outlineColor: INK, outlineWidth: 2, disableDepthTestDistance: Number.POSITIVE_INFINITY } }),
+    ];
+    parts[2].editHandle = "move"; parts[3].editHandle = "turn";
+    const changed = () => { placeModel(siteId); onChange?.({ ...st }); scene.requestRender(); };
+    const round = () => ({ lat: Math.round(st.lat * 1e8) / 1e8, lng: Math.round(st.lng * 1e8) / 1e8, height: Math.round(st.height * 100) / 100,
+                           heading: Math.round((((st.heading % 360) + 360) % 360) * 100) / 100, scale: Math.round(st.scale * 1e5) / 1e5 });
+    const ctl = scene.screenSpaceCameraController;
+    let grab = null;          // where on the ground the move started, so the model doesn't jump to the mouse
+    editor = {
+      click() { return !!drag; },
+      move(pos) {
+        if (!drag) return;
+        const pt = groundAt(pos);
+        if (!pt) return;
+        if (drag === "move") { st.lat = grab.lat + (pt.lat - grab.mlat); st.lng = grab.lng + (pt.lng - grab.mlng); }
+        else st.heading = bearing(st, pt);
+        changed();
+      },
+      down(pos) {
+        const kind = scene.pick(pos)?.id?.editHandle;
+        if (!kind) return;
+        const pt = groundAt(pos);
+        if (!pt) return;
+        drag = kind; grab = { lat: st.lat, lng: st.lng, mlat: pt.lat, mlng: pt.lng };
+        ctl.enableInputs = false;
+      },
+      up() { if (!drag) return; drag = null; ctl.enableInputs = true; onCommit?.(round()); },
+      stop() { ctl.enableInputs = true; parts.forEach((e) => viewer.entities.remove(e)); modelEdit = null; placeModel(siteId); },
+      set(values) { Object.assign(st, values); changed(); onCommit?.(round()); },
+      get mode() { return "model"; },
+      get state() { return { ...st }; },
+    };
+    changed();
+    return editor;
+  }
+
   function stopEditing() {
     if (!editor) return;
     editor.stop();
@@ -394,8 +515,9 @@ export async function openGlobe(el, { pins, cameras = () => [], onPick, onPickCa
 
   update();
   return {
-    update, flyTo, setImagery, editCamera, stopEditing,
-    get editing() { return editor ? { key: editKey, mode: editor.mode } : null; },
+    update, flyTo, setImagery, editCamera, editModel, stopEditing, showModels, flyToModel,
+    modelState: (siteId) => { const e = modelsE.get(siteId); return e ? { loaded: !!e.tileset, failed: e.failed || "", tiles: e.tileset ? e.tileset.statistics.numberOfLoadedTilesTotal : 0 } : null; },
+    get editing() { return editor ? { key: editKey, mode: editor.mode, model: modelEdit?.siteId ?? null } : null; },
     currentEditor: () => editor,
     hasBuildings: !!google,
     destroy() { clearInterval(settle); stopEditing(); input.destroy(); viewer.destroy(); },

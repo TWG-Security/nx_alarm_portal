@@ -15,7 +15,7 @@ from app import platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, links, pages, platform, sso, stream, tenants, tiles
+from app.routers import account, api, auth, links, pages, platform, site_models, sso, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -61,7 +61,9 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(security_guard.run_sweeper(), name="security-sweeper"))
         from app.routers.tiles import run_prefetcher
         tasks.append(asyncio.create_task(run_prefetcher(), name="imagery-prefetch"))
+        await site_models.resume()
     yield
+    await site_models.shutdown()
     for t in tasks:
         t.cancel()
     from app import sms
@@ -118,6 +120,7 @@ def create_app() -> FastAPI:
     app.include_router(sso.router)
     app.include_router(tiles.router)
     app.include_router(links.router)
+    app.include_router(site_models.router)
     return app
 
 

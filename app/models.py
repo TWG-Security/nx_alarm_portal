@@ -273,6 +273,8 @@ class Site(Base):
     camera_count: Mapped[int] = mapped_column(Integer, default=0)
     # Where each camera is on the 3D view: {"<NX device id>": {name, lat, lng, heading, fov, range_m}}
     camera_places: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # 3D model shown in the 3D view (app/routers/site_models.py): {ready, job, next_version}
+    model: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)

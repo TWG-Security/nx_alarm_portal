@@ -700,3 +700,24 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .terms-page h2 { font-size: 16px; margin: 20px 0 6px; color: var(--text); }
 .terms-page p, .terms-page li { line-height: 1.55; }
 .login-terms { text-align: center; margin-top: 12px; font-size: 12px; }
+
+/* ---- 3D view: site model panel (model_panel.js) */
+.model-panel .mp-sec { padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, .08); display: grid; gap: 6px; }
+.model-panel .mp-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-panel .mp-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-panel .mp-hint { color: #cfcfcf; font-size: 12px; line-height: 1.45; }
+.model-panel .mp-hint code { font-size: 11px; }
+.model-panel .mp-nums { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: center; }
+.model-panel .mp-nums label { display: flex; align-items: center; gap: 6px; }
+.model-panel .mp-nums input { width: 84px; height: 24px; padding: 0 4px; background: #1a1a1a; color: #fff; border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.model-panel .mp-nudge { display: flex; gap: 4px; }
+.model-panel .mp-nudge button { min-width: 32px; }
+.model-panel .mp-save { color: #E08A30; font-size: 12px; min-height: 16px; }
+.model-panel .mp-bar { height: 8px; background: rgba(255, 255, 255, .12); border-radius: 4px; overflow: hidden; }
+.model-panel .mp-bar i { display: block; height: 100%; background: #E08A30; transition: width .3s; }
+.model-panel .mp-drop { display: block; padding: 18px 10px; text-align: center; border: 2px dashed rgba(224, 138, 48, .6); border-radius: 6px; cursor: pointer; }
+.model-panel .mp-drop.over, .model-panel .mp-drop:hover { background: rgba(224, 138, 48, .12); }
+.model-panel .mp-error { color: #ffb4a8; }
+.model-panel .mp-adv { font-size: 12px; color: #cfcfcf; }
+.model-panel .mp-adv label { display: block; margin: 4px 0; }
+.model-panel button.danger { border-color: #C0392B; color: #ffb4a8; }

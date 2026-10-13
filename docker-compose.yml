@@ -25,6 +25,7 @@ services:
     volumes:
       - tilecache:/app/tile-cache
       - mediacache:/app/media-cache
+      - sitemodels:/app/site-models     # uploaded 3D models + their 3D Tiles (not in tools/backup.sh: re-upload)
     depends_on:
       db:
         condition: service_healthy
@@ -48,5 +49,6 @@ volumes:
   pgdata:
   tilecache:
   mediacache:
+  sitemodels:
   caddy_data:
   caddy_config:

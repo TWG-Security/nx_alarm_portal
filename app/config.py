@@ -60,6 +60,11 @@ class Settings(BaseSettings):
     clip_max_window_s: int = 300         # operators can widen the window up to this total
     media_cache_dir: str = "./media-cache"
     media_cache_max_mb: int = 4096       # oldest clips are evicted beyond this
+    # Site 3D models (app/routers/site_models.py): uploads and their converted 3D Tiles
+    model_dir: str = "./site-models"
+    model_max_mb: int = 3072             # largest upload
+    model_build_max_s: int = 1800        # a conversion is stopped after this long
+    model_build_mem_mb: int = 2048       # memory cap for the converter process (the server has 4 GB)
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     prefetch_clips: bool = True          # build clips for critical/alarm events as soon as footage exists
