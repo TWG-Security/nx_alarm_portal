@@ -817,10 +817,11 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
                 users = (await db.scalars(select(User).where(User.tenant_id == tenant_id, User.is_active.is_(True),
                                                              User.phone != "", User.sms_level != "off",
                                                              User.sms_when.in_(("confirmed", "both")),
-                                                             User.sms_consent == "yes", User.id != by_id))).all()
+                                                             User.sms_consent == "yes"))).all()
                 # Auto-dispatch: the guards among them (people linked to a tracked router or phone) aren't all texted;
-                # only the closest one is sent (app/services/dispatch.py). Nobody with a usable position: all get
-                # the confirmed text, as before.
+                # only the closest one is sent (app/services/dispatch.py), even when that guard is the one who
+                # confirmed it (the user, 2026-10-13: guards may confirm alarms themselves). Nobody with a usable
+                # position: all get the confirmed text, as before. The confirmed text never goes to whoever confirmed.
                 if dispatch.auto_on(await db.get(Tenant, tenant_id)):
                     linked = set((await db.scalars(select(Tracker.user_id).where(
                         Tracker.tenant_id == tenant_id, Tracker.enabled.is_(True), Tracker.user_id.is_not(None)))).all())
@@ -833,6 +834,8 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
                         if pick is not None:
                             auto.append((newest.id, pick["tracker_id"]))
                 for u in users:
+                    if u.id == by_id:
+                        continue
                     mine = [a for a in group if u.sms_sites is None or a.site_id in u.sms_sites]
                     if not mine:
                         continue

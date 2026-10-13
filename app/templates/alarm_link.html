@@ -7,6 +7,14 @@
     <span class="brand-title">Alarm Portal</span>
   </div>
   {% if state == "ok" %}
+  {% if sent_to %}<div class="card link-card link-share" id="link-share">
+    <div class="row share-actions" style="margin:0">
+      <button class="btn btn-primary share-big" type="button" id="link-share-start">&#128205; Share my location now</button>
+      <button class="btn share-big" type="button" id="link-share-stop" hidden>Stop sharing</button>
+    </div>
+    <div id="link-share-state" class="share-line">Lets dispatch see where you are while this page is open.</div>
+    <div id="link-share-facts" class="muted small-print"></div>
+  </div>{% endif %}
   <div class="card link-card" id="link-alarm">
     <div class="link-title">
       <span class="chip p{{ alarm.priority }}">{{ {1: "Critical", 2: "Alarm", 3: "Warning"}[alarm.priority] }}</span>
@@ -60,5 +68,5 @@
 </div>
 {% endblock %}
 {% block scripts %}{% if state == "ok" %}
-<script>window.PORTAL = {{ {"clip": clip_config, "alarm": alarm, "token": token} | tojson }};</script>
+<script>window.PORTAL = {{ {"clip": clip_config, "alarm": alarm, "token": token, "canShare": sent_to != ""} | tojson }};</script>
 <script type="module" src="{{ asset('js/alarm_link.js') }}"></script>{% endif %}{% endblock %}

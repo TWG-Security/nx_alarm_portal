@@ -5,11 +5,42 @@
 import { CFG, fmtTime } from "./common.js";
 import { mountPlayer } from "./player.js";
 import { mountLive } from "./live.js";
+import { createSharer } from "./share_core.js";
 
 const a = CFG.alarm, token = CFG.token;
 const STILL_EVERY_MS = 3000;     // a still per visible camera every 3 s (~40 KB each): light on phone data and the NX relay
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// "Share my location now": the person this was texted to shows on the dispatcher's map while this page is open.
+if (CFG.canShare && $("link-share-start")) {
+  const KEY = `twg-share-from-${token}`;
+  let sharer = null;
+  const paint = (kind, text, facts) => {
+    const on = kind !== "off" && kind !== "gone";
+    $("link-share-start").hidden = on; $("link-share-stop").hidden = !on;
+    $("link-share-state").textContent = kind === "off" && text === "Not sharing" ? "Not sharing your location." : text;
+    $("link-share-state").className = `share-line share-line--${kind}`;
+    $("link-share-facts").textContent = facts;
+    try { if (on) sessionStorage.setItem(KEY, "1"); else sessionStorage.removeItem(KEY); } catch { /* fine */ }
+  };
+  async function startSharing() {
+    $("link-share-start").disabled = true;
+    try {
+      if (!sharer) {
+        const r = await fetch(`/api/a/${token}/share`, { method: "POST", credentials: "omit" });
+        if (!r.ok) throw new Error(r.status === 410 ? "This alarm link has expired" : "Couldn't start sharing");
+        const { token: shareToken } = await r.json();
+        sharer = createSharer(shareToken, { everyS: 10, onState: paint });
+      }
+      sharer.start();
+    } catch (err) { paint("warn", err.message, ""); }
+    finally { $("link-share-start").disabled = false; }
+  }
+  $("link-share-start").addEventListener("click", startSharing);
+  $("link-share-stop").addEventListener("click", () => sharer?.stop());
+  try { if (sessionStorage.getItem(KEY) === "1") startSharing(); } catch { /* fine */ }
+}
 
 $("link-when").textContent = new Date(a.event_ts_ms).toLocaleString([], { dateStyle: "medium", timeStyle: "medium" });
 $("link-expires").textContent = fmtTime($("link-expires").dataset.iso);

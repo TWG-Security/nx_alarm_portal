@@ -150,10 +150,14 @@ with sync_playwright() as p:
     pg.wait_for_selector(".drawer-dispatch:not([hidden]) .dispatch-list li", timeout=8000)
     rows = pg.eval_on_selector_all(".dispatch-list li", "els => els.map(e => e.innerText)")
     check(rows[0].startswith("Ana Near") and "Closest" in rows[0] and "Ben Far" in rows[1], f"guards closest first: {rows}")
+    pg.wait_for_selector(".dispatch-quick .dispatch-big", timeout=8000)
+    big = pg.eval_on_selector_all(".dispatch-quick .dispatch-big", "els => els.map(e => [e.innerText, e.getBoundingClientRect().height])")
+    check(len(big) == 2 and big[0][0].startswith("Dispatch Ana Near") and "closest" in big[0][0] and big[1][0].startswith("Dispatch Ben Far")
+          and big[0][1] >= 44, f"two big Dispatch buttons under the title: {big}")
     pg.screenshot(path=f"{out}/dispatch3-drawer-guards.png")
     n0 = len(texts())
     t0 = time.time()
-    pg.click(".dispatch-list li.closest [data-dispatch]")
+    pg.click(".dispatch-quick .dispatch-big.btn-primary")
     t = wait_texts(n0 + 1)
     took = (time.time() - t0) * 1000
     body = t[-1]["body"]
@@ -163,6 +167,32 @@ with sync_playwright() as p:
     print("      text:", repr(body))
     pg.wait_for_selector(".dispatched-row", timeout=8000)
     check("Dispatched Ana Near" in pg.inner_text(".drawer-dispatch"), "the alarm shows who was dispatched")
+
+    # Ana opens the alarm link from her dispatch text: "Share my location now" at the top.
+    alarm_page = phones["near"][0].new_page()
+    alarm_page.on("pageerror", lambda e: errors.append(f"Ana's alarm page: {e}"))
+    alarm_page.goto(link_after(body, "VIDEO (alarm clip + live cameras):"))
+    alarm_page.wait_for_selector("#link-share-start", timeout=8000)
+    top = alarm_page.eval_on_selector("#link-share-start", "e => e.getBoundingClientRect().top")
+    alarm_page.click("#link-share-start")
+    alarm_page.wait_for_function("document.getElementById('link-share-state').textContent.includes('Sharing your location')", timeout=10000)
+    check(top < 200, f"the alarm page from the dispatch text: Share my location now at the top ({top:.0f} px), and it shares")
+    alarm_page.screenshot(path=f"{out}/dispatch6-phone-alarm-share.png")       # left open: it shares too
+
+    # An operator on a phone: the two big Dispatch buttons are the first thing under the alarm.
+    mob = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    mp = mob.new_page()
+    mp.on("pageerror", lambda e: errors.append(f"operator phone: {e}"))
+    mp.goto(f"{PORTAL}/login")
+    mp.fill("#email", "admin@twgsecurity.com"); mp.fill("#password", "Smoke-test-password-123!")
+    mp.click("button[type=submit]"); mp.wait_for_url(f"{PORTAL}/")
+    mp.wait_for_selector(f".feed-item[data-id='{first_line}'] [data-detail]", state="attached", timeout=10000)
+    mp.evaluate("id => document.querySelector(`.feed-item[data-id='${id}'] [data-detail]`).click()", first_line)
+    mp.wait_for_selector(".dispatch-quick .dispatch-big", timeout=10000)
+    box = mp.eval_on_selector(".dispatch-quick .dispatch-big", "e => { const r = e.getBoundingClientRect(); return [r.top, r.width, r.height]; }")
+    check(box[0] < 844 and box[1] > 300 and box[2] >= 44, f"phone: a full-width Dispatch button on the first screen {box}")
+    mp.screenshot(path=f"{out}/dispatch7-phone-operator.png")
+    mob.close()
 
     # Next: the newer line alarm, then (end of the queue) back to the critical.
     pg.click("#drawer-next")
@@ -181,7 +211,7 @@ with sync_playwright() as p:
     time.sleep(1.5)
     new = texts()[n0:]
     check(len(new) == 1 and new[0]["to"] == GUARDS["near"][0] and new[0]["body"].startswith("TWG DISPATCH:"),
-          f"confirming texts only the closest guard, automatically ({took:.0f} ms after the click)")
+          f"confirming texts only the closest guard, automatically ({took:.0f} ms after the click) {[(x['to'], x['body'][:20]) for x in new]}")
     pg.keyboard.press("Escape")
     pg.click("#drawer-close") if pg.is_visible("#drawer-close") else None
 

@@ -15,7 +15,7 @@ const drawer = document.getElementById("drawer");
 const backdrop = document.getElementById("drawer-backdrop");
 let current = null, player = null, live = null, notes = [];
 let where = null;    // { map, plan, site }: the top-down map of where the alarm's camera is
-let guardsTimer = null, guardsFor = null;
+let guardsTimer = null, guardsFor = null, lastGuards = null;     // lastGuards: { alarmId, r } from /guards
 
 // ---------------------------------------------------------------- Next: the next open alarm in working order
 function nextAlarm(a) {
@@ -38,12 +38,31 @@ on("store", () => { if (current && !drawer.hidden) paintNext(); });
 
 // ---------------------------------------------------------------- guards: closest first, Dispatch
 function stopGuards() { clearInterval(guardsTimer); guardsTimer = null; guardsFor = null; }
+// The two closest guards that can be texted, as big Dispatch buttons right under the title (phones see them first).
+function quickHtml(a) {
+  const g = lastGuards?.alarmId === a.id ? lastGuards.r : null;
+  if (!g || !g.texts_ready || !(isMine(a) || can("platform.support"))) return "";
+  const pick = g.guards.filter((c) => c.can_text).slice(0, 2);
+  if (!pick.length) return "";
+  const sent = new Set(g.dispatched.map((d) => d.to));
+  return `<div class="dispatch-quick">${pick.map((c, i) => `<button type="button" class="btn dispatch-big ${i === 0 ? "btn-primary" : ""}"
+      data-dispatch="${c.tracker_id}" data-name="${esc(c.name)}">
+      <span class="dispatch-big-main">Dispatch ${esc(c.name)}</span>
+      <span class="dispatch-big-sub">${c.distance_m == null ? "position unknown" : `${esc(c.distance)} away`}${c.closest ? " · closest" : ""}${!c.usable && c.distance_m != null ? " · old position" : ""}${sent.has(c.person) || sent.has(c.name) ? " · already sent" : ""}</span>
+    </button>`).join("")}</div>`;
+}
+function paintQuick() {
+  const slot = drawer.querySelector(".dispatch-quick-slot");
+  if (slot && current) slot.innerHTML = quickHtml(current);
+}
 async function loadGuards(a) {
   const box = drawer.querySelector(".drawer-dispatch");
   if (!box) return;
   let r;
   try { r = await api(`/api/alarms/${a.id}/guards`); } catch { return; }
   if (current?.id !== a.id || guardsFor !== a.id) return;
+  lastGuards = { alarmId: a.id, r };
+  paintQuick();
   if (!r.guards.length) { box.hidden = true; return; }
   box.hidden = false;
   const write = isMine(a) || can("platform.support");
@@ -108,7 +127,8 @@ function render(a) {
         ${a.source_name ? `<div class="muted">${esc(a.source_name)}</div>` : ""}</div>
       <div class="drawer-head-actions"><span class="drawer-next-slot">${nextHtml(a)}</span>
         <button class="btn btn-sm" id="drawer-close" aria-label="Close">✕</button></div>
-    </div>`;
+    </div>
+    <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
     <dl class="kv">
       <dt>Event time</dt><dd>${fmtTime(a.event_ts_ms)}</dd>

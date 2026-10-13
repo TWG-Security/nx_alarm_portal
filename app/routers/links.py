@@ -6,6 +6,7 @@
 - GET /api/a/{token}/cameras, /media/a/{token}/cameras/{device}/live.jpg|live.webm   the site's other cameras, live
 - POST /twilio/sms                            replies to our number (YES / STOP / HELP), Twilio-signed
 - GET /sms-terms                              the public text-message terms (carriers and Twilio ask for it)
+- POST /api/a/{token}/share                   "Share my location now": the texted person's location-link token
 
 Everything is limited to the link's one alarm and the live view of its site's cameras. An unknown token is recorded as a failed sign-in
 (kind "alarm_link"), so an address that guesses gets banned (BanGate guards these paths). Opening the
@@ -275,3 +276,38 @@ async def sms_terms(request: Request, db: AsyncSession = Depends(get_db)):
     sender = row.twilio_from if row and row.twilio_from.startswith("+") else ""
     return render(request, "sms_terms.html", contact=contact, sender=sender,
                   portal=platform_settings.current().portal_url, updated="October 12, 2026")
+
+
+@router.post("/api/a/{token}/share")
+async def link_share_location(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """"Share my location now" on the alarm page a guard was texted: the location token of their phone tracker,
+    made on the spot if they don't have one (then they show on the dispatcher's map like any guard). Only for links
+    texted to a person; a link's alarm is in that person's company."""
+    from sqlalchemy import select
+    from app import guard_share
+    from app.models import Tracker
+    from app.services import trackers
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(404 if status == "invalid" else 410)
+    if link.user_id is None:
+        raise HTTPException(400, "This link wasn't sent to a person")
+    who = await db.get(User, link.user_id)
+    t = await db.scalar(select(Tracker).where(Tracker.tenant_id == alarm.tenant_id, Tracker.user_id == who.id,
+                                              Tracker.source == "phone"))
+    created = t is None
+    if created:
+        other = await db.scalar(select(Tracker.id).where(Tracker.tenant_id == alarm.tenant_id, Tracker.user_id == who.id))
+        t = Tracker(tenant_id=alarm.tenant_id, name=(f"{who.label} (phone)" if other else who.label)[:100], kind="guard",
+                    source="phone", user_id=who.id)
+        db.add(t)
+        await db.flush()
+    elif not t.enabled:
+        t.enabled = True
+    url = guard_share.share_url(t)
+    audit(db, alarm.tenant_id, "tracker.share_from_alarm", user_id=who.id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), name=t.name, created=created)
+    await db.commit()
+    from app.services.bus import bus
+    bus.publish(t.tenant_id, "tracker.moved", trackers.tracker_dict(t))
+    return {"token": url.rstrip("/").rsplit("/", 1)[-1], "name": t.name}

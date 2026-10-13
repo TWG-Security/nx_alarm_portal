@@ -240,3 +240,63 @@ async def test_admins_link_a_person_to_a_router_for_dispatch_texts(session, clie
     assert next(x for x in r.json()["trackers"] if x["id"] == tr.id)["user_id"] is None
     r = await client.put("/api/tracking/dispatch", json={"auto": False})
     assert r.json()["auto_dispatch"] is False
+
+
+@respx.mock
+async def test_the_guard_who_confirms_is_dispatched_when_closest(session, client):
+    """A guard can confirm an alarm themselves (e.g. on their phone) and still be the one sent: the closest guard
+    is texted even if they confirmed it. The CONFIRMED text still never goes to whoever confirmed."""
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMm"}))
+    await track(session, t.id, "Mike's truck", 60, g["mike"])                    # mike confirms, and he's closest
+    await track(session, t.id, "Guard 1", 900, g["guard"])
+    await login(client, "mike@twgsecurity.com")
+    a = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "real"})
+    await sms.drain()
+    texted = {to: body_of(c) for to, c in zip(sent_to(twilio), twilio.calls)}
+    assert sorted(texted) == ["+15705558002", "+15705558003"]                  # "both" isn't a guard: confirmed text
+    assert texted["+15705558003"].startswith("TWG DISPATCH:") and texted["+15705558002"].startswith("TWG CONFIRMED:")
+
+    # Mike's truck goes offline: Guard 1 is the closest usable one now.
+    mike_truck = (await session.scalars(select(Tracker).where(Tracker.name == "Mike's truck"))).one()
+    mike_truck.online = False
+    await session.commit()
+    b = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{b.id}/ack", json={"verdict": "real"})
+    await sms.drain()
+    texted = {to: body_of(c) for to, c in zip(sent_to(twilio)[2:], twilio.calls[2:])}
+    assert sorted(texted) == ["+15705558001", "+15705558002"] and texted["+15705558001"].startswith("TWG DISPATCH:")
+
+
+@respx.mock
+async def test_share_my_location_now_from_the_texted_alarm_page(session, client):
+    """The alarm page a guard was texted has "Share my location now": it makes them a phone tracker if they have none
+    (named "(phone)" when they already have a router), and the page then sends positions like the location page."""
+    from app import alarm_links
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await track(session, t.id, "Guard truck", 500, g["guard"])                     # a router already linked to them
+    alarm = await make_alarm(session, site, event_ts_ms=now_ms())
+    token = await alarm_links.mint(session, alarm, await session.get(User, g["guard"].id), 24)
+    nobody = await alarm_links.mint(session, alarm, None, 24)
+    await session.commit()
+
+    page = (await client.get(f"/a/{token}/")).text
+    assert "Share my location now" in page and '"canShare": true' in page
+    assert "Share my location now" not in (await client.get(f"/a/{nobody}/")).text
+    r = await client.post(f"/api/a/{token}/share")
+    assert r.status_code == 200 and r.json()["name"] == "guard (phone)"
+    share = r.json()["token"]
+    lat, lng = north(200)
+    assert (await client.post(f"/api/g/{share}/pos", json={"lat": lat, "lng": lng, "accuracy": 5})).json()["taken"]
+    phone = (await session.scalars(select(Tracker).where(Tracker.source == "phone"))).one()
+    await session.refresh(phone)
+    assert phone.user_id == g["guard"].id and phone.online and round(phone.lat, 6) == round(lat, 6)
+    again = await client.post(f"/api/a/{token}/share")                           # same tracker, same link
+    assert again.json()["token"] == share and len((await session.scalars(select(Tracker))).all()) == 2
+    assert (await client.post(f"/api/a/{nobody}/share")).status_code == 400
+    assert (await client.post("/api/a/not-a-token/share")).status_code == 404

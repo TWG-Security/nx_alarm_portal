@@ -797,7 +797,7 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .share-state--wait, .share-state--warn { border-color: #E08A30; color: #b8661a; }
 .share-state--off { color: var(--muted, #666); }
 .share-actions { margin: 14px 0; gap: 10px; }
-.share-big { flex: 1 1 auto; font-size: 18px; padding: 14px 18px; }
+.share-big { flex: 1 1 auto; font-size: 18px; padding: 14px 18px; height: auto; min-height: 54px; }
 .share-tip { font-size: 14px; }
 .guard--offline { --guard-c: #5b5b5b; }
 .guard--offline .guard-dot { outline: 3px solid #C0392B; outline-offset: 1px; }
@@ -819,3 +819,17 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .dispatch-who { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
 .dispatched-row { padding: 4px 8px; border-left: 3px solid #E08A30; margin: 4px 0; }
 .dispatch-who .chip { align-self: flex-start; }
+.link-share { border: 2px solid #E08A30; }
+.share-line { font-weight: 600; margin-top: 8px; }
+.share-line--on { color: var(--ok, #2e7d32); }
+.share-line--wait, .share-line--warn { color: #b8661a; }
+.dispatch-quick { display: flex; flex-wrap: wrap; gap: 8px; margin: -4px 0 12px; }
+#drawer .dispatch-big { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 2px; height: auto; min-height: 56px; padding: 10px 18px; min-width: 220px;
+  font-size: 17px; font-weight: 700; border-width: 2px; }
+.dispatch-big-sub { font-size: 12px; font-weight: 400; opacity: .9; }
+@media (max-width: 600px) { #drawer .dispatch-big { flex: 1 1 100%; min-width: 0; font-size: 18px; padding: 14px 16px; } }
+/* Phones: the view bar (top-down / 3D) wraps inside the map instead of making the page wider than the screen
+   (it did: the page grew to 514 px and the alarm details opened half off-screen). */
+@media (max-width: 700px) {
+  .globe-bar { flex-wrap: wrap; justify-content: center; max-width: calc(100% - 16px); bottom: 10px; }
+}
