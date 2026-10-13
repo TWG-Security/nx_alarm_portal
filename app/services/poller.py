@@ -209,7 +209,9 @@ def describe_rules(rules: list[dict], policy: Policy, site_override: dict | None
             why = "this site's setting" if site_override and t in site_override else (
                 "Settings → Alarm levels" if t in policy.levels else "event type default")
         interval = int(act.get("intervalS") or 0)
+        from app.services.rule_edit import has_secrets
         out.append({"id": (r.get("id") or "").strip("{}"), "name": _rule_label(r), "comment": comment,
+                    "action_has_login": has_secrets(act),
                     "event_type": t, "event_label": EVENT_TYPES.get(t, (t,))[0], "category": category_of(t),
                     "action": act.get("type", ""), "enabled": enabled, "tag": tag, "always": arming.rule_always_armed(comment),
                     "level": level, "why": why, "interval_s": interval,

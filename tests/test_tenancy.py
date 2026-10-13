@@ -108,7 +108,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("GET", f"/media/sites/{sb.id}/model/1/tiles/tileset.json", None),
         ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.webm", None),
         ("GET", f"/api/alarms/{ab.id}/guards", None), ("POST", f"/api/alarms/{ab.id}/dispatch", {"tracker_id": bt.id}),
-        ("GET", f"/api/trackers/{bt.id}/trail?start=2026-01-01T00:00:00Z", None), ("POST", f"/api/trackers/{bt.id}/refresh", None), ("POST", f"/api/trackers/{bt.id}/locate", None), ("GET", f"/api/sites/{sb.id}/rules", None), ("POST", f"/api/sites/{sb.id}/check", None),
+        ("GET", f"/api/trackers/{bt.id}/trail?start=2026-01-01T00:00:00Z", None), ("POST", f"/api/trackers/{bt.id}/refresh", None), ("POST", f"/api/trackers/{bt.id}/locate", None), ("GET", f"/api/sites/{sb.id}/rules", None), ("POST", f"/api/sites/{sb.id}/check", None), ("PATCH", f"/api/sites/{sb.id}/rules/4c1d77c5-5f11-4567-8cfa-6db360231186", {"level": "alarm"}),
         ("PUT", f"/api/tracking/trackers/{bt.id}", {"name": "x"}), ("DELETE", f"/api/tracking/trackers/{bt.id}", None),
         ("POST", f"/api/tracking/trackers/{bt.id}/share", {"renew": True}),
     ]:

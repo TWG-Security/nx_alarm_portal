@@ -67,6 +67,29 @@ RULES = {k: {"id": "{%s}" % uuid.uuid5(uuid.NAMESPACE_URL, k), "comment": c, "en
                             ("panic24", "Hold-up button #24h", "softTrigger", 0))}
 @app.get("/rest/v4/events/rules")
 async def rules(): return list(RULES.values())
+def _rule_by_id(rid: str):
+    return next((r for r in RULES.values() if r["id"].strip("{}") == rid.strip("{}")), None)
+
+@app.get("/rest/v4/events/rules/{rid}")
+async def rule_one(rid: str):
+    r = _rule_by_id(rid)
+    return r if r else JSONResponse({"error": "not found"}, status_code=404)
+
+RULE_PATCHES: list = []
+@app.patch("/rest/v4/events/rules/{rid}")
+async def rule_patch(rid: str, req: Request):
+    """Like NX: a partial update of the fields sent (RULE_PATCHES records them for tests)."""
+    r = _rule_by_id(rid)
+    if not r:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    body = await req.json()
+    RULE_PATCHES.append({"id": rid, **body})
+    r.update(body)
+    return r
+
+@app.get("/_rule_patches")
+async def rule_patches(): return RULE_PATCHES
+
 @app.post("/_rules/{kind}")
 async def set_rule_comment(kind: str, comment: str = ""):
     """Tests: change a rule's Title/Comment (its #tags), like editing it in NX."""

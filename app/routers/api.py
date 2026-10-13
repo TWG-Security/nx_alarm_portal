@@ -1,11 +1,11 @@
 """JSON API used by the portal's own pages."""
 
 import asyncio
+import re
 import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
-
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import func, select, update
@@ -312,6 +312,68 @@ async def site_rules(site_id: int, scope: Scope = Depends(get_scope), db: AsyncS
     """The NX rules the portal last read for this site and what each does here (level / ignored and why)."""
     site = await _get_site(db, scope, site_id)
     return manager.rules_view(site, await _site_policy(db, site))
+
+
+class RuleEditIn(BaseModel):
+    comment: str | None = Field(default=None, max_length=500)
+    level: str | None = Field(default=None, pattern="^(critical|alarm|warning|ignore|none)$")   # None = keep
+    always: bool | None = None              # #24h
+    enabled: bool | None = None
+    interval_s: int | None = Field(default=None, ge=0, le=86400)
+
+
+@router.patch("/sites/{site_id}/rules/{rule_id}")
+async def edit_site_rule(site_id: int, rule_id: str, body: RuleEditIn, request: Request, user: User = Depends(require_admin),
+                         scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Administrators: change a rule on the site's NX server (tag, #24h, comment, on/off, Interval of action), checked
+    by reading it back (app/services/rule_edit.py). Audit-logged with what changed."""
+    from app.services import rule_edit
+    site = await _get_site(db, scope, site_id, write=True)
+    rule_id = rule_id.strip("{}")
+    if not re.fullmatch(r"[0-9a-fA-F-]{36}", rule_id):
+        raise HTTPException(404, "Rule not found")
+    await db.commit()                                   # don't hold the connection while NX answers
+    level = rule_edit.UNCHANGED if body.level is None else (None if body.level == "none" else body.level)
+    try:
+        before, changes, after = await rule_edit.edit(manager.client_for(site), rule_id, comment=body.comment, level=level,
+                                                      always=body.always, enabled=body.enabled, interval_s=body.interval_s)
+    except rule_edit.RuleEditError as e:
+        audit(db, site.tenant_id, "nx.rule_edit_failed", user_id=user.id, site_id=site.id, ip=client_ip(request),
+              rule_id=rule_id, error=str(e))
+        await db.commit()
+        raise HTTPException(400, str(e)) from None
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(502, f"NX refused the change (HTTP {e.response.status_code}). The portal's NX account needs to be "
+                                 "in Power Users or Administrators") from None
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Couldn't reach NX ({type(e).__name__})") from None
+    if changes:
+        audit(db, site.tenant_id, "nx.rule_edited", user_id=user.id, site_id=site.id, ip=client_ip(request), rule_id=rule_id,
+              **{("interval_s" if k == "action" else k):
+                 {"from": before.get(k) if k != "action" else int((before.get("action") or {}).get("intervalS") or 0),
+                  "to": v if k != "action" else int(v.get("intervalS") or 0)} for k, v in changes.items()})
+        await db.commit()
+        await manager.check_now(site.id)                 # re-read the rules so the portal uses the new tags at once
+    return {"changed": sorted("interval_s" if k == "action" else k for k in changes),
+            "rules": manager.rules_view(site, await _site_policy(db, site))}
+
+
+class TaggedOnlyIn(BaseModel):
+    on: bool
+
+
+@router.put("/settings/tagged-only")
+async def put_tagged_only(body: TaggedOnlyIn, request: Request, user: User = Depends(require_admin),
+                          scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """The company's "tagged NX rules only" switch, from the NX rules list (same setting as Settings → Alarm levels)."""
+    tenant = await db.get(Tenant, scope.write_tenant())
+    old = Policy.from_settings(tenant.settings)
+    policy = Policy(levels=dict(old.levels), force_ack_critical=old.force_ack_critical, tagged_only=body.on)
+    tenant.settings = {**(tenant.settings or {}), "alarm_policy": policy.to_settings()}
+    if old.tagged_only != body.on:
+        audit(db, tenant.id, "settings.alarm_levels", user_id=user.id, ip=client_ip(request), tagged_only=body.on)
+    await db.commit()
+    return {"tagged_only": policy.tagged_only}
 
 
 CHECK_EVERY_S = 5.0

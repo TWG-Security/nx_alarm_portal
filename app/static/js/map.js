@@ -104,24 +104,54 @@ const LEVEL_CHIP = { critical: '<span class="chip p1">Critical</span>', alarm: '
 const rulesDlg = document.createElement("dialog");
 rulesDlg.className = "rules-dialog";
 document.body.append(rulesDlg);
+// View filter (remembered in this browser) and, for administrators, the company switch and per-rule editing.
+const RULES_FILTER_KEY = "twg-rules-filter";
+let rulesFilter = (() => { try { return localStorage.getItem(RULES_FILTER_KEY) || "all"; } catch { return "all"; } })();
+let rulesState = null;          // { s, v } the list on screen
+let editingRule = null;         // rule id being edited
+const stripTags = (t) => (t || "").replace(/(^|\s)#(critical|alarm|warning|ignore|24h)\b/gi, " ").replace(/\s{2,}/g, " ").trim();
+function editorRow(r) {
+  return `<tr class="rule-editor"><td colspan="4"><div class="rule-edit-grid" data-rule-form="${esc(r.id)}">
+      <label>Level in the portal <select data-re="level">${[["none", "No tag (event type decides; ignored with tagged rules only)"], ["critical", "#critical"], ["alarm", "#alarm"], ["warning", "#warning"], ["ignore", "#ignore"]]
+        .map(([v, l]) => `<option value="${v}" ${(r.tag || "none") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label class="check"><input type="checkbox" data-re="always" ${r.always ? "checked" : ""}> <span><b>#24h</b>: raise even while the site is disarmed</span></label>
+      <label>Title / Comment (tags are added for you) <input type="text" data-re="comment" maxlength="400" value="${esc(stripTags(r.comment))}"></label>
+      <label class="check"><input type="checkbox" data-re="enabled" ${r.enabled ? "checked" : ""}> <span>Rule is on in NX</span></label>
+      <label>Interval of action (seconds; 0 = off, every event comes through at once)
+        <input type="number" min="0" max="86400" data-re="interval" value="${r.interval_s}" ${r.action_has_login ? "disabled" : ""}>
+        ${r.action_has_login ? '<small class="muted">This rule\'s action holds a login: change its interval in Nx Witness.</small>' : r.interval_s ? '<small class="text-warn">Over 0 holds repeat events back.</small>' : ""}</label>
+      <div class="rule-edit-actions"><button type="button" class="btn btn-sm" data-re-cancel>Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary" data-re-save>Save in NX</button></div>
+    </div></td></tr>`;
+}
 function paintRules(s, v, error = "") {
+  rulesState = { s, v };
   const raised = v.rules.filter((r) => !["ignore", "off"].includes(r.level)).length;
+  const shown = rulesFilter === "tagged" ? v.rules.filter((r) => r.tag) : v.rules;
+  const admin = CFG.isAdmin;
   rulesDlg.innerHTML = `<div class="rules-head"><div><h2>NX rules · ${esc(s.name)}</h2>
       <div class="muted small-print">${v.read_at ? `Read from NX ${esc(relTime(v.read_at * 1000))}` : "Not read yet"} · ${v.rules.length} rules, ${raised} raise alarms here
       ${v.tagged_only ? " · <b>tagged rules only</b> (Settings → Alarm levels)" : ""}</div></div>
-      <div style="display:flex;gap:6px;flex:0 0 auto"><button type="button" class="btn btn-sm" data-rules-check>Check now</button>
+      <div style="display:flex;gap:6px;flex:0 0 auto;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+      <div class="seg" role="group" aria-label="Show"><button type="button" data-rules-filter="all" class="${rulesFilter === "all" ? "active" : ""}">All rules</button>
+        <button type="button" data-rules-filter="tagged" class="${rulesFilter === "tagged" ? "active" : ""}">Tagged only (${v.rules.filter((r) => r.tag).length})</button></div>
+      <button type="button" class="btn btn-sm" data-rules-check>Check now</button>
       <button type="button" class="btn btn-sm" data-rules-close aria-label="Close">✕</button></div></div>
     ${error ? `<div class="alert alert-error">Check failed: ${esc(error)}</div>` : ""}
+    ${admin ? `<label class="check rules-switch"><input type="checkbox" data-rules-tagged-only ${v.tagged_only ? "checked" : ""}>
+      <span><b>Only NX rules tagged #critical, #alarm or #warning raise alarms</b> <span class="muted">(every site of this company; same as Settings → Alarm levels)</span></span></label>` : ""}
     ${v.readable === false ? `<div class="alert alert-error"><b>This site's NX account can't read rules</b> (NX answered 403), so #tags can't be seen${v.tagged_only
       ? " and <b>every event comes in</b>: tagged rules only can't be applied here" : ""}. Give the NX account rule-read rights (e.g. the Power Users group).</div>` : ""}
-    ${v.rules.length ? `<div class="table-wrap"><table class="rules-table"><thead><tr><th>In the portal</th><th>NX rule (Title / Comment)</th><th>Event</th><th>Notes</th></tr></thead><tbody>
-      ${v.rules.map((r) => `<tr class="${["ignore", "off"].includes(r.level) ? "rule-off" : ""}">
+    ${shown.length ? `<div class="table-wrap"><table class="rules-table"><thead><tr><th>In the portal</th><th>NX rule (Title / Comment)</th><th>Event</th><th>Notes</th></tr></thead><tbody>
+      ${shown.map((r) => `<tr class="${["ignore", "off"].includes(r.level) ? "rule-off" : ""}" data-rule-row="${esc(r.id)}">
         <td>${LEVEL_CHIP[r.level] || esc(r.level)}<div class="muted small-print">${esc(r.why)}</div></td>
         <td><b>${esc(r.name)}</b>${r.tag || r.always ? `<div class="small-print">${r.tag ? `<code>#${esc(r.tag)}</code> ` : ""}${r.always ? "<code>#24h</code>" : ""}</div>` : ""}</td>
         <td>${esc(r.event_label)}<div class="muted small-print mono">${esc(r.event_type)} → ${esc(r.action)}</div></td>
         <td class="small-print">${r.delayed ? `<span class="text-warn">Repeats held back up to ${r.interval_s} s (Interval of action)</span>` : ""}
-          ${r.always && v.tagged_only && !r.tag ? '<span class="text-warn">#24h but no level tag: ignored</span>' : ""}</td></tr>`).join("")}
-      </tbody></table></div>` : `<p class="muted">${v.readable === false ? "" : "No rules read yet. Press Check now."}</p>`}`;
+          ${r.always && v.tagged_only && !r.tag ? '<span class="text-warn">#24h but no level tag: ignored</span>' : ""}
+          ${admin && v.readable !== false ? `<div><button type="button" class="btn btn-sm" data-rule-edit="${esc(r.id)}">Edit</button></div>` : ""}</td></tr>
+        ${editingRule === r.id ? editorRow(r) : ""}`).join("")}
+      </tbody></table></div>` : `<p class="muted">${v.readable === false ? "" : rulesFilter === "tagged" && v.rules.length ? "No tagged rules on this site." : "No rules read yet. Press Check now."}</p>`}`;
 }
 async function openRules(siteId, check = false) {
   const s = sites.get(siteId);
@@ -138,9 +168,44 @@ async function openRules(siteId, check = false) {
   } catch (err) { rulesDlg.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div><button type="button" class="btn btn-sm" data-rules-close>Close</button>`; }
 }
 function saveSiteData(data) { if (data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); } }
-rulesDlg.addEventListener("click", (e) => {
-  if (e.target.closest("[data-rules-close]") || e.target === rulesDlg) return rulesDlg.close();
-  if (e.target.closest("[data-rules-check]")) openRules(Number(rulesDlg.dataset.site), true);
+rulesDlg.addEventListener("click", async (e) => {
+  if (e.target.closest("[data-rules-close]") || e.target === rulesDlg) { editingRule = null; return rulesDlg.close(); }
+  if (e.target.closest("[data-rules-check]")) return openRules(Number(rulesDlg.dataset.site), true);
+  const f = e.target.closest("[data-rules-filter]");
+  if (f && rulesState) {
+    rulesFilter = f.dataset.rulesFilter;
+    try { localStorage.setItem(RULES_FILTER_KEY, rulesFilter); } catch { /* applied, just not remembered */ }
+    return paintRules(rulesState.s, rulesState.v);
+  }
+  const ed = e.target.closest("[data-rule-edit]");
+  if (ed && rulesState) { editingRule = editingRule === ed.dataset.ruleEdit ? null : ed.dataset.ruleEdit; return paintRules(rulesState.s, rulesState.v); }
+  if (e.target.closest("[data-re-cancel]") && rulesState) { editingRule = null; return paintRules(rulesState.s, rulesState.v); }
+  const save = e.target.closest("[data-re-save]");
+  if (save && rulesState) {
+    const form = save.closest("[data-rule-form]"), id = form.dataset.ruleForm, r = rulesState.v.rules.find((x) => x.id === id);
+    const val = (k) => form.querySelector(`[data-re="${k}"]`);
+    const body = { level: val("level").value, always: val("always").checked, comment: val("comment").value.trim(), enabled: val("enabled").checked };
+    if (!val("interval").disabled) body.interval_s = Math.max(0, Math.min(86400, Number(val("interval").value) || 0));
+    if (!confirm(`Change this rule on ${rulesState.s.name}'s NX server?\n\n${r.name}`)) return;
+    save.disabled = true; save.textContent = "Saving…";
+    try {
+      const res = await api(`/api/sites/${rulesState.s.id}/rules/${encodeURIComponent(id)}`, { method: "PATCH", body });
+      editingRule = null;
+      paintRules(sites.get(rulesState.s.id) || rulesState.s, res.rules);
+      toast(res.changed.length ? `Saved in NX: ${esc(res.changed.join(", "))}` : "Nothing changed");
+    } catch (err) { toast(esc(err.message), { kind: "error" }); save.disabled = false; save.textContent = "Save in NX"; }
+  }
+});
+rulesDlg.addEventListener("change", async (e) => {
+  if (!e.target.matches("[data-rules-tagged-only]") || !rulesState) return;
+  const on = e.target.checked;
+  if (!confirm(on ? "Only NX rules tagged #critical, #alarm or #warning will raise alarms, on every site of this company. Events from other rules are ignored. Turn it on?"
+                  : "Every NX rule will raise alarms by its event type again. Turn tagged rules only off?")) { e.target.checked = !on; return; }
+  try {
+    await api("/api/settings/tagged-only", { method: "PUT", body: { on } });
+    paintRules(rulesState.s, await api(`/api/sites/${rulesState.s.id}/rules`));
+    toast(on ? "Tagged rules only: on" : "Tagged rules only: off");
+  } catch (err) { toast(esc(err.message), { kind: "error" }); e.target.checked = !on; }
 });
 document.getElementById("site-detail").addEventListener("click", async (e) => {
   const s = sites.get(selectedId);

@@ -951,3 +951,10 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .text-warn { color: #b8661a; }
 /* Bigger top-bar clock (the user, 2026-10-13: "i want the time bigger") */
 .sys-clock { font-size: 18px; font-weight: 700; letter-spacing: .02em; }
+.rules-switch { margin: 0 0 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; }
+.rule-editor td { background: var(--surface-2); }
+.rule-edit-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; align-items: end; }
+.rule-edit-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.rule-edit-grid label.check { flex-direction: row; align-items: center; font-size: 13px; }
+.rule-edit-actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
+@media (max-width: 700px) { .rule-edit-grid { grid-template-columns: minmax(0, 1fr); } }
