@@ -60,6 +60,8 @@ class User(Base):
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
     invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Deleted by an admin (api.delete_user): hidden, can't sign in or be texted; the row stays so history keeps the name
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Text messages (app/sms.py): E.164 mobile number and which alarms text them (off | critical | alarm)
     phone: Mapped[str] = mapped_column(String(20), default="")
     sms_level: Mapped[str] = mapped_column(String(10), default="off")
@@ -271,6 +273,8 @@ class Site(Base):
     camera_count: Mapped[int] = mapped_column(Integer, default=0)
     # Where each camera is on the 3D view: {"<NX device id>": {name, lat, lng, heading, fov, range_m}}
     camera_places: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # 3D model shown in the 3D view (app/routers/site_models.py): {ready, job, next_version}
+    model: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
@@ -433,6 +437,14 @@ class PlatformSettings(Base):
     sms_help_contact: Mapped[str] = mapped_column(String(300), default="")    # in HELP replies and on /sms-terms
     sms_last_inbound_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     sms_pictures: Mapped[bool] = mapped_column(Boolean, default=True)          # alarm texts go as MMS with the frame + boxes
+    # Guard tracking through Peplink InControl2 (app/peplink.py, app/services/trackers.py)
+    peplink_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    peplink_client_id: Mapped[str] = mapped_column(String(200), default="")
+    peplink_secret_enc: Mapped[str] = mapped_column(Text, default="")
+    peplink_poll_s: Mapped[int] = mapped_column(Integer, default=30)
+    peplink_last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    peplink_last_error: Mapped[str] = mapped_column(Text, default="")
+    peplink_last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
     updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
@@ -483,3 +495,64 @@ class IpAllow(Base):
     label: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class TrackerSource(Base):
+    """A company's InControl2 API client (its admins enter it on the Sites page). Its trackers are read with it."""
+
+    __tablename__ = "tracker_sources"
+    __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_tracker_sources_tenant_kind"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="peplink")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    client_id: Mapped[str] = mapped_column(String(200), default="")
+    secret_enc: Mapped[str] = mapped_column(Text, default="")
+    poll_s: Mapped[int] = mapped_column(Integer, default=30)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Tracker(Base):
+    """Something whose live position shows on the map: a guard or patrol vehicle. Source today: a Peplink
+    router with GPS, read through InControl2 (org / group / device ids)."""
+
+    __tablename__ = "trackers"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100))
+    kind: Mapped[str] = mapped_column(String(20), default="vehicle")          # vehicle | guard
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    source: Mapped[str] = mapped_column(String(20), default="peplink")
+    ic2_org: Mapped[str] = mapped_column(String(32), default="")
+    ic2_group: Mapped[int] = mapped_column(Integer, default=0)
+    ic2_device: Mapped[int] = mapped_column(Integer, default=0)
+    serial: Mapped[str] = mapped_column(String(40), default="")
+    device_name: Mapped[str] = mapped_column(String(200), default="")         # the router's name in InControl2
+    tz: Mapped[str] = mapped_column(String(64), default="")                   # the IC2 group's time zone (its timestamps are local)
+    lat: Mapped[float | None] = mapped_column(Float, nullable=True)
+    lng: Mapped[float | None] = mapped_column(Float, nullable=True)
+    speed: Mapped[float | None] = mapped_column(Float, nullable=True)         # m/s
+    heading: Mapped[float | None] = mapped_column(Float, nullable=True)       # degrees, from the last two fixes
+    fix_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)   # when the router got that position
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class TrackerPoint(Base):
+    """Position history (breadcrumb trail), kept TRAIL_KEEP_DAYS."""
+
+    __tablename__ = "tracker_points"
+    __table_args__ = (Index("ix_tracker_points_tracker_ts", "tracker_id", "ts"),)
+
+    id: Mapped[int] = mapped_column(BigInteger().with_variant(Integer, "sqlite"), primary_key=True)
+    tracker_id: Mapped[int] = mapped_column(ForeignKey("trackers.id", ondelete="CASCADE"))
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    lat: Mapped[float] = mapped_column(Float)
+    lng: Mapped[float] = mapped_column(Float)
+    speed: Mapped[float | None] = mapped_column(Float, nullable=True)

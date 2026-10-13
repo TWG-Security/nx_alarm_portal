@@ -48,12 +48,18 @@
       <div id="arm-now" class="arm-line" style="margin-bottom:12px"></div>
       <div class="field" style="max-width:340px"><label for="timezone">Site time zone</label><select id="timezone"></select>
         <small>Schedule times are in this zone and follow daylight saving.</small></div>
+      <div class="sched-week" id="sched-week" hidden aria-label="What the schedule does each day"></div>
       <div class="sched-list" id="sched-rows"></div>
-      <div class="row" style="flex-wrap:wrap;margin-top:8px">
+      <div id="sched-problems"></div>
+      <div class="row" style="flex-wrap:wrap;margin-top:8px;gap:8px">
         <button type="button" class="btn btn-sm" id="sched-add" style="flex:0 0 auto">+ Add time</button>
-        <button type="button" class="btn btn-sm" id="sched-preset" style="flex:0 0 auto">Business hours: disarm 07:00, arm 18:00, Mon–Fri</button>
+        <button type="button" class="btn btn-sm" id="sched-preset" style="flex:0 0 auto">Business hours: disarm 7:00 AM, arm 6:00 PM, Mon–Fri</button>
       </div>
-      <small class="muted">Changes apply when you click <b>Save changes</b> above.</small>
+      <div class="sched-save" id="sched-save-bar">
+        <button type="button" class="btn btn-primary" id="sched-save" disabled>Save schedule</button>
+        <button type="button" class="btn" id="sched-undo" hidden>Undo changes</button>
+        <span class="muted" id="sched-state"></span>
+      </div>
     </div>
   </form>
 </div>

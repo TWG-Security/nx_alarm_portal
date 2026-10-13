@@ -143,3 +143,78 @@ async function load() {
   paintMfa(); paintPasskeys(); paintSessions();
 }
 await load().catch((err) => toast(esc(err.message), { kind: "error" }));
+
+// ---------------------------------------------------------------- your own alarm texts
+// Same rules as an admin setting it on the Users page: a new number is texted "reply YES" first,
+// and alarm texts start only after that reply (carrier rules). STOP stops them.
+const fmtPhone = (p) => (/^\+1\d{10}$/.test(p || "") ? `(${p.slice(2, 5)}) ${p.slice(5, 8)}-${p.slice(8)}` : p || "");
+const CONSENT = { none: ["Not asked yet", ""], pending: ["Waiting for your YES", "disarmed"], yes: ["On: you replied YES", "online"],
+  stopped: ["You replied STOP", "offline"] };
+let tx = null;
+
+function paintTexts() {
+  const t = tx, some = t.sms_sites != null;
+  const [word, cls] = CONSENT[t.sms_consent] || CONSENT.none;
+  const status = !t.phone ? "" : `<div class="ed-line"><span class="chip ${cls}">${word}</span><span class="muted small-print">${
+    t.sms_consent === "pending" ? `${t.sms_optin_sent_at ? `We texted you ${esc(relTime(t.sms_optin_sent_at))}.` : "We're texting you now."} Reply <b>YES</b> to that text to start getting alarms.`
+    : t.sms_consent === "yes" ? `Since ${esc(relTime(t.sms_consent_at))}. Reply STOP to any alarm text to stop them.`
+    : t.sms_consent === "stopped" ? "Carriers block texts to you now. Text START or YES to the portal's number to sign up again."
+    : "Save your number to get the opt-in text."}</span></div>
+    <div class="ed-line">${t.sms_consent === "yes" ? '<button class="btn btn-sm" type="button" id="tx-test">Send me a test text</button>'
+      : t.sms_consent === "stopped" || !t.ready ? "" : `<button class="btn btn-sm" type="button" id="tx-optin">${t.sms_consent === "pending" ? "Text me the opt-in again" : "Text me the opt-in"}</button>`}
+      ${t.last_text ? `<span class="muted small-print">Last text ${esc(t.last_text.outcome)} ${esc(relTime(t.last_text.ts))}</span>` : ""}</div>`;
+  $("tx-box").innerHTML = `${t.ready ? "" : '<div class="alert">Text messages aren\'t switched on for this portal yet. You can save your number now; you\'ll get the opt-in text once they are.</div>'}
+    <div class="texts-grid">
+      <div class="field"><label for="tx-phone">Mobile number</label><input id="tx-phone" type="tel" maxlength="30" placeholder="(570) 555-1234" value="${esc(fmtPhone(t.phone))}" autocomplete="tel"></div>
+      <div class="field"><label for="tx-level">Text me</label><select id="tx-level">
+        <option value="alarm">Critical + Alarm</option><option value="critical">Critical only</option><option value="off">No texts</option></select></div>
+      <div class="field"><label for="tx-when">When</label><select id="tx-when">
+        <option value="raised">When the alarm goes off</option><option value="confirmed">Only when an operator confirms it's real</option>
+        <option value="both">Both</option></select></div>
+    </div>
+    ${t.sites.length > 1 ? `<div class="field"><label>Sites</label>
+      <label class="radio inline"><input type="radio" name="tx-scope" value="all" ${some ? "" : "checked"}><span>All sites <small>(and any added later)</small></span></label>
+      <label class="radio inline"><input type="radio" name="tx-scope" value="some" ${some ? "checked" : ""}><span>Only these sites</span></label>
+      <div class="member-grid" id="tx-sites" ${some ? "" : "hidden"}>${t.sites.map((s) => `<label class="member"><input type="checkbox" value="${s.id}" ${some && t.sms_sites.includes(s.id) ? "checked" : ""}> ${esc(s.name)}</label>`).join("")}</div></div>` : ""}
+    ${status}
+    <div class="row" style="align-items:center;gap:8px;margin-top:8px"><button class="btn btn-primary" type="submit" style="flex:0 0 auto">Save</button>
+      <small class="muted">Adding or changing your number texts you once: "reply YES". <a href="/sms-terms" target="_blank" rel="noopener">Terms</a></small></div>`;
+  $("tx-level").value = t.phone ? t.sms_level : "alarm";
+  $("tx-when").value = t.sms_when || "raised";
+}
+
+async function loadTexts() { tx = await api("/api/account/texts"); paintTexts(); }
+
+$("tx-form").addEventListener("change", (e) => {
+  if (e.target.name === "tx-scope") $("tx-sites").hidden = e.target.value !== "some";
+});
+$("tx-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const scope = document.querySelector('input[name="tx-scope"]:checked')?.value || "all";
+  const body = { phone: $("tx-phone").value.trim(), sms_level: $("tx-level").value, sms_when: $("tx-when").value,
+    sms_sites: scope === "some" ? [...$("tx-sites").querySelectorAll("input:checked")].map((c) => Number(c.value)) : null };
+  const before = tx.sms_consent;
+  try {
+    tx = await api("/api/account/texts", { method: "PUT", body });
+    paintTexts();
+    toast(tx.sms_consent === "pending" && before !== "pending" ? "Saved. We've texted you: reply YES to start getting alarm texts." : "Saved");
+    if (tx.sms_consent === "pending") setTimeout(() => loadTexts().catch(() => {}), 4000);     // the opt-in text goes in the background
+  } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }
+});
+$("tx-form").addEventListener("click", async (e) => {
+  if (e.target.id === "tx-optin") {
+    e.target.disabled = true;
+    try { tx = await api("/api/account/texts/opt-in", { method: "POST" }); paintTexts(); toast("Sent. Reply YES to that text.");
+      setTimeout(() => loadTexts().catch(() => {}), 4000); }
+    catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); e.target.disabled = false; }
+  } else if (e.target.id === "tx-test") {
+    e.target.disabled = true;
+    try {
+      const r = await api("/api/account/texts/test", { method: "POST" });
+      r.outcome === "sent" ? toast("Test text sent") : toast(esc(r.error || r.outcome), { kind: "error", timeout: 12000 });
+    } catch (err) { toast(esc(err.message), { kind: "error" }); }
+    e.target.disabled = false;
+    setTimeout(() => loadTexts().catch(() => {}), 3000);
+  }
+});
+loadTexts().catch((err) => { $("tx-box").innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`; });

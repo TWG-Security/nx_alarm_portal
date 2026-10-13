@@ -12,6 +12,55 @@
       <tbody id="site-rows"><tr><td colspan="8" class="empty">Loading…</td></tr></tbody>
     </table>
   </div>
+  {% if user.is_admin %}
+  <div class="tracking" id="tracking" style="margin-top:24px">
+    <form class="card" id="gt-form">
+      <h2>Guards &amp; vehicles (GPS)</h2>
+      <p class="muted" style="margin-top:0">Show where your guards and patrol vehicles are on the map, live, from the GPS in their Peplink routers.
+        Uses your own InControl2 account: the portal reads each router's position in the background. A marker turns amber after
+        3 minutes without a new position and grey after 15.</p>
+      <div id="gt-status"></div>
+      <label class="check"><input type="checkbox" id="gt-enabled"> Track guards</label>
+      <div class="rules-grid">
+        <div class="field"><label for="gt-id">Client ID</label><input id="gt-id" type="text" maxlength="200" class="mono" autocomplete="off"></div>
+        <div class="field"><label for="gt-secret">Client Secret</label><input id="gt-secret" type="password" maxlength="500" autocomplete="new-password"><small id="gt-secret-hint"></small></div>
+        <div class="field"><label for="gt-poll">Check every</label><input id="gt-poll" type="number" min="15" max="600"><small>seconds (15 to 600)</small></div>
+      </div>
+      <div id="gt-error"></div>
+      <div class="row manage-only" style="align-items:center;gap:8px">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto">Save</button>
+        <button class="btn" type="button" id="gt-test" style="flex:0 0 auto">Test connection</button>
+        <span id="gt-test-result" class="muted"></span>
+      </div>
+      <details class="muted small-print"><summary>Getting an InControl2 Client ID and Secret</summary>
+        <ol class="steps">
+          <li>Sign in at <b>incontrol2.peplink.com</b> with an account that can see the organization(s) with your guards' routers.</li>
+          <li>Top right: your name → <b>User Settings</b> (or <b>Account</b>) → <b>Client Application</b> / <b>API</b> → <b>New Client</b>.</li>
+          <li>Name it "TWG Alarm Portal", type <b>Client Credentials</b> (no redirect URL needed), and create it.</li>
+          <li>Copy the <b>Client ID</b> and <b>Client Secret</b> into the boxes above, tick <b>Track guards</b>, <b>Save</b>, then <b>Test connection</b>.</li>
+          <li>The routers need GPS turned on (in InControl2 or the router's own <b>Location</b> settings) and an InControl2 subscription.</li>
+        </ol></details>
+    </form>
+    <div class="card">
+      <div class="card-head"><h2>Tracked guards and vehicles</h2></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Router</th><th>Last position</th><th></th></tr></thead>
+        <tbody id="gt-trackers"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+    </div>
+    <div class="card manage-only">
+      <h2>Add a guard or vehicle</h2>
+      <p class="muted" style="margin-top:0">Pick the InControl2 organization, then the group, then the router in the guard's vehicle or kit.</p>
+      <div class="gt-pick">
+        <div class="field"><label for="gt-org">Organization</label><select id="gt-org"><option value="">Load organizations…</option></select></div>
+        <div class="field"><label for="gt-group">Group</label><select id="gt-group" disabled><option value="">Pick an organization first</option></select></div>
+        <div class="field"><label for="gt-filter">Search routers</label><input id="gt-filter" type="search" placeholder="Name or serial" disabled></div>
+      </div>
+      <div id="gt-devices"></div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
-{% block scripts %}<script type="module" src="{{ asset('js/sites.js') }}"></script>{% endblock %}
+{% block scripts %}<script type="module" src="{{ asset('js/sites.js') }}"></script>
+{% if user.is_admin %}<script type="module" src="{{ asset('js/tracking.js') }}"></script>{% endif %}{% endblock %}

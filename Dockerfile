@@ -18,7 +18,7 @@ COPY app ./app
 
 ENV TILE_CACHE_DIR=/app/tile-cache \
     MEDIA_CACHE_DIR=/app/media-cache
-RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/tile-cache /app/media-cache && chown -R appuser:appuser /app
+RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/tile-cache /app/media-cache /app/site-models && chown -R appuser:appuser /app
 USER appuser
 
 EXPOSE 8080

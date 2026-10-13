@@ -58,6 +58,11 @@ def alarm_dict(a: Alarm) -> dict:
     }
 
 
+def _model(s: Site) -> dict | None:
+    from app.routers.site_models import public
+    return public(s.model)
+
+
 def site_dict(s: Site, open_counts: dict | None = None) -> dict:
     """open_counts: {priority: n} of unacknowledged alarms. Never includes credentials."""
     open_counts = open_counts or {}
@@ -90,6 +95,7 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "nx_version": s.nx_version,
         "camera_count": s.camera_count,
         "camera_places": s.camera_places or {},
+        "model": _model(s),
         "open_critical": critical,
         "open_alarm": alarm,
         "open_warning": warning,

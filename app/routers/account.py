@@ -8,6 +8,7 @@
 - POST /api/account/passkeys/options, POST /api/account/passkeys        add a passkey
 - POST /api/account/passkeys/{id}/test/options|test, DELETE /api/account/passkeys/{id}
 - DELETE /api/account/sessions/{sid}, POST /api/account/sign-out-everywhere
+- GET|PUT /api/account/texts, POST /api/account/texts/opt-in|test   your own alarm texts (number, which, when, sites)
 Admins (their company, or TWG support):
 - GET  /api/users/{id}/security                   2FA state and signed-in browsers
 - POST /api/users/{id}/reset-2fa                  clears the authenticator app and recovery codes (optionally passkeys)
@@ -68,6 +69,109 @@ async def account(request: Request, user: User = Depends(current_user), db: Asyn
         "sessions": [sessions.session_dict(r, request.session.get("sid")) for r in rows],
         "password_hint": passwords.hint(),
     }
+
+
+# ---------------------------------------------------------------- your own alarm texts
+OPT_IN_PER_DAY = 5             # opt-in requests one person can trigger in 24 h (numbers typed here get texted)
+
+
+async def _texts(db: AsyncSession, user: User) -> dict:
+    from app.models import Site, SmsLog
+    last = await db.scalar(select(SmsLog).where(SmsLog.user_id == user.id).order_by(SmsLog.id.desc()).limit(1))
+    sites = (await db.scalars(select(Site).where(Site.tenant_id == user.tenant_id, Site.archived_at.is_(None))
+                              .order_by(Site.name))).all()
+    return {"ready": platform_settings.current().sms_ready, "phone": user.phone, "sms_level": user.sms_level,
+            "sms_when": user.sms_when, "sms_sites": user.sms_sites, "sms_consent": user.sms_consent,
+            "sms_consent_at": _iso(user.sms_consent_at), "sms_optin_sent_at": _iso(user.sms_optin_sent_at),
+            "last_text": {"outcome": last.outcome, "ts": _iso(last.ts), "error": last.error, "purpose": last.purpose} if last else None,
+            "sites": [{"id": x.id, "name": x.name} for x in sites]}
+
+
+async def _opt_in_budget(db: AsyncSession, user: User) -> None:
+    from datetime import timedelta
+    from sqlalchemy import func
+    from app.models import SmsLog
+    since = sessions.utcnow() - timedelta(days=1)
+    n = await db.scalar(select(func.count()).select_from(SmsLog).where(SmsLog.user_id == user.id, SmsLog.purpose == "optin",
+                                                                        SmsLog.ts >= since))
+    if (n or 0) >= OPT_IN_PER_DAY:
+        raise HTTPException(429, f"That's {OPT_IN_PER_DAY} opt-in texts in a day. Try again tomorrow, or ask an admin.")
+
+
+@router.get("/api/account/texts")
+async def my_texts(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    return await _texts(db, user)
+
+
+class MyTextsIn(BaseModel):
+    phone: str = Field(default="", max_length=30)
+    sms_level: str = Field(pattern="^(off|critical|alarm)$")
+    sms_when: str = Field(default="raised", pattern="^(raised|confirmed|both)$")
+    sms_sites: list[int] | None = Field(default=None, max_length=1000)       # None = every site
+
+
+@router.put("/api/account/texts")
+async def set_my_texts(body: MyTextsIn, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """Your own number and which alarms text you. A new number gets the "reply YES" request first, like on the Users page."""
+    from app.routers.api import _ask_consent, _phone, _site_choice
+    me = await db.get(User, user.id)
+    phone = _phone(body.phone)
+    level = body.sms_level if phone else "off"
+    sites = await _site_choice(db, me.tenant_id, body.sms_sites)
+    changed = [k for k, v in (("phone", phone), ("sms_level", level), ("sms_when", body.sms_when), ("sms_sites", sites))
+               if getattr(me, k) != v]
+    if not changed:
+        return await _texts(db, me)
+    if "phone" in changed and phone:
+        await _opt_in_budget(db, me)
+    me.phone, me.sms_level, me.sms_when, me.sms_sites = phone, level, body.sms_when, sites
+    if "phone" in changed:                        # consent belongs to a number: a new one is asked again
+        me.sms_consent, me.sms_consent_at, me.sms_optin_sent_at = "none", None, None
+    ask = bool({"phone", "sms_level"} & set(changed)) and _ask_consent(me)
+    audit(db, me.tenant_id, "user.updated", user_id=me.id, ip=client_ip(request), target=me.email, fields=changed, self_service=True)
+    await db.commit()
+    if ask:
+        from app import sms
+        await sms.request_opt_in(me.id, me.label)
+    return await _texts(db, me)
+
+
+@router.post("/api/account/texts/opt-in")
+async def my_opt_in(request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    from datetime import datetime, timedelta, timezone
+    from app import sms
+    me = await db.get(User, user.id)
+    if not me.phone:
+        raise HTTPException(400, "Add your mobile number first")
+    if not platform_settings.current().sms_ready:
+        raise HTTPException(400, "Text messages aren't switched on for this portal yet")
+    if me.sms_consent == "yes":
+        raise HTTPException(400, "You've already replied YES")
+    if me.sms_consent == "stopped":
+        raise HTTPException(400, "You replied STOP, so carriers block texts to you. Text START or YES to the portal's number to sign up again.")
+    sent = sessions.aware(me.sms_optin_sent_at)
+    if sent is not None and sent > datetime.now(timezone.utc) - timedelta(minutes=1):
+        raise HTTPException(429, "An opt-in request went less than a minute ago")
+    await _opt_in_budget(db, me)
+    if me.sms_level == "off":
+        me.sms_level = "alarm"
+    me.sms_consent = "pending"
+    audit(db, me.tenant_id, "sms.opt_in_requested", user_id=me.id, ip=client_ip(request), target=me.email, self_service=True)
+    await db.commit()
+    await sms.request_opt_in(me.id, me.label)
+    return await _texts(db, me)
+
+
+@router.post("/api/account/texts/test")
+async def my_test_text(request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    from app import sms
+    me = await db.get(User, user.id)
+    if not me.phone or me.sms_consent != "yes":
+        raise HTTPException(400, "Reply YES to the opt-in text first")
+    audit(db, me.tenant_id, "user.test_text", user_id=me.id, ip=client_ip(request), target=me.email, self_service=True)
+    await db.commit()
+    outcome, error = await sms.send_test(me.phone, me.label, user=me)
+    return {"outcome": outcome, "error": error}
 
 
 # ---------------------------------------------------------------- password
@@ -255,7 +359,7 @@ async def sign_out_everywhere(request: Request, user: User = Depends(current_use
 
 # ---------------------------------------------------------------- admins: a company's users
 async def _target(db: AsyncSession, scope: Scope, user_id: int, *, write: bool = False) -> User:
-    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
     if target is None:
         raise HTTPException(404)
     if write:

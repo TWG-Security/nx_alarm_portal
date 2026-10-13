@@ -89,6 +89,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions/x", None),
         ("POST", f"/api/users/{world['b_op'].id}/test-text", None),
         ("PUT", f"/api/users/{world['b_op'].id}", {"phone": "5705551234", "sms_level": "alarm"}),
+        ("DELETE", f"/api/users/{world['b_op'].id}", None),
         ("GET", f"/media/alarms/{ab.id}/snapshot.jpg", None), ("GET", f"/media/alarms/{ab.id}/live.jpg", None),
         ("GET", f"/media/alarms/{ab.id}/live.webm", None), ("GET", f"/api/alarms/{ab.id}/clip", None),
         ("GET", f"/api/alarms/{ab.id}/objects", None), ("GET", f"/api/alarms/{ab.id}/export", None),
@@ -98,6 +99,10 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("PUT", f"/api/sites/{sb.id}/cameras/cam-b", {"lat": 40, "lng": -75, "heading": 90}),
         ("DELETE", f"/api/sites/{sb.id}/cameras/cam-b", None),
         ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.jpg", None),
+        ("GET", f"/api/sites/{sb.id}/model", None), ("POST", f"/api/sites/{sb.id}/model/uploads", {"name": "a.zip", "size": 9}),
+        ("PUT", f"/api/sites/{sb.id}/model/placement", {"lat": 40, "lng": -75, "height": 0, "heading": 0, "scale": 1}),
+        ("POST", f"/api/sites/{sb.id}/model/rebuild", {"up": "y"}), ("DELETE", f"/api/sites/{sb.id}/model", None),
+        ("GET", f"/media/sites/{sb.id}/model/1/tiles/tileset.json", None),
         ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.webm", None),
     ]:
         r = await client.request(method, path, json=body)

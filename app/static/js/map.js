@@ -1,6 +1,8 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
 import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer } from "./drawer.js";
+import { modelPanel } from "./model_panel.js";
+import { mountGuards } from "./guards.js";
 
 const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
@@ -12,6 +14,8 @@ const SEVERITY = { alarm: 0, warn: 1, offline: 2, ok: 3 };
 const DEFAULT_CENTER = [39.8, -98.6];
 const lmap = createMap(document.getElementById("map"), { center: DEFAULT_CENTER, zoom: 4 });
 
+// Guards / patrol vehicles (Peplink GPS): markers + trails on this map, a list in the side panel.
+const guards = mountGuards(lmap, document.getElementById("guard-list"), { onChange: () => globe?.update() });
 const stateOf = (site) => { const c = openCounts(site.id); return { c, marker: markerState(site, c) }; };
 
 // ---------------------------------------------------------------- left: stats, sites, site detail
@@ -145,6 +149,7 @@ function renderAll() {
   renderStats(); renderSites(); renderDetail(); renderFeed();
   for (const s of sites.values()) upsertMarker(s);
   globe?.update(); plan?.update(); renderHud();
+  if (globe) paintModelBtn();
 }
 
 // Picking a site (list or pin) goes straight to its top-down view with the cameras (the user's ask,
@@ -152,6 +157,7 @@ function renderAll() {
 function select(id, pan = true) {
   selectedId = id;
   renderAll();
+  models.siteChanged();
   const s = sites.get(id);
   if (!pan || s?.lat == null) return;
   if (globe) globe.flyTo(s);
@@ -176,6 +182,8 @@ const globePins = () => [...sites.values()].map((s) => {
   return { id: s.id, name: s.name, lat: s.lat, lng: s.lng, state: marker, count: c[1] + c[2] + c[3], disarmed: s.arming?.armed === false };
 });
 const camAlarm = (siteId, deviceId) => [...openAlarms.values()].find((a) => a.site_id === siteId && a.device_id === deviceId && inView(a));
+const globeModels = () => [...sites.values()].filter((s) => s.model?.ready).map((s) =>
+  ({ siteId: s.id, url: s.model.ready.url, anchor: s.model.ready.anchor, placement: s.model.ready.placement }));
 const globeCams = () => [...sites.values()].flatMap((s) => Object.entries(s.camera_places || {}).map(([deviceId, p]) =>
   ({ siteId: s.id, deviceId, ...p, alarm: !!camAlarm(s.id, deviceId) })));
 
@@ -214,7 +222,7 @@ async function openGlobeView(site) {
   try {
     const { openGlobe } = await import("./globe.js");
     globe = await openGlobe(globeEl, {
-      pins: globePins, cameras: globeCams,
+      pins: globePins, cameras: globeCams, models: globeModels, guards: () => guards.list(),
       onPick: (id) => select(id),
       onPickCamera: pickCamera,
       onView: renderCoords,
@@ -227,6 +235,8 @@ async function openGlobeView(site) {
     window.__globe = globe.viewer;   // for tools/e2e/globe.py and debugging
     globeMsg.hidden = true;
     hud.hidden = false; camsBtn.hidden = !CFG.isAdmin;
+    $id("globe-model").hidden = !CFG.isAdmin;
+    globe.showModels(modelsOn); paintModelBtn();
     $id("globe-close").textContent = "2D map";
     $id("imagery-3d").textContent = globe.hasBuildings ? "3D" : "Satellite";
     showImagery("sat");
@@ -243,7 +253,8 @@ async function openGlobeView(site) {
 }
 
 function closeGlobeView() {
-  closeCamPanel(); closePlacing();
+  closeCamPanel(); closePlacing(); models.hide();
+  $id("globe-model").hidden = true; $id("globe-model-show").hidden = true;
   try { globe?.destroy(); } catch (err) { console.error(err); }
   globe = null; delete window.__globe; delete window.__globeStats;
   clearInterval(hudClock); hudClock = null;
@@ -285,6 +296,25 @@ function closePlanView() {
   plan = null; delete window.__plan;
   mapCanvas.classList.remove("plan-open");
   globeBar.hidden = true; $id("plan-cones").hidden = true;
+}
+
+// ---- site 3D models (globe.js draws them; model_panel.js uploads and places them, admins)
+const models = modelPanel({
+  panel: $id("model-panel"), button: $id("globe-model"), site: () => sites.get(selectedId) || null, globe: () => globe,
+  onSite: (data) => { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); },
+});
+const MODELS_KEY = "twg-3d-models";
+let modelsOn = (() => { try { return localStorage.getItem(MODELS_KEY) !== "0"; } catch { return true; } })();
+function paintModelBtn() {
+  const b = $id("globe-model-show");
+  b.hidden = !globe || ![...sites.values()].some((s) => s.model?.ready);
+  b.textContent = modelsOn ? "Model: on" : "Model: off";
+  b.setAttribute("aria-pressed", String(modelsOn));
+}
+function toggleModels() {
+  modelsOn = !modelsOn;
+  try { localStorage.setItem(MODELS_KEY, modelsOn ? "1" : "0"); } catch { /* applied, just not remembered */ }
+  globe?.showModels(modelsOn); paintModelBtn();
 }
 
 // View cones on/off (top-down), remembered in this browser when storage allows; default on.
@@ -515,7 +545,9 @@ globeBar.addEventListener("click", (e) => {
   if (t.id === "globe-close") { if (plan) { closePlanView(); fitToSites(); } else closeGlobeView(); return; }
   if (t.id === "globe-recenter") return view()?.flyTo(sites.get(selectedId));
   if (t.id === "plan-cones") return toggleCones();
-  if (t.id === "globe-cams") return placingSite == null ? openPlacing() : closePlacing();
+  if (t.id === "globe-cams") { models.hide(); return placingSite == null ? openPlacing() : closePlacing(); }
+  if (t.id === "globe-model") { closePlacing(); return models.toggle(); }
+  if (t.id === "globe-model-show") return toggleModels();
   const kind = t.dataset.imagery;
   if (kind && view()) { view().setImagery(kind); showImagery(kind); }
 });
@@ -578,7 +610,7 @@ on("site.status", ({ site_id, status, detail }) => {
   const s = sites.get(site_id);
   if (s) { s.status = status; s.status_detail = detail || ""; if (status === "online") s.last_seen_at = new Date().toISOString(); renderAll(); }
 });
-on("site.updated", (s) => { sites.set(s.id, { ...sites.get(s.id), ...s }); renderAll(); });
+on("site.updated", (s) => { sites.set(s.id, { ...sites.get(s.id), ...s }); renderAll(); models.siteChanged(); });
 on("site.push", ({ site_id, push }) => { const s = sites.get(site_id); if (s) { s.push = push; renderDetail(); } });
 on("site.removed", (s) => { sites.delete(s.id); markers.get(s.id)?.remove(); markers.delete(s.id); renderAll(); });
 on("reconnect", () => loadSites().then(renderAll).catch(() => {}));

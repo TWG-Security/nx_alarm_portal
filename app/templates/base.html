@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="{{ asset('favicon.ico') }}" sizes="any">
+  <link rel="icon" type="image/png" href="{{ asset('img/icon-192.png') }}" sizes="192x192">
+  <link rel="apple-touch-icon" href="{{ asset('img/apple-touch-icon.png') }}">
   <meta name="csrf-token" content="{{ csrf_token }}">
   <title>{% block title %}Alarm Portal{% endblock %} · TWG Security</title>
   <script>try { var t = localStorage.getItem("twg-theme"); if (t) document.documentElement.dataset.theme = t; } catch (e) {}</script>
@@ -42,7 +45,9 @@
     <button id="theme-toggle" class="btn icon-btn" type="button" title="Toggle light/dark" aria-label="Toggle light or dark theme">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
     </button>
-    <a class="user-label{{ ' active' if page == 'account' }}" href="/account" title="Your account: password, two-step sign-in, passkeys, sessions">{{ user.label }}</a>
+    <a class="btn btn-sm account-btn{{ ' active' if page == 'account' }}" href="/account" title="My account: alarm texts to your phone, password, two-step sign-in, passkeys, where you're signed in" aria-label="My account ({{ user.label }})">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7"/></svg>
+      <span class="account-text">My account<small>{{ user.label }}</small></span></a>
     <form method="post" action="/logout">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button class="btn btn-sm" type="submit">Sign out</button>

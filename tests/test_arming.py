@@ -231,3 +231,23 @@ async def test_disarmed_alarms_listed_separately_and_not_ackable(client, session
     assert (await client.post(f"/api/alarms/{stored.id}/ack", json={"note": ""})).status_code == 409
     assert (await client.get("/api/summary")).json()["open_alarm"] == 0
     assert (await session.get(Site, site.id)).armed is True                 # column only moves via announce
+
+
+async def test_the_schedule_card_saves_on_its_own(client, session):
+    """Site form → arming schedule: its own Save stores only the schedule and time zone (the NX connection
+    isn't touched, so nothing reconnects), keeps the current state, and refuses what the editor flags."""
+    from tests.conftest import login, make_site, make_tenant_user
+    tenant, admin = await make_tenant_user(session)
+    site = await make_site(session, tenant)
+    await login(client, admin.email)
+    entries = [{"action": "disarm", "time": "07:00", "days": ["mon", "tue", "wed", "thu", "fri"]},
+               {"action": "arm", "time": "18:00", "days": ["mon", "tue", "wed", "thu", "fri"]}]
+    r = await client.put(f"/api/sites/{site.id}/arm-schedule", json={"timezone": "America/New_York", "arm_schedule": entries})
+    assert r.status_code == 200, r.text
+    assert r.json()["arm_schedule"] == entries and r.json()["timezone"] == "America/New_York"
+    bad = [{"action": "arm", "time": "07:00", "days": ["mon"]}, {"action": "disarm", "time": "07:00", "days": ["mon"]}]
+    r = await client.put(f"/api/sites/{site.id}/arm-schedule", json={"timezone": "", "arm_schedule": bad})
+    assert r.status_code == 400 and "both arm and disarm" in r.text
+    r = await client.put(f"/api/sites/{site.id}/arm-schedule", json={"timezone": "", "arm_schedule": [{"action": "arm", "time": "07:00", "days": []}]})
+    assert r.status_code == 400 and "pick at least one day" in r.text
+    assert (await client.put(f"/api/sites/{site.id}/arm-schedule", json={"timezone": "Mars/Base", "arm_schedule": []})).status_code == 400

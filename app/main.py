@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exception_handlers import http_exception_handler
-from fastapi.responses import JSONResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -15,7 +15,7 @@ from app import platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, links, pages, platform, sso, stream, tenants, tiles
+from app.routers import account, api, auth, guards, links, pages, platform, site_models, sso, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -61,7 +61,11 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(security_guard.run_sweeper(), name="security-sweeper"))
         from app.routers.tiles import run_prefetcher
         tasks.append(asyncio.create_task(run_prefetcher(), name="imagery-prefetch"))
+        await site_models.resume()
+        from app.services import trackers
+        tasks.append(asyncio.create_task(trackers.run(), name="guard-trackers"))
     yield
+    await site_models.shutdown()
     for t in tasks:
         t.cancel()
     from app import sms
@@ -75,6 +79,17 @@ def create_app() -> FastAPI:
     app.add_middleware(BanGate)             # added first = runs inside SessionMiddleware
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="twg_portal",
                        max_age=settings.session_max_age_s, same_site="lax", https_only=settings.cookie_secure)
+
+    @app.middleware("http")
+    async def https_only(request: Request, call_next):
+        # The Cloudflare Tunnel also answers plain http:// (2026-10-13: a phone signing in that way never kept the
+        # secure session cookie, so every sign-in failed the CSRF check, and passwords would cross the internet
+        # unencrypted). Cloudflare says how the visitor connected in CF-Visitor: send http visitors to https first.
+        visitor = request.headers.get("cf-visitor", "").replace(" ", "")
+        if '"scheme":"http"' in visitor:
+            url = request.url.replace(scheme="https", port=None)
+            return RedirectResponse(str(url), 308 if request.method not in ("GET", "HEAD") else 301)
+        return await call_next(request)
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next):
@@ -102,6 +117,11 @@ def create_app() -> FastAPI:
         response.status_code = exc.status_code
         return response
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        # Browsers ask for /favicon.ico on their own (pages also link it): the TWG eye.
+        return FileResponse("app/static/favicon.ico", media_type="image/x-icon", headers={"Cache-Control": "public, max-age=86400"})
+
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
         return PlainTextResponse("ok")
@@ -118,6 +138,8 @@ def create_app() -> FastAPI:
     app.include_router(sso.router)
     app.include_router(tiles.router)
     app.include_router(links.router)
+    app.include_router(site_models.router)
+    app.include_router(guards.router)
     return app
 
 

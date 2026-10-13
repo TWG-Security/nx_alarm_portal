@@ -12,6 +12,7 @@
       </div>
     </div>
     <div class="map-side-section" id="site-detail" hidden></div>
+    <div class="map-side-section" id="guard-list" hidden></div>
     <div class="map-side-section" style="padding-bottom:6px"><h3>Sites</h3></div>
     <ul class="site-list" id="site-list"><li class="empty">Loading…</li></ul>
   </aside>
@@ -31,6 +32,7 @@
     <div class="cam-panel" id="cam-panel" hidden></div>
     <div class="cam-panel cam-hover" id="cam-hover" hidden aria-hidden="true"></div>
     <div class="cam-place" id="cam-place" hidden></div>
+    <div class="cam-place model-panel" id="model-panel" hidden></div>
     <div class="globe-bar" id="globe-bar" hidden>
       <button class="btn btn-sm" type="button" id="globe-close" title="Back to the flat map">2D map</button>
       <div class="seg" role="group" aria-label="Imagery">
@@ -40,6 +42,8 @@
       <button class="btn btn-sm" type="button" id="globe-recenter" title="Fly back to the selected site">Re-center</button>
       <button class="btn btn-sm" type="button" id="plan-cones" hidden aria-pressed="true" title="Show or hide the cameras' view cones (a camera with an open alarm always shows its cone)">Cones: on</button>
       <button class="btn btn-sm" type="button" id="globe-cams" hidden title="Put this site's cameras on the map">Place cameras</button>
+      <button class="btn btn-sm" type="button" id="globe-model" hidden title="Upload and place a 3D model of this site (drone scan, CAD, ...)">Site model</button>
+      <button class="btn btn-sm" type="button" id="globe-model-show" hidden aria-pressed="true" title="Show or hide site 3D models">Model: on</button>
     </div>
     <div class="globe-msg" id="globe-msg" hidden></div>
   </section>

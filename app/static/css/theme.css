@@ -456,6 +456,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
   .nav { order: 3; flex-basis: 100%; padding-bottom: 6px; }
 }
 @media (max-width: 560px) {
+  /* Phones: the action row wraps instead of pushing the page wider than the screen. */
+  .topbar-actions { flex-shrink: 1; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .scope-switch { max-width: 44vw; }
   .alarm { grid-template-columns: 4px 1fr; }
   .alarm .right { grid-column: 2; flex-direction: row; align-items: center; justify-content: flex-start; }
   .kv { grid-template-columns: 1fr; }
@@ -700,3 +703,90 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .terms-page h2 { font-size: 16px; margin: 20px 0 6px; color: var(--text); }
 .terms-page p, .terms-page li { line-height: 1.55; }
 .login-terms { text-align: center; margin-top: 12px; font-size: 12px; }
+
+/* ---- 3D view: site model panel (model_panel.js) */
+.model-panel .mp-sec { padding: 8px 10px; border-bottom: 1px solid rgba(255, 255, 255, .08); display: grid; gap: 6px; }
+.model-panel .mp-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-panel .mp-line { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-panel .mp-hint { color: #cfcfcf; font-size: 12px; line-height: 1.45; }
+.model-panel .mp-hint code { font-size: 11px; }
+.model-panel .mp-nums { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: center; }
+.model-panel .mp-nums label { display: flex; align-items: center; gap: 6px; }
+.model-panel .mp-nums input { width: 84px; height: 24px; padding: 0 4px; background: #1a1a1a; color: #fff; border: 1px solid rgba(255, 255, 255, .3); border-radius: 4px; font: 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+.model-panel .mp-nudge { display: flex; gap: 4px; }
+.model-panel .mp-nudge button { min-width: 32px; }
+.model-panel .mp-save { color: #E08A30; font-size: 12px; min-height: 16px; }
+.model-panel .mp-bar { height: 8px; background: rgba(255, 255, 255, .12); border-radius: 4px; overflow: hidden; }
+.model-panel .mp-bar i { display: block; height: 100%; background: #E08A30; transition: width .3s; }
+.model-panel .mp-drop { display: block; padding: 18px 10px; text-align: center; border: 2px dashed rgba(224, 138, 48, .6); border-radius: 6px; cursor: pointer; }
+.model-panel .mp-drop.over, .model-panel .mp-drop:hover { background: rgba(224, 138, 48, .12); }
+.model-panel .mp-error { color: #ffb4a8; }
+.model-panel .mp-adv { font-size: 12px; color: #cfcfcf; }
+.model-panel .mp-adv label { display: block; margin: 4px 0; }
+.model-panel button.danger { border-color: #C0392B; color: #ffb4a8; }
+
+/* ---- guards / patrol vehicles (guards.js) */
+.guard-icon { background: none; border: 0; }
+.guard { position: relative; width: 18px; height: 18px; transform: translate(-50%, -50%); white-space: nowrap; pointer-events: auto; }
+.guard-dot { position: relative; width: 18px; height: 18px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 1px #1A1A1A, 0 2px 6px rgba(0,0,0,.5); background: var(--guard-c, #8a8a8a); flex: 0 0 auto; }
+.guard-arrow { position: absolute; inset: -3px; pointer-events: none; }   /* turned to the heading around the dot's centre */
+.guard-arrow::before { content: ""; position: absolute; left: 50%; top: -12px; margin-left: -6px; border-left: 6px solid transparent; border-right: 6px solid transparent;
+  border-bottom: 10px solid #fff; filter: drop-shadow(0 0 1px #1A1A1A) drop-shadow(0 0 1px #1A1A1A); }
+.guard-label { position: absolute; left: 22px; top: -4px; font: 600 12px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #fff; background: rgba(13,13,13,.82); padding: 3px 6px; border-radius: 4px; }
+.guard-label small { display: block; font-weight: 400; color: #cfcfcf; }
+.guard--live { --guard-c: #2FA36B; }
+.guard--late { --guard-c: #D9A21B; }
+.guard--stale, .guard--none { --guard-c: #8a8a8a; }
+.guard--stale .guard-label, .guard--none .guard-label { color: #cfcfcf; }
+.guard--err .guard-dot { box-shadow: 0 0 0 2px #C0392B, 0 2px 6px rgba(0,0,0,.5); }
+.guard-list { list-style: none; margin: 0; padding: 0; }
+.guard-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 4px; border-radius: 6px; cursor: pointer; }
+.guard-list li:hover, .guard-list li.following { background: var(--hover, rgba(127,127,127,.12)); }
+.guard-list li.following b::after { content: " · following"; font-weight: 400; color: #E08A30; }
+.guard-list .small-print { flex-basis: 100%; padding-left: 20px; margin-top: -2px; }
+.guard-pip { width: 12px; height: 12px; border-radius: 50%; background: var(--guard-c, #8a8a8a); flex: 0 0 auto; }
+
+/* ---- top bar: My account (always visible; icon only on narrow screens) */
+.account-btn { display: inline-flex; align-items: center; gap: 6px; height: auto; min-height: 32px; padding: 3px 10px; text-decoration: none; }
+.account-btn svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.account-text { display: flex; flex-direction: column; line-height: 1.1; text-align: left; }
+.account-text small { font-weight: 400; font-size: 11px; color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-btn.active { border-color: var(--orange, #E08A30); }
+@media (max-width: 900px) { .account-text { display: none; } .account-btn { padding: 6px 8px; } }
+
+/* ---- Account page: alarm texts card */
+.texts-card .texts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 14px; }
+.texts-card .ed-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+
+/* ---- site form: arming schedule (site_form.js) */
+.sched-row .seg { flex: 0 0 auto; }
+.sched-row .seg button { min-width: 64px; }
+.sched-row[data-action="arm"] .seg button.active { background: var(--ok); border-color: var(--ok); color: #fff; }
+.sched-row[data-action="disarm"] .seg button.active { background: #6b6b6b; border-color: #6b6b6b; color: #fff; }
+.sched-row .sched-time { width: auto; min-width: 112px; }
+.sched-row.bad { outline: 2px solid var(--red, #C0392B); }
+.sched-quick { display: inline-flex; gap: 10px; }
+.sched-quick .link-btn { background: none; border: 0; padding: 0; color: var(--orange, #E08A30); cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; }
+.sched-del { margin-left: auto; }
+.sched-week { margin: 4px 0 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
+.sched-week-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.sched-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
+.sched-legend i.armed, .sched-bar .armed { background: var(--ok); }
+.sched-legend i.disarmed, .sched-bar .disarmed { background: #6b6b6b; }
+.sched-day { display: grid; grid-template-columns: 40px 1fr; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; }
+.sched-bar { position: relative; height: 14px; border-radius: 3px; overflow: hidden; background: var(--surface); }
+.sched-bar span { position: absolute; top: 0; bottom: 0; }
+.sched-ticks > div { position: relative; height: 14px; font-size: 10px; color: var(--text-muted); }
+.sched-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.sched-ticks span:first-child { transform: none; }
+.sched-save { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.sched-save.dirty { position: sticky; bottom: 0; background: var(--surface); padding-bottom: 10px; z-index: 2; }
+.sched-save .unsaved { color: var(--orange, #E08A30); font-weight: 600; }
+.gt-pick { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 0 14px; }
+.guard-refresh { margin-left: auto; border: 1px solid var(--border); background: var(--surface); color: var(--text-muted); border-radius: 5px; width: 26px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1; }
+.guard-refresh:hover { color: var(--text); border-color: var(--orange, #E08A30); }
+.guard-refresh.spinning { animation: guard-spin .8s linear infinite; }
+@keyframes guard-spin { to { transform: rotate(360deg); } }
+.guard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.guard-trail { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); margin: 0; }
+.guard-trail select { width: auto; height: 26px; padding: 0 6px; font-size: 12px; }

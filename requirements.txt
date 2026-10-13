@@ -16,3 +16,6 @@ reportlab>=4.2          # incident report PDFs (pulls in Pillow, also used to dr
 pyotp>=2.9              # two-factor codes (TOTP)
 qrcode>=7.4             # QR code for authenticator apps
 webauthn>=2.0           # passkeys (py_webauthn)
+trimesh>=4.4            # site 3D models: reads OBJ/glTF/PLY/STL, writes GLB (app/services/model_build.py)
+numpy>=1.26             # (trimesh)
+pyproj>=3.6             # site 3D models: Terra metadata.xml coordinate systems (UTM etc.) -> lat/lng

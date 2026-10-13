@@ -276,6 +276,27 @@ async def list_site_cameras(site_id: int, scope: Scope = Depends(get_scope), db:
                     "in_nx": d in names, "place": places.get(d)} for d in ids), key=lambda c: c["name"].lower())
 
 
+class ArmScheduleIn(BaseModel):
+    timezone: str = Field(default="", max_length=64)
+    arm_schedule: list[dict] = Field(default_factory=list, max_length=200)
+
+
+@router.put("/sites/{site_id}/arm-schedule")
+async def put_arm_schedule(site_id: int, body: ArmScheduleIn, request: Request, user: User = Depends(require_admin),
+                           scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Save only the arming schedule and its time zone (the schedule card's own Save button): the NX
+    connection is never touched, so nothing reconnects."""
+    site = await _get_site(db, scope, site_id, write=True)
+    changed = _apply_arming_settings(site, body, user)
+    if changed:
+        audit(db, site.tenant_id, "site.updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    if changed:
+        bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
 @router.put("/sites/{site_id}/cameras/{device_id}")
 async def place_camera(site_id: int, device_id: str, body: CameraPlaceIn, request: Request,
                        user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
@@ -661,7 +682,7 @@ async def list_users(user: User = Depends(require_admin), scope: Scope = Depends
     from app import sessions
     from app.models import WebAuthnCredential
     tid = _one_company(scope).id
-    rows = (await db.scalars(select(User).where(User.tenant_id == tid).order_by(User.email))).all()
+    rows = (await db.scalars(select(User).where(User.tenant_id == tid, User.deleted_at.is_(None)).order_by(User.email))).all()
     ids = [u.id for u in rows]
     keys = dict((await db.execute(select(WebAuthnCredential.user_id, func.count()).where(WebAuthnCredential.user_id.in_(ids))
                                   .group_by(WebAuthnCredential.user_id))).all()) if ids else {}
@@ -724,7 +745,7 @@ async def reinvite_user(user_id: int, request: Request, user: User = Depends(req
                         scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     """A fresh setup link for someone who hasn't set up their account (the old link stops working)."""
     from app import invites
-    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
     if target is None:
         raise HTTPException(404)
     scope.require_write(target.tenant_id)
@@ -739,7 +760,7 @@ async def reinvite_user(user_id: int, request: Request, user: User = Depends(req
 @router.put("/users/{user_id}")
 async def update_user(user_id: int, body: UserUpdate, request: Request, user: User = Depends(require_admin),
                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
-    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
     if target is None:
         raise HTTPException(404)
     scope.require_write(target.tenant_id)
@@ -786,7 +807,7 @@ async def send_opt_in(user_id: int, request: Request, user: User = Depends(requi
                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     """(Re)send the "Reply YES to get alarm texts" request."""
     from app import platform_settings, sms
-    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
     if target is None:
         raise HTTPException(404)
     scope.require_write(target.tenant_id)
@@ -815,7 +836,7 @@ async def test_text(user_id: int, request: Request, user: User = Depends(require
                     scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     """Text this person a test message (checks the number before an alarm needs it)."""
     from app import sms
-    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id)))
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
     if target is None:
         raise HTTPException(404)
     scope.require_write(target.tenant_id)
@@ -827,6 +848,37 @@ async def test_text(user_id: int, request: Request, user: User = Depends(require
     await db.commit()
     outcome, error = await sms.send_test(target.phone, user.label, user=target)
     return {"outcome": outcome, "error": error}
+
+
+@router.delete("/users/{user_id}")
+async def delete_user(user_id: int, request: Request, user: User = Depends(require_admin),
+                      scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Delete someone: they vanish from Users and groups, are signed out everywhere, lose their password,
+    two-step and links, and get no more texts. Their email is freed so they can be added again. The row
+    stays (deleted_at) so alarms they acknowledged and the audit log still show their name."""
+    from app import sessions
+    from app.models import MfaRecoveryCode, UserToken, WebAuthnCredential
+    target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
+    if target is None:
+        raise HTTPException(404)
+    scope.require_write(target.tenant_id)
+    if target.id == user.id:
+        raise HTTPException(400, "You can't delete your own account")
+    if target.is_admin and target.is_active and not await db.scalar(select(func.count()).select_from(User).where(
+            User.tenant_id == target.tenant_id, User.id != target.id, User.role == "admin",
+            User.is_active.is_(True), User.deleted_at.is_(None))):
+        raise HTTPException(400, "They're the company's only admin. Make someone else an admin first.")
+    email, name = target.email, target.label
+    await sessions.revoke_all(db, target, "account deleted")
+    for model in (MfaRecoveryCode, UserToken, WebAuthnCredential, UserGroupMember):
+        await db.execute(model.__table__.delete().where(model.user_id == target.id))
+    target.deleted_at, target.is_active = sessions.utcnow(), False
+    target.email, target.display_name = f"deleted-{target.id}@deleted.invalid", name[:200]
+    target.password_hash, target.totp_secret_enc, target.totp_enabled = "!deleted", "", False
+    target.phone, target.sms_level, target.sms_sites, target.sms_consent = "", "off", None, "none"
+    audit(db, target.tenant_id, "user.deleted", user_id=user.id, ip=client_ip(request), target=email, name=name)
+    await db.commit()
+    return {"deleted": target.id}
 
 
 # -------------------------------------------------------------------------- groups
@@ -861,7 +913,7 @@ async def _save_group(db: AsyncSession, tenant: Tenant, group: UserGroup, body: 
     except IntegrityError as exc:
         await db.rollback()
         raise HTTPException(409, f"A group named '{body.name}' already exists") from exc
-    valid = set((await db.scalars(select(User.id).where(User.tenant_id == tenant.id,
+    valid = set((await db.scalars(select(User.id).where(User.tenant_id == tenant.id, User.deleted_at.is_(None),
                                                         User.id.in_(body.member_ids or [0])))).all())
     old = set((await db.scalars(select(UserGroupMember.user_id).where(UserGroupMember.group_id == group.id))).all())
     for uid in old - valid:
