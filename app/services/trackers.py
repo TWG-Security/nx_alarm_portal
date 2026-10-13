@@ -3,7 +3,8 @@ moves to browsers (bus event "tracker.moved").
 
 Alarm safety: this is one background task with timeouts on every call; it never holds a DB connection while
 waiting on InControl2 (fetch first, then one short write), and a failing or slow InControl2 only marks the
-trackers stale. Positions come about every 1-2 minutes from IC2, so polling faster than POLL_MIN_S is pointless.
+trackers stale. One call per tracker per round (the per-device location is live; IC2's org-wide location is a
+stale cache, so it's only used to list routers).
 """
 from __future__ import annotations
 
@@ -17,7 +18,7 @@ from sqlalchemy import delete, select
 
 from app import peplink
 from app.db import sessionmaker
-from app.models import PlatformSettings, Tracker, TrackerPoint
+from app.models import Tracker, TrackerPoint, TrackerSource
 from app.security import decrypt
 from app.services.bus import bus
 
@@ -28,10 +29,8 @@ CONCURRENCY = 4
 TRAIL_KEEP_DAYS = 7
 MIN_MOVE_M = 3.0             # a new trail point when it moved this far...
 POINT_EVERY_S = 300          # ...or this long since the last one (shows it's parked, not lost)
-ORG_FALLBACK_S = 3600        # after an org-wide call fails, ask per device for this long
 
-_client: tuple[tuple[str, str], peplink.Client] | None = None
-_per_device_orgs: dict[str, float] = {}         # org id -> until (monotonic): use per-device calls
+_clients: dict[int, tuple[tuple[str, str], peplink.Client]] = {}     # source id -> (credentials, client)
 _last_prune: float | None = None
 transport = None                                # tests: an httpx transport for the IC2 client
 _wake: asyncio.Event | None = None
@@ -68,62 +67,51 @@ def tracker_dict(t: Tracker) -> dict:
             "error": t.error, "serial": t.serial, "device_name": t.device_name}
 
 
-def client_for(row: PlatformSettings) -> peplink.Client | None:
-    global _client
-    if not (row.peplink_client_id and row.peplink_secret_enc):
+def client_for(src: TrackerSource) -> peplink.Client | None:
+    """The IC2 client for a company's credentials (kept between rounds for its access token)."""
+    if not (src.client_id and src.secret_enc):
         return None
-    key = (row.peplink_client_id, row.peplink_secret_enc)
-    if _client is None or _client[0] != key:
-        if _client is not None:
-            asyncio.create_task(_client[1].close())
-        _client = (key, peplink.Client(row.peplink_client_id, decrypt(row.peplink_secret_enc), transport=transport))
-    return _client[1]
+    key = (src.client_id, src.secret_enc)
+    old = _clients.get(src.id)
+    if old is None or old[0] != key:
+        if old is not None:
+            asyncio.create_task(old[1].close())
+        _clients[src.id] = (key, peplink.Client(src.client_id, decrypt(src.secret_enc), transport=transport))
+    return _clients[src.id][1]
 
 
-async def _org_points(client: peplink.Client, org: str) -> dict[int, list] | None:
-    """{device id: points} for a whole organization in one call, or None to fall back to per-device calls."""
-    if _per_device_orgs.get(org, 0) > time.monotonic():
-        return None
-    try:
-        return {int(d["id"]): d["points"] for d in await client.org_locations(org) if d.get("id") is not None}
-    except peplink.PeplinkError as e:
-        log.info("IC2 org %s: org-wide locations unavailable (%s); asking per device", org, e)
-        _per_device_orgs[org] = time.monotonic() + ORG_FALLBACK_S
-        return None
-
-
-async def _fetch(client: peplink.Client, t: dict, org_points: dict | None, slots: asyncio.Semaphore) -> dict:
+async def _fetch(client: peplink.Client, t: dict, slots: asyncio.Semaphore) -> dict:
     """One tracker's newest fix: {"id", "tz", "fix"} or {"id", "error"}."""
     async with slots:
         try:
-            tz = t["tz"]
+            points, tz = await client.device_points(t["org"], t["group"], t["device"])
+            tz = tz or t["tz"]
             if not tz:
                 tz = (await client.device(t["org"], t["group"], t["device"])).get("group_timezone_label") or "UTC"
-            points = org_points.get(t["device"]) if org_points is not None else None
-            if points is None:
-                points = await client.device_points(t["org"], t["group"], t["device"])
             return {"id": t["id"], "tz": tz, "fix": peplink.newest_fix(points, tz)}
         except peplink.PeplinkError as e:
             return {"id": t["id"], "error": str(e)}
 
 
 async def poll_once() -> float:
-    """One round over every enabled tracker. Returns how long to wait before the next."""
+    """One round over every enabled tracker of every company whose tracking is on (each with its own
+    InControl2 credentials). Returns how long to wait before the next."""
     global _last_prune
     async with sessionmaker()() as db:
-        row = await db.get(PlatformSettings, 1)
-        if row is None or not row.peplink_enabled:
-            return 30.0
-        client = client_for(row)
-        interval = float(max(POLL_MIN_S, row.peplink_poll_s or 30))
-        trackers = [{"id": t.id, "org": t.ic2_org, "group": t.ic2_group, "device": t.ic2_device, "tz": t.tz}
-                    for t in (await db.scalars(select(Tracker).where(Tracker.enabled.is_(True), Tracker.source == "peplink"))).all()]
-    if client is None or not trackers:
+        sources = {s.tenant_id: s for s in (await db.scalars(select(TrackerSource).where(
+            TrackerSource.enabled.is_(True), TrackerSource.kind == "peplink"))).all()}
+        clients = {tid: client_for(src) for tid, src in sources.items()}
+        interval = float(max(POLL_MIN_S, min((s.poll_s or 30 for s in sources.values()), default=30)))
+        trackers = [{"id": t.id, "tenant": t.tenant_id, "org": t.ic2_org, "group": t.ic2_group, "device": t.ic2_device, "tz": t.tz}
+                    for t in (await db.scalars(select(Tracker).where(Tracker.enabled.is_(True), Tracker.source == "peplink",
+                                                                     Tracker.tenant_id.in_(list(sources) or [0])))).all()]
+    trackers = [t for t in trackers if clients.get(t["tenant"]) is not None]
+    if not trackers:
         return interval
     slots = asyncio.Semaphore(CONCURRENCY)
-    orgs = {t["org"] for t in trackers}
-    org_points = dict(zip(orgs, await asyncio.gather(*(_org_points(client, o) for o in orgs))))
-    results = await asyncio.gather(*(_fetch(client, t, org_points[t["org"]], slots) for t in trackers))
+    results = await asyncio.gather(*(_fetch(clients[t["tenant"]], t, slots) for t in trackers))
+    for t, r in zip(trackers, results):
+        r["tenant"] = t["tenant"]
     await _store(results)
     if _last_prune is None or time.monotonic() - _last_prune > 3600:
         _last_prune = time.monotonic()
@@ -134,10 +122,12 @@ async def poll_once() -> float:
 
 
 async def _store(results: list[dict]) -> None:
-    now, moved, errors = utcnow(), [], []
+    now, moved = utcnow(), []
+    errors: dict[int, list[str]] = {}
+    counts: dict[int, int] = {}
     async with sessionmaker()() as db:
-        row = await db.get(PlatformSettings, 1)
         for r in results:
+            counts[r["tenant"]] = counts.get(r["tenant"], 0) + 1
             t = await db.get(Tracker, r["id"])
             if t is None:
                 continue
@@ -145,7 +135,7 @@ async def _store(results: list[dict]) -> None:
             t.checked_at = now
             if "error" in r:
                 t.error = r["error"][:300]
-                errors.append(r["error"])
+                errors.setdefault(r["tenant"], []).append(r["error"])
             else:
                 t.error, t.tz = "", r["tz"]
                 fix = r["fix"]
@@ -155,11 +145,12 @@ async def _store(results: list[dict]) -> None:
                     _move(db, t, fix)
             if (t.error, t.fix_at) != before:
                 moved.append(t)
-        if row is not None:
-            if errors and len(errors) == len(results):
-                row.peplink_last_error, row.peplink_last_error_at = errors[0][:500], now
+        for src in (await db.scalars(select(TrackerSource).where(TrackerSource.tenant_id.in_(list(counts))))).all():
+            errs = errors.get(src.tenant_id, [])
+            if errs and len(errs) == counts[src.tenant_id]:          # every one of its trackers failed: the account's problem
+                src.last_error, src.last_error_at = errs[0][:500], now
             else:
-                row.peplink_last_ok_at = now
+                src.last_ok_at = now
         await db.commit()
         out = [(t.tenant_id, tracker_dict(t)) for t in moved]
     for tenant_id, data in out:

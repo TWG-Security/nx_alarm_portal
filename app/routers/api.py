@@ -276,6 +276,27 @@ async def list_site_cameras(site_id: int, scope: Scope = Depends(get_scope), db:
                     "in_nx": d in names, "place": places.get(d)} for d in ids), key=lambda c: c["name"].lower())
 
 
+class ArmScheduleIn(BaseModel):
+    timezone: str = Field(default="", max_length=64)
+    arm_schedule: list[dict] = Field(default_factory=list, max_length=200)
+
+
+@router.put("/sites/{site_id}/arm-schedule")
+async def put_arm_schedule(site_id: int, body: ArmScheduleIn, request: Request, user: User = Depends(require_admin),
+                           scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Save only the arming schedule and its time zone (the schedule card's own Save button): the NX
+    connection is never touched, so nothing reconnects."""
+    site = await _get_site(db, scope, site_id, write=True)
+    changed = _apply_arming_settings(site, body, user)
+    if changed:
+        audit(db, site.tenant_id, "site.updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    if changed:
+        bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
 @router.put("/sites/{site_id}/cameras/{device_id}")
 async def place_camera(site_id: int, device_id: str, body: CameraPlaceIn, request: Request,
                        user: User = Depends(require_admin), scope: Scope = Depends(get_scope),

@@ -21,40 +21,158 @@ function payload(connect = true) {
 }
 
 // ---------------------------------------------------------------- arming schedule
+// Rows of "Arm/Disarm at <time> on <days>", a week preview of what they add up to (armed green, disarmed grey),
+// and the card's own Save (schedule + time zone only; the NX connection isn't touched). A new site saves it
+// with the main button.
 const DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
 const DAY_LABEL = { mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun" };
+const DAY_SETS = { all: DAYS, weekdays: DAYS.slice(0, 5), weekend: DAYS.slice(5) };
 const rowsEl = $("sched-rows");
+const clock = (hhmm) => {                       // "18:00" -> "6:00 PM"
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+};
+const TIMES = Array.from({ length: 96 }, (_, i) => `${String(Math.floor(i / 4)).padStart(2, "0")}:${String((i % 4) * 15).padStart(2, "0")}`);
+function timeOptions(selected) {
+  const list = TIMES.includes(selected) ? TIMES : [...TIMES, selected].sort();
+  return list.map((t) => `<option value="${t}" ${t === selected ? "selected" : ""}>${clock(t)}</option>`).join("");
+}
 
-function addEntry(e = { action: "arm", time: "18:00", days: DAYS.slice(0, 5) }) {
+function addEntry(e = { action: "arm", time: "18:00", days: DAYS.slice(0, 5) }, { quiet = false } = {}) {
   const row = document.createElement("div");
   row.className = "sched-row";
   row.innerHTML = `
-    <select class="sched-action" aria-label="Action"><option value="arm">Arm</option><option value="disarm">Disarm</option></select>
+    <div class="seg sched-action" role="group" aria-label="Arm or disarm">
+      <button type="button" data-act="arm">Arm</button><button type="button" data-act="disarm">Disarm</button></div>
     <span class="muted">at</span>
-    <input type="time" class="sched-time" required aria-label="Time" value="${esc(e.time)}">
+    <select class="sched-time" aria-label="Time">${timeOptions(e.time)}</select>
+    <span class="muted">on</span>
     <span class="sched-days">${DAYS.map((d) => `<label class="daybox"><input type="checkbox" value="${d}" ${e.days.includes(d) ? "checked" : ""}>${DAY_LABEL[d]}</label>`).join("")}</span>
-    <button type="button" class="btn btn-sm btn-danger sched-del" aria-label="Remove">Remove</button>`;
-  row.querySelector(".sched-action").value = e.action;
+    <span class="sched-quick">${Object.keys(DAY_SETS).map((k) => `<button type="button" class="link-btn" data-days="${k}">${{ all: "Every day", weekdays: "Weekdays", weekend: "Weekend" }[k]}</button>`).join("")}</span>
+    <button type="button" class="btn btn-sm sched-del" aria-label="Remove this time" title="Remove">✕</button>`;
+  setAction(row, e.action);
   rowsEl.appendChild(row);
-  renderEmpty();
+  if (!quiet) changed();
 }
-function renderEmpty() {
-  rowsEl.querySelector(".empty")?.remove();
-  if (!rowsEl.querySelector(".sched-row")) rowsEl.insertAdjacentHTML("beforeend", '<div class="empty muted">No schedule: the site stays in whatever state it was last set to by hand (armed by default).</div>');
+function setAction(row, act) {
+  row.dataset.action = act;
+  row.querySelectorAll(".sched-action button").forEach((b) => b.classList.toggle("active", b.dataset.act === act));
 }
 function schedule() {
   return [...rowsEl.querySelectorAll(".sched-row")].map((r) => ({
-    action: r.querySelector(".sched-action").value, time: r.querySelector(".sched-time").value,
+    action: r.dataset.action, time: r.querySelector(".sched-time").value,
     days: [...r.querySelectorAll(".daybox input:checked")].map((c) => c.value),
   }));
 }
-rowsEl.addEventListener("click", (e) => { if (e.target.classList.contains("sched-del")) { e.target.closest(".sched-row").remove(); renderEmpty(); } });
+
+// What the schedule adds up to: for every minute of the week, the latest entry at or before it (wrapping
+// round from the end of the week), exactly like the server's arming.state_at.
+function weekSpans(entries) {
+  const ev = entries.flatMap((e) => e.days.map((d) => {
+    const [h, m] = e.time.split(":").map(Number);
+    return { at: DAYS.indexOf(d) * 1440 + h * 60 + m, armed: e.action === "arm" };
+  })).sort((a, b) => a.at - b.at);
+  if (!ev.length) return null;
+  const spans = [];
+  let state = ev[ev.length - 1].armed, from = 0;
+  for (const x of ev) {
+    if (x.armed !== state) { spans.push({ from, to: x.at, armed: state }); from = x.at; state = x.armed; }
+  }
+  spans.push({ from, to: 7 * 1440, armed: state });
+  return spans;
+}
+function paintWeek(entries) {
+  const box = $("sched-week"), spans = weekSpans(entries.filter((e) => e.days.length));
+  box.hidden = !spans;
+  if (!spans) return;
+  const hhmm = (min) => `${String(Math.floor(min / 60) % 24).padStart(2, "0")}:${String(min % 60).padStart(2, "0")}`;
+  box.innerHTML = `<div class="sched-week-head"><span>What this schedule does</span>
+      <span class="sched-legend"><i class="armed"></i>Armed <i class="disarmed"></i>Disarmed</span></div>
+    ${DAYS.map((d, i) => {
+      const lo = i * 1440, hi = lo + 1440;
+      const parts = spans.filter((s) => s.to > lo && s.from < hi).map((s) => {
+        const a = Math.max(s.from, lo) - lo, b = Math.min(s.to, hi) - lo;
+        return `<span class="${s.armed ? "armed" : "disarmed"}" style="left:${(a / 14.4).toFixed(3)}%;width:${((b - a) / 14.4).toFixed(3)}%"
+          title="${DAY_LABEL[d]} ${clock(hhmm(a))} – ${b === 1440 ? "midnight" : clock(hhmm(b))}: ${s.armed ? "armed" : "disarmed"}"></span>`;
+      }).join("");
+      return `<div class="sched-day"><b>${DAY_LABEL[d]}</b><div class="sched-bar">${parts}</div></div>`;
+    }).join("")}
+    <div class="sched-day sched-ticks"><b></b><div>${["12 AM", "6 AM", "12 PM", "6 PM", ""].map((t, i) => `<span style="left:${i * 25}%">${t}</span>`).join("")}</div></div>`;
+}
+
+// Problems the server would refuse, shown before saving.
+function problems(entries) {
+  const out = [], seen = new Map();
+  entries.forEach((e, i) => {
+    if (!e.days.length) out.push(`Row ${i + 1} (${e.action} at ${clock(e.time)}) has no days ticked.`);
+    for (const d of e.days) {
+      const k = `${d} ${e.time}`, other = seen.get(k);
+      if (other && other !== e.action) out.push(`${DAY_LABEL[d]} ${clock(e.time)} is set to both arm and disarm.`);
+      seen.set(k, e.action);
+    }
+  });
+  return [...new Set(out)];
+}
+
+let savedKey = "";
+const currentKey = () => JSON.stringify({ tz: $("timezone").value, s: schedule() });
+function changed() {
+  const entries = schedule(), bad = problems(entries);
+  rowsEl.querySelector(".empty")?.remove();
+  if (!entries.length) rowsEl.insertAdjacentHTML("beforeend", '<div class="empty muted">No schedule: the site stays in whatever state it was last set to by hand (armed by default).</div>');
+  rowsEl.querySelectorAll(".sched-row").forEach((r, i) => r.classList.toggle("bad", !entries[i].days.length));
+  $("sched-problems").innerHTML = bad.length ? `<div class="alert alert-error small-print">${bad.map(esc).join("<br>")}</div>` : "";
+  paintWeek(entries);
+  const dirty = currentKey() !== savedKey;
+  $("sched-save").disabled = !site || !dirty || bad.length > 0;
+  $("sched-undo").hidden = !site || !dirty;
+  $("sched-state").innerHTML = !site ? "Saved with <b>Save &amp; connect</b> above." : dirty ? '<span class="unsaved">Unsaved changes</span>' : "Saved";
+  $("sched-save-bar").classList.toggle("dirty", !!site && dirty);
+}
+
+rowsEl.addEventListener("click", (e) => {
+  const row = e.target.closest(".sched-row");
+  if (!row) return;
+  if (e.target.closest(".sched-del")) { row.remove(); changed(); return; }
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act) { setAction(row, act); changed(); return; }
+  const set = e.target.closest("[data-days]")?.dataset.days;
+  if (set) { row.querySelectorAll(".daybox input").forEach((c) => { c.checked = DAY_SETS[set].includes(c.value); }); changed(); }
+});
+rowsEl.addEventListener("change", changed);
+$("timezone").addEventListener("change", changed);
 $("sched-add").addEventListener("click", () => addEntry());
 $("sched-preset").addEventListener("click", () => {
+  if (schedule().length && !confirm("Replace the times below with business hours (disarm 7:00 AM, arm 6:00 PM, Monday to Friday)?")) return;
   rowsEl.innerHTML = "";
-  addEntry({ action: "disarm", time: "07:00", days: DAYS.slice(0, 5) });
+  addEntry({ action: "disarm", time: "07:00", days: DAYS.slice(0, 5) }, { quiet: true });
   addEntry({ action: "arm", time: "18:00", days: DAYS.slice(0, 5) });
 });
+
+function loadSchedule(s) {
+  rowsEl.innerHTML = "";
+  (s?.arm_schedule || []).forEach((e) => addEntry(e, { quiet: true }));
+  savedKey = currentKey();
+  changed();
+}
+$("sched-undo").addEventListener("click", () => { $("timezone").value = site.timezone || ""; loadSchedule(site); });
+$("sched-save").addEventListener("click", async () => {
+  const btn = $("sched-save");
+  btn.disabled = true;
+  $("sched-state").textContent = "Saving…";
+  try {
+    const data = await api(`/api/sites/${site.id}/arm-schedule`, { method: "PUT", body: { timezone: $("timezone").value, arm_schedule: schedule() } });
+    Object.assign(site, data);
+    loadSchedule(site);
+    $("arm-now").innerHTML = `Now: ${armChip(site)} ${armLine(site)}`;
+    $("sched-state").innerHTML = '<span style="color:var(--ok)">Saved ✓</span> It takes over at the next scheduled time.';
+  } catch (err) {
+    $("sched-state").innerHTML = `<span class="text-failed">Not saved: ${esc(err.message)}</span>`;
+    btn.disabled = false;
+  }
+});
+window.addEventListener("beforeunload", (e) => { if (site && currentKey() !== savedKey && !leaving) { e.preventDefault(); e.returnValue = ""; } });
+let leaving = false;
 
 const browserTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const zones = (Intl.supportedValuesOf?.("timeZone") || [browserTz]).slice();
@@ -62,8 +180,7 @@ if (site?.timezone && !zones.includes(site.timezone)) zones.unshift(site.timezon
 $("timezone").innerHTML = `<option value="">Portal default${site ? ` (${esc(site.timezone_effective)})` : ""}</option>`
   + zones.map((z) => `<option value="${esc(z)}">${esc(z.replaceAll("_", " "))}</option>`).join("");
 $("timezone").value = site ? site.timezone || "" : browserTz;
-(site?.arm_schedule || []).forEach(addEntry);
-renderEmpty();
+loadSchedule(site);
 if (site) $("arm-now").innerHTML = `Now: ${armChip(site)} ${armLine(site)}`;
 
 function showResult(kind, html) { result.innerHTML = `<div class="alert alert-${kind}">${html}</div>`; }
@@ -91,6 +208,7 @@ async function save(connect) {
   if (connect) showResult("warn", "Connecting…");
   try {
     await api(site ? `/api/sites/${site.id}` : "/api/sites", { method: site ? "PUT" : "POST", body: payload(connect) });
+    leaving = true;
     location.href = "/sites";
   } catch (e) {
     const offerSkip = e.status === 400 && connect && e.detail?.status;

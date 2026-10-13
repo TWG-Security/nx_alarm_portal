@@ -1,15 +1,17 @@
 """Peplink InControl2 (IC2) API client: GPS positions of Peplink routers, used for live guard locations.
 
-Verified 2026-10-13 against TWG's IC2 (through the TWG MCP gateway):
-  - GET /rest/o/{org}/g/{group}/d/{device}/loc -> [{la, lo, sp (m/s), at (m), ts, isExist, isStatic}]
-  - GET /rest/o/{org}/g/{group}/d/{device}     -> device detail incl. gps_support / gps_exist,
-    latitude / longitude / location_timestamp and group_timezone_label (e.g. "America/New_York").
-    This payload also holds the router's admin password (admin_conf): only the fields below are ever kept.
-  - Timestamps ("2026-10-13T13:57:52") are the GROUP's local time with no zone: converted with the
-    group's time zone. Routers report a new position to IC2 about every 1-2 minutes.
-  - GET /rest/o/{org}/loc (all devices' locations, one call per organization) is used to list GPS routers.
-Not verified with the portal's own credentials yet: the token call (OAuth2 client credentials at
-/api/oauth2/token) and the response envelope {"stat": "ok", "response": ...}; both are handled loosely.
+Verified 2026-10-13 with TWG's own IC2 API client (from inside the production container):
+  - POST /api/oauth2/token (client_credentials) -> {access_token, refresh_token, token_type, expires_in 172799}
+  - Every answer is wrapped {"resp_code": "SUCCESS", "caller_ref", "server_ref", "data": ...}; errors are
+    404 with {"error", "error_description"} or a plain-text body.
+  - GET /rest/o -> data: [{id, name, org_code, status, branch_id, url}] (33 organizations for TWG's account)
+  - GET /rest/o/{org}/g/{group}/d/{device}/loc -> data: [{la, lo, sp (m/s), at (m), ts, isExist, isStatic, speed_mph}]
+    plus "group_timezone" (e.g. "America/New_York") and "group_time" in the envelope. **ts is the group's
+    local time without a zone** and is live (6 s old when measured). This is what tracking polls.
+  - GET /rest/o/{org}/loc -> data: every device with "points", but **ts there is UTC and the positions are a stale
+    cache** (34 min to 1 h 45 min old when the per-device call was 6 s old): used only to list GPS routers.
+  - GET /rest/o/{org}/g/{group}/d/{device} -> device detail; it also holds the router's admin password
+    (admin_conf): only DEVICE_FIELDS are ever kept.
 """
 from __future__ import annotations
 
@@ -59,10 +61,12 @@ def to_utc(ts: str, tz: str | None) -> datetime | None:
 
 
 def newest_fix(points: list, tz: str | None) -> Fix | None:
-    """The latest real position in an IC2 points list (entries with isExist false have no position)."""
+    """The latest real GPS position in an IC2 points list. Only isExist true counts: devices without GPS
+    (switches, APs, routers with GPS off) come back with isExist false + isStatic true, their configured
+    address and the current time, which would look like a live, parked guard."""
     best = None
     for p in points or []:
-        if not isinstance(p, dict) or p.get("la") is None or p.get("lo") is None:
+        if not isinstance(p, dict) or p.get("la") is None or p.get("lo") is None or p.get("isExist") is not True:
             continue
         at = to_utc(str(p.get("ts") or ""), tz)
         if at is None:
@@ -111,7 +115,7 @@ class Client:
             self._expires = time.monotonic() + max(60, int(body.get("expires_in") or 3600) - 120)
             return self._token
 
-    async def get(self, path: str, **params):
+    async def get_raw(self, path: str, **params) -> dict:
         for attempt in (1, 2):
             tok = await self.token()
             try:
@@ -123,11 +127,21 @@ class Client:
                 self._token = ""                       # expired early: get a new one once
                 continue
             body = _json(r)
-            if r.status_code >= 400 or body.get("stat") == "fail":
-                msg = body.get("message") or body.get("error_description") or body.get("error") or f"HTTP {r.status_code}"
+            failed = body.get("stat") == "fail" or (body.get("resp_code") not in (None, "SUCCESS"))
+            if r.status_code >= 400 or failed:
+                msg = (body.get("message") or body.get("error_description") or body.get("error") or body.get("resp_code")
+                       or (r.text[:120].strip() if not body else "") or f"HTTP {r.status_code}")
                 raise PeplinkError(f"InControl2: {msg} ({r.status_code}, {path.split('?')[0]})")
-            return body["response"] if isinstance(body, dict) and "response" in body else body
+            return body
         raise PeplinkError("InControl2 keeps refusing the access token")
+
+    async def get(self, path: str, **params):
+        """The answer's payload (IC2's "data"; older docs say "response")."""
+        body = await self.get_raw(path, **params)
+        for key in ("data", "response"):
+            if isinstance(body, dict) and key in body:
+                return body[key]
+        return body
 
     # ---- the calls the portal uses
 
@@ -135,7 +149,8 @@ class Client:
         return [{"id": o.get("id"), "name": o.get("name")} for o in (await self.get("/rest/o") or []) if isinstance(o, dict)]
 
     async def org_locations(self, org_id: str) -> list[dict]:
-        """Every device in an organization with its last position (name, ids, online status, points)."""
+        """Every device in an organization (name, ids, online status, points). For LISTING routers only: these
+        positions are a stale cache and their ts is UTC (see the module docstring)."""
         rows = await self.get(f"/rest/o/{org_id}/loc")
         return [{"id": d.get("id"), "group_id": d.get("group_id"), "sn": d.get("sn"), "name": d.get("name"),
                  "status": d.get("status"), "product_name": d.get("product_name"), "points": d.get("points") or []}
@@ -145,9 +160,12 @@ class Client:
         d = await self.get(f"/rest/o/{org_id}/g/{group_id}/d/{device_id}") or {}
         return {k: d.get(k) for k in DEVICE_FIELDS}           # never the admin password etc.
 
-    async def device_points(self, org_id: str, group_id: int, device_id: int) -> list[dict]:
-        rows = await self.get(f"/rest/o/{org_id}/g/{group_id}/d/{device_id}/loc")
-        return rows if isinstance(rows, list) else [rows] if isinstance(rows, dict) else []
+    async def device_points(self, org_id: str, group_id: int, device_id: int) -> tuple[list[dict], str | None]:
+        """The router's live position(s) and its group's time zone (their ts is that zone's local time)."""
+        body = await self.get_raw(f"/rest/o/{org_id}/g/{group_id}/d/{device_id}/loc")
+        rows = body.get("data", body.get("response")) if isinstance(body, dict) else body
+        rows = rows if isinstance(rows, list) else [rows] if isinstance(rows, dict) else []
+        return rows, (body.get("group_timezone") if isinstance(body, dict) else None)
 
 
 def _json(r: httpx.Response) -> dict:

@@ -2,7 +2,7 @@
 
     POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.guards [screenshot_dir]
 
-Platform page: credentials, Test connection, Find routers, Track (a moving patrol car and a trailer that
+Sites page → Guards & vehicles (the company's own InControl2 account): credentials, Test connection, Find routers, Track (a moving patrol car and a trailer that
 last reported yesterday). Map page: live marker that moves with a trail, a stale grey one, the Guards list
 and follow; the 3D view draws them. InControl2 failing shows on the marker; alarms stay fast throughout,
 including while InControl2 hangs.
@@ -49,8 +49,8 @@ with sync_playwright() as p:
     pg.on("pageerror", lambda e: errors.append(str(e)))
     login_and_add_site(pg)
 
-    # ---- Platform page
-    pg.goto(f"{PORTAL}/platform#guards")
+    # ---- Sites page (company admins)
+    pg.goto(f"{PORTAL}/sites")
     pg.wait_for_selector("#gt-form")
     pg.fill("#gt-id", "dev-client"); pg.fill("#gt-secret", "dev-secret"); pg.fill("#gt-poll", "15")
     pg.check("#gt-enabled"); pg.click("#gt-form button[type=submit]")
@@ -62,15 +62,16 @@ with sync_playwright() as p:
     pg.click("#gt-find")
     pg.wait_for_selector("#gt-devices [data-track]", timeout=10000)
     rows = pg.inner_text("#gt-devices")
-    check("Patrol Car 1" in rows and "Parked Trailer" in rows and "Office AP" not in rows, "Find routers lists only routers with GPS")
-    pg.screenshot(path=f"{out}/guards-platform-find.png", full_page=True)
+    check("Patrol Car 1" in rows and "Parked Trailer" in rows and "Office AP" not in rows,
+          "Find routers lists only routers with real GPS (not the AP's configured address)")
+    pg.screenshot(path=f"{out}/guards-sites-find.png", full_page=True)
     t0 = time.time()
     pg.click("#gt-devices [data-track='0']"); pg.wait_for_timeout(800)
     pg.click("#gt-devices [data-track='1']")
     pg.wait_for_function("document.querySelectorAll('#gt-trackers tr[data-id]').length === 2", timeout=5000)
     pg.wait_for_function("[...document.querySelectorAll('#gt-trackers tr[data-id]')].every((r) => !r.textContent.includes('none yet'))", timeout=30000)
     check(True, f"both trackers have a position {time.time() - t0:.1f} s after Track (poller woken, not waiting for its round)")
-    pg.screenshot(path=f"{out}/guards-platform-tracked.png", full_page=True)
+    pg.screenshot(path=f"{out}/guards-sites-tracked.png", full_page=True)
 
     # ---- Map page
     pg.goto(f"{PORTAL}/")

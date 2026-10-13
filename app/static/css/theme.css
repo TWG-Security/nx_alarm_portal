@@ -755,3 +755,28 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 /* ---- Account page: alarm texts card */
 .texts-card .texts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 14px; }
 .texts-card .ed-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }
+
+/* ---- site form: arming schedule (site_form.js) */
+.sched-row .seg { flex: 0 0 auto; }
+.sched-row .seg button { min-width: 64px; }
+.sched-row[data-action="arm"] .seg button.active { background: var(--ok); border-color: var(--ok); color: #fff; }
+.sched-row[data-action="disarm"] .seg button.active { background: #6b6b6b; border-color: #6b6b6b; color: #fff; }
+.sched-row .sched-time { width: auto; min-width: 112px; }
+.sched-row.bad { outline: 2px solid var(--red, #C0392B); }
+.sched-quick { display: inline-flex; gap: 10px; }
+.sched-quick .link-btn { background: none; border: 0; padding: 0; color: var(--orange, #E08A30); cursor: pointer; font: inherit; font-size: 12px; text-decoration: underline; }
+.sched-del { margin-left: auto; }
+.sched-week { margin: 4px 0 14px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
+.sched-week-head { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
+.sched-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: -1px; }
+.sched-legend i.armed, .sched-bar .armed { background: var(--ok); }
+.sched-legend i.disarmed, .sched-bar .disarmed { background: #6b6b6b; }
+.sched-day { display: grid; grid-template-columns: 40px 1fr; align-items: center; gap: 8px; margin: 3px 0; font-size: 12px; }
+.sched-bar { position: relative; height: 14px; border-radius: 3px; overflow: hidden; background: var(--surface); }
+.sched-bar span { position: absolute; top: 0; bottom: 0; }
+.sched-ticks > div { position: relative; height: 14px; font-size: 10px; color: var(--text-muted); }
+.sched-ticks span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.sched-ticks span:first-child { transform: none; }
+.sched-save { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.sched-save.dirty { position: sticky; bottom: 0; background: var(--surface); padding-bottom: 10px; z-index: 2; }
+.sched-save .unsaved { color: var(--orange, #E08A30); font-weight: 600; }

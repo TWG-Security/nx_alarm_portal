@@ -497,6 +497,25 @@ class IpAllow(Base):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
+class TrackerSource(Base):
+    """A company's InControl2 API client (its admins enter it on the Sites page). Its trackers are read with it."""
+
+    __tablename__ = "tracker_sources"
+    __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_tracker_sources_tenant_kind"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20), default="peplink")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    client_id: Mapped[str] = mapped_column(String(200), default="")
+    secret_enc: Mapped[str] = mapped_column(Text, default="")
+    poll_s: Mapped[int] = mapped_column(Integer, default=30)
+    last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, default="")
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class Tracker(Base):
     """Something whose live position shows on the map: a guard or patrol vehicle. Source today: a Peplink
     router with GPS, read through InControl2 (org / group / device ids)."""
