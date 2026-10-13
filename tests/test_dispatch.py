@@ -54,7 +54,7 @@ async def test_closest_guard_is_listed_first_and_dispatched(session, client):
     assert (await client.post(f"/api/alarms/{alarm.id}/dispatch", json={"tracker_id": near_nobody.id})).status_code == 400
     res = await client.post(f"/api/alarms/{alarm.id}/dispatch", json={"tracker_id": guard.id})
     assert res.status_code == 200, res.text
-    assert res.json()["to"] == "Guard 1" and res.json()["distance"] == "0.2 mi"
+    assert res.json()["sent"][0]["to"] == "Guard 1" and res.json()["sent"][0]["distance"] == "0.2 mi" and not res.json()["failed"]
     await sms.drain()
     assert sent_to(twilio) == ["+15705558001"]
     text = body_of(twilio.calls[0]).split("\n")
@@ -64,7 +64,7 @@ async def test_closest_guard_is_listed_first_and_dispatched(session, client):
     assert note.text == "Dispatched Guard 1 (guard), 0.2 mi away"
     assert (await session.scalars(select(AuditLog).where(AuditLog.action == "alarm.dispatched"))).one().detail["guard"] == "Guard 1"
     r = (await client.get(f"/api/alarms/{alarm.id}/guards")).json()
-    assert [(d["to"], d["outcome"]) for d in r["dispatched"]] == [("guard", "sent")]
+    assert [(d["guard"], d["to"], d["text"], d["status"]) for d in r["dispatched"]] == [("Guard 1", "guard", "sent", "dispatched")]
 
     # Another company can't see or dispatch them.
     acme_user = p["acme"]
@@ -300,3 +300,75 @@ async def test_share_my_location_now_from_the_texted_alarm_page(session, client)
     assert again.json()["token"] == share and len((await session.scalars(select(Tracker))).all()) == 2
     assert (await client.post(f"/api/a/{nobody}/share")).status_code == 400
     assert (await client.post("/api/a/not-a-token/share")).status_code == 404
+
+
+
+@respx.mock
+async def test_dispatch_several_guards_mdt_status_and_a_live_timeline(session, client):
+    """Dispatch to all guards at once; each guard's taps (opened, En route, On scene, Clear) show on the dispatcher's
+    board and timeline, live, and in the incident report."""
+    from app import alarm_links
+    from app.services import report
+    from app.services.bus import bus
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMx"}))
+    t1 = await track(session, t.id, "Guard 1", 300, g["guard"])
+    t2 = await track(session, t.id, "Guard 2", 800, g["both"])
+    nobody = await track(session, t.id, "Unlinked", 50)
+    await login(client, "mike@twgsecurity.com")
+    alarm = await make_alarm(session, site, event_ts_ms=now_ms())
+    sub = bus.subscribe({t.id})
+
+    r = await client.post(f"/api/alarms/{alarm.id}/dispatch", json={"tracker_ids": [t1.id, t2.id, nobody.id]})
+    assert r.status_code == 200
+    assert [x["to"] for x in r.json()["sent"]] == ["Guard 1", "Guard 2"]
+    assert r.json()["failed"] == [{"name": "Unlinked", "error": "No person linked to text (Sites → Guards & vehicles)"}]
+    assert (await client.post(f"/api/alarms/{alarm.id}/dispatch", json={"tracker_ids": [nobody.id]})).status_code == 400
+    assert (await client.post(f"/api/alarms/{alarm.id}/dispatch", json={})).status_code == 400
+    await sms.drain()
+    assert sorted(sent_to(twilio)) == ["+15705558001", "+15705558002"]
+    events = []
+    while not sub.queue.empty():
+        events.append(sub.queue.get_nowait())
+    assert ("alarm.timeline", {"alarm_id": alarm.id}) in events                  # dispatchers' screens refresh
+
+    # Guard 1 opens the link from the text and taps En route, then On scene (their router places them).
+    to_guard1 = twilio.calls[sent_to(twilio).index("+15705558001")]
+    link = re.search(r"/a/([^/ \n]+)/", body_of(to_guard1)).group(1)
+    client.cookies.clear()
+    page = (await client.get(f"/a/{link}/")).text
+    assert "En route" in page and "On scene" in page and '"status": ""' in page
+    assert (await client.post(f"/api/a/{link}/status", json={"status": "en_route"})).json()["position"] is True
+    assert (await client.post(f"/api/a/{link}/status", json={"status": "on_scene"})).status_code == 200
+    assert (await client.post(f"/api/a/{link}/status", json={"status": "lunch"})).status_code == 422
+    assert '"status": "on_scene"' in (await client.get(f"/a/{link}/")).text
+
+    await login(client, "mike@twgsecurity.com")
+    board = (await client.get(f"/api/alarms/{alarm.id}/guards")).json()["dispatched"]
+    g1 = next(d for d in board if d["guard"] == "Guard 1")
+    assert g1["status"] == "on_scene" and g1["opened_at"] and g1["status_at"] and g1["by"] == "mike"
+    assert next(d for d in board if d["guard"] == "Guard 2")["status"] == "dispatched"
+
+    rows = (await client.get(f"/api/alarms/{alarm.id}/timeline")).json()
+    whats = [(e["what"], e["who"]) for e in rows]
+    for want in [("Event occurred in NX", "Front Door Cam"), ("Dispatched Guard 1", "mike"), ("Dispatch text", "guard"),
+                 ("Opened the alarm link", "guard"), ("En route", "guard"), ("On scene", "guard")]:
+        assert want in whats, want
+    on_scene = next(e for e in rows if e["what"] == "On scene")
+    assert on_scene["kind"] == "guard" and "from the alarm" in on_scene["detail"] and on_scene["detail"].startswith("at 40.")
+    assert [e["ts"] for e in rows] == sorted(e["ts"] for e in rows)
+    # The incident report has the same timeline.
+    events = await report.timeline(session, await session.get(type(alarm), alarm.id))
+    assert [e["what"] for e in events] == [e["what"] for e in rows]
+    pdf = report.build_pdf(await session.get(type(alarm), alarm.id), report.Evidence(), events, p["admin"], "", 10, 20, "sd", now_ms(), [])
+    assert pdf.startswith(b"%PDF")
+
+    # Another company sees none of it; a status from a link not sent to a person is refused.
+    nolink = await alarm_links.mint(session, alarm, None, 24)
+    await session.commit()
+    client.cookies.clear()
+    assert (await client.post(f"/api/a/{nolink}/status", json={"status": "clear"})).status_code == 400
+    await login(client, p["acme"].email)
+    assert (await client.get(f"/api/alarms/{alarm.id}/timeline")).status_code == 404

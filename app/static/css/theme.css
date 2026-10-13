@@ -817,7 +817,7 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .dispatch-list li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px; }
 .dispatch-list li.closest { background: rgba(224, 138, 48, .12); }
 .dispatch-who { flex: 1 1 auto; display: flex; flex-direction: column; min-width: 0; }
-.dispatched-row { padding: 4px 8px; border-left: 3px solid #E08A30; margin: 4px 0; }
+
 .dispatch-who .chip { align-self: flex-start; }
 .link-share { border: 2px solid #E08A30; }
 .share-line { font-weight: 600; margin-top: 8px; }
@@ -833,3 +833,32 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 @media (max-width: 700px) {
   .globe-bar { flex-wrap: wrap; justify-content: center; max-width: calc(100% - 16px); bottom: 10px; }
 }
+/* Guard's status buttons on the texted alarm page (MDT style) */
+.mdt { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.mdt-btn { height: auto; min-height: 58px; font-size: 17px; font-weight: 700; padding: 10px 6px; border-width: 2px; }
+.mdt-btn.on { color: #fff; }
+.mdt-en_route.on { background: #E08A30; border-color: #E08A30; }
+.mdt-on_scene.on { background: #C0392B; border-color: #C0392B; }
+.mdt-clear.on { background: #2e7d32; border-color: #2e7d32; }
+.share-help { margin-top: 10px; }
+.share-help ol { padding-left: 18px; margin: 6px 0; }
+.share-help li { margin: 4px 0; }
+/* Dispatcher's status board (alarm details) and live timeline */
+.mdt-board { margin: 6px 0 14px; }
+.mdt-row { padding: 6px 8px; border-left: 3px solid #E08A30; margin: 4px 0; background: var(--surface-2); border-radius: 0 6px 6px 0; }
+.mdt-chip { margin-left: 6px; }
+.mdt-chip--en_route { background: #E08A30; color: #fff; }
+.mdt-chip--on_scene { background: #C0392B; color: #fff; }
+.mdt-chip--clear { background: #2e7d32; color: #fff; }
+.mdt-chip--failed { background: #C0392B; color: #fff; }
+.dispatch-choose { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0; }
+.dispatch-choose .check { margin: 0; }
+.dispatch-list li input[type=checkbox] { flex: 0 0 auto; }
+.drawer-timeline { margin-top: 14px; }
+.timeline { list-style: none; margin: 6px 0; padding: 0; max-height: 420px; overflow-y: auto; }
+.timeline .tl { display: grid; grid-template-columns: 92px 1fr; gap: 8px; padding: 5px 0 5px 8px; border-left: 3px solid var(--border); font-size: 13px; }
+.timeline time { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.tl--guard { border-left-color: #E08A30 !important; }
+.tl--operator { border-left-color: #1f6feb !important; }
+.tl--text { border-left-color: #8a8a8a !important; }
+.tl--event { border-left-color: #C0392B !important; }

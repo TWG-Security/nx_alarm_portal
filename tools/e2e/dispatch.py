@@ -165,8 +165,8 @@ with sync_playwright() as p:
     check("away)" in body and "SHARE YOUR LOCATION" in body and "MAP (directions to the site):" in body,
           "dispatch text: distance, directions, the location link again")
     print("      text:", repr(body))
-    pg.wait_for_selector(".dispatched-row", timeout=8000)
-    check("Dispatched Ana Near" in pg.inner_text(".drawer-dispatch"), "the alarm shows who was dispatched")
+    pg.wait_for_selector(".mdt-board .mdt-row", timeout=8000)
+    check("Ana Near" in pg.inner_text(".mdt-board"), "the alarm shows who was dispatched (status board)")
 
     # Ana opens the alarm link from her dispatch text: "Share my location now" at the top.
     alarm_page = phones["near"][0].new_page()
@@ -174,10 +174,32 @@ with sync_playwright() as p:
     alarm_page.goto(link_after(body, "VIDEO (alarm clip + live cameras):"))
     alarm_page.wait_for_selector("#link-share-start", timeout=8000)
     top = alarm_page.eval_on_selector("#link-share-start", "e => e.getBoundingClientRect().top")
-    alarm_page.click("#link-share-start")
+    check(top < 400, f"the alarm page from the dispatch text: status buttons + Share my location now at the top ({top:.0f} px)")
+    pg.wait_for_function("document.querySelector('.mdt-board').innerText.includes('Opened the link')", timeout=8000)
+    check(True, "dispatcher sees Ana opened the link (live)")
+
+    # MDT: En route (also starts sharing), then On scene; the dispatcher's board and timeline follow live.
+    for st, word in (("en_route", "En route"), ("on_scene", "On scene")):
+        t0 = time.time()
+        alarm_page.click(f".mdt-btn[data-status='{st}']")
+        pg.wait_for_selector(f".mdt-board .mdt-chip--{st}", timeout=8000)
+        ms_live = (time.time() - t0) * 1000
+        check(ms_live < 3000, f"Ana taps {word}: on the dispatcher's board in {ms_live:.0f} ms")
     alarm_page.wait_for_function("document.getElementById('link-share-state').textContent.includes('Sharing your location')", timeout=10000)
-    check(top < 200, f"the alarm page from the dispatch text: Share my location now at the top ({top:.0f} px), and it shares")
+    check(True, "En route started sharing her location")
     alarm_page.screenshot(path=f"{out}/dispatch6-phone-alarm-share.png")       # left open: it shares too
+    tl = pg.inner_text(".drawer-timeline")
+    check(all(w in tl for w in ("Dispatched Ana Near", "Dispatch text", "Opened the alarm link", "En route", "On scene")),
+          "timeline: dispatched, text, opened, en route, on scene")
+    pg.screenshot(path=f"{out}/dispatch8-board-timeline.png", full_page=True)
+
+    # All guards: tick "All guards", Dispatch selected.
+    n0 = len(texts())
+    pg.check("[data-choose-all]")
+    pg.wait_for_function("document.querySelector('[data-dispatch-chosen]')?.textContent.includes('(2)')", timeout=5000)
+    pg.click("[data-dispatch-chosen]")
+    t = wait_texts(n0 + 2)
+    check(sorted(x["to"] for x in t[n0:]) == sorted(v[0] for v in GUARDS.values()), "All guards → Dispatch selected texts both")
 
     # An operator on a phone: the two big Dispatch buttons are the first thing under the alarm.
     mob = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)

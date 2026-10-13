@@ -19,11 +19,7 @@
     </div>
     <div class="alert share-tip"><b>Keep this page open and the screen on.</b> Phones stop sending your location when the
       browser is closed, another app is in front, or the phone locks. The screen is kept awake while sharing when the phone allows it.</div>
-    <details class="muted small-print"><summary>Location blocked?</summary>
-      <ul>
-        <li><b>iPhone:</b> Settings → Privacy &amp; Security → Location Services → Safari Websites → <b>While Using the App</b>. Then reload this page.</li>
-        <li><b>Android (Chrome):</b> tap the icon left of the address → Permissions → Location → <b>Allow</b>. Then reload.</li>
-      </ul></details>
+    {% include "_location_help.html" %}
   </div>
   {% elif state == "expired" %}
   <div class="card link-card"><h1>This location link has expired</h1>

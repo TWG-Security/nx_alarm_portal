@@ -415,6 +415,9 @@ async def _record(to: str, purpose: str, outcome: str, error: str, attempts: int
                     row.sms_last_ok_at = utcnow()
                 else:
                     row.sms_last_error, row.sms_last_error_at = f"{masked(to)}: {error}"[:500], utcnow()
+            if entry.alarm_id is not None and entry.tenant_id is not None:
+                from app.audit import timeline_changed
+                timeline_changed(db, entry.tenant_id, entry.alarm_id)
             await db.commit()
             return entry.id
     except Exception as e:  # noqa: BLE001
@@ -461,6 +464,9 @@ async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str) ->
         if entry is not None:
             entry.outcome = outcome
             entry.error = (f"{entry.error}; {error}" if entry.error and error else error or entry.error)[:500]
+            if entry.alarm_id is not None and entry.tenant_id is not None:
+                from app.audit import timeline_changed
+                timeline_changed(db, entry.tenant_id, entry.alarm_id)          # "delivered" shows on the timeline
         if outcome in ("failed", "undelivered"):
             row = await db.get(PlatformSettings, 1)
             if row is not None:

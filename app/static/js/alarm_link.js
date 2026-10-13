@@ -5,7 +5,7 @@
 import { CFG, fmtTime } from "./common.js";
 import { mountPlayer } from "./player.js";
 import { mountLive } from "./live.js";
-import { createSharer } from "./share_core.js";
+import { askLocationNow, createSharer } from "./share_core.js";
 
 const a = CFG.alarm, token = CFG.token;
 const STILL_EVERY_MS = 3000;     // a still per visible camera every 3 s (~40 KB each): light on phone data and the NX relay
@@ -17,7 +17,8 @@ if (CFG.canShare && $("link-share-start")) {
   const KEY = `twg-share-from-${token}`;
   let sharer = null;
   const paint = (kind, text, facts) => {
-    const on = kind !== "off" && kind !== "gone";
+    const on = !["off", "gone", "blocked"].includes(kind);
+    if (kind === "blocked") document.querySelector(".share-help").open = true;
     $("link-share-start").hidden = on; $("link-share-stop").hidden = !on;
     $("link-share-state").textContent = kind === "off" && text === "Not sharing" ? "Not sharing your location." : text;
     $("link-share-state").className = `share-line share-line--${kind}`;
@@ -26,6 +27,7 @@ if (CFG.canShare && $("link-share-start")) {
   };
   async function startSharing() {
     $("link-share-start").disabled = true;
+    const asked = askLocationNow();          // in the tap itself, so Safari asks "Allow location?"
     try {
       if (!sharer) {
         const r = await fetch(`/api/a/${token}/share`, { method: "POST", credentials: "omit" });
@@ -33,11 +35,35 @@ if (CFG.canShare && $("link-share-start")) {
         const { token: shareToken } = await r.json();
         sharer = createSharer(shareToken, { everyS: 10, onState: paint });
       }
+      if (await asked === "blocked") { paint("blocked", "Location is blocked for this page. See “Location blocked?” below to allow it, then tap again.", ""); return; }
       sharer.start();
     } catch (err) { paint("warn", err.message, ""); }
     finally { $("link-share-start").disabled = false; }
   }
   $("link-share-start").addEventListener("click", startSharing);
+
+  // En route / On scene / Clear, like an MDT: dispatch sees each tap live, with the time and where they were.
+  // En route also starts sharing the location (so dispatch can watch them come).
+  const WORDS = { en_route: "En route", on_scene: "On scene", clear: "Clear" };
+  const showStatus = (st, note = "") => {
+    document.querySelectorAll(".mdt-btn").forEach((b) => b.classList.toggle("on", b.dataset.status === st));
+    $("mdt-state").textContent = st ? `Your status: ${WORDS[st]}${note}` : "Tap your status so dispatch knows where you are.";
+  };
+  showStatus(CFG.status || "");
+  document.querySelector(".mdt").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-status]");
+    if (!b) return;
+    const st = b.dataset.status;
+    document.querySelectorAll(".mdt-btn").forEach((x) => { x.disabled = true; });
+    try {
+      if (st === "en_route" && !sharer?.active) startSharing();
+      const r = await fetch(`/api/a/${token}/status`, { method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: st }) });
+      if (!r.ok) throw new Error(r.status === 410 ? "This alarm link has expired" : "Couldn't reach dispatch. Try again.");
+      showStatus(st, ` · sent to dispatch ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+    } catch (err) { $("mdt-state").textContent = err.message; }
+    finally { document.querySelectorAll(".mdt-btn").forEach((x) => { x.disabled = false; }); }
+  });
   $("link-share-stop").addEventListener("click", () => sharer?.stop());
   try { if (sessionStorage.getItem(KEY) === "1") startSharing(); } catch { /* fine */ }
 }

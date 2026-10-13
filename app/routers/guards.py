@@ -4,7 +4,8 @@
   GET    /api/trackers                     the company's trackers with a short trail (map pages)
   GET    /api/trackers/{id}/trail          position history (?minutes= or ?start=&end=, within TRAIL_KEEP_DAYS)
   GET    /api/alarms/{id}/guards           guards closest first, who can be texted, who was dispatched
-  POST   /api/alarms/{id}/dispatch         text a guard to go to the alarm (anyone who can acknowledge it)
+  POST   /api/alarms/{id}/dispatch         text one, several or all guards to go to the alarm (anyone who can acknowledge it)
+  GET    /api/alarms/{id}/timeline         everything that happened, in order (also in the incident report)
   POST   /api/trackers/{id}/refresh        ask InControl2 for its position now (anyone who sees it)
   GET    /api/tracking                     the company's InControl2 settings + its trackers (admins)
   PUT    /api/tracking/source              Client ID / Secret / on-off / interval
@@ -106,23 +107,42 @@ async def alarm_guards(alarm_id: int, scope: Scope = Depends(get_scope), db: Asy
 
 
 class DispatchIn(BaseModel):
-    tracker_id: int
+    tracker_id: int | None = None                                       # one guard...
+    tracker_ids: list[int] | None = Field(default=None, max_length=200)   # ...or several (the page's "All guards")
 
 
 @router.post("/api/alarms/{alarm_id}/dispatch")
 async def dispatch_guard(alarm_id: int, body: DispatchIn, request: Request, scope: Scope = Depends(get_scope),
                          db: AsyncSession = Depends(get_db)):
+    """Returns {sent: [{to, person, distance, phone}], failed: [{name, error}]}. 400 if none could be sent."""
     from app.routers.api import _get_alarm
     alarm = await _get_alarm(db, scope, alarm_id, write=True)
-    t = await db.scalar(select(Tracker).where(Tracker.id == body.tracker_id, Tracker.tenant_id == alarm.tenant_id))
-    if t is None:
+    ids = list(dict.fromkeys((body.tracker_ids or []) + ([body.tracker_id] if body.tracker_id else [])))
+    if not ids:
+        raise HTTPException(400, "Pick at least one guard")
+    rows = (await db.scalars(select(Tracker).where(Tracker.id.in_(ids), Tracker.tenant_id == alarm.tenant_id))).all()
+    if len(rows) != len(ids):
         raise HTTPException(404, "Guard not found")
+    names = {t.id: t.name for t in rows}
     user = scope.user
     await db.commit()
-    try:
-        return await dispatch_svc.dispatch(alarm.id, t.id, user, ip=client_ip(request))
-    except dispatch_svc.DispatchError as e:
-        raise HTTPException(400, str(e)) from None
+    sent, failed = [], []
+    for tid in ids:
+        try:
+            sent.append(await dispatch_svc.dispatch(alarm.id, tid, user, ip=client_ip(request)))
+        except dispatch_svc.DispatchError as e:
+            failed.append({"name": names[tid], "error": str(e)})
+    if not sent:
+        raise HTTPException(400, "; ".join(f"{f['name']}: {f['error']}" for f in failed))
+    return {"sent": sent, "failed": failed}
+
+
+@router.get("/api/alarms/{alarm_id}/timeline")
+async def alarm_timeline(alarm_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    from app.routers.api import _get_alarm
+    from app.services.report import timeline
+    alarm = await _get_alarm(db, scope, alarm_id)
+    return await timeline(db, alarm)
 
 
 @router.post("/api/trackers/{tracker_id}/refresh")

@@ -416,7 +416,7 @@ function scheduleReconnect() {
 }
 
 const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarm.note", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push",
-  "tracker.moved", "tracker.removed"];
+  "tracker.moved", "tracker.removed", "alarm.timeline"];
 function connect() {
   es = new EventSource("/api/events");
   lastBeat = Date.now();

@@ -86,11 +86,39 @@ async def candidates(db: AsyncSession, alarm: Alarm) -> list[dict]:
     return out
 
 
+STATUSES = ("en_route", "on_scene", "clear")
+
+
 async def dispatched(db: AsyncSession, alarm_id: int) -> list[dict]:
-    rows = (await db.execute(select(SmsLog, User).join(User, User.id == SmsLog.user_id, isouter=True)
-                             .where(SmsLog.alarm_id == alarm_id, SmsLog.purpose == "dispatch").order_by(SmsLog.id))).all()
-    return [{"to": u.label if u else sms.masked(r.to), "at": aware(r.ts).isoformat(), "outcome": r.outcome, "error": r.error}
-            for r, u in rows]
+    """Everyone sent to this alarm, with how far they've got, like an MDT board: the dispatch text (sent /
+    delivered / failed), when they opened the link, and their last status (en route / on scene / clear)."""
+    audits = (await db.scalars(select(AuditLog).where(
+        AuditLog.alarm_id == alarm_id, AuditLog.action.in_(("alarm.dispatched", "alarm.link_opened", "guard.status")))
+        .order_by(AuditLog.id))).all()
+    texts = (await db.scalars(select(SmsLog).where(SmsLog.alarm_id == alarm_id, SmsLog.purpose == "dispatch")
+                              .order_by(SmsLog.id))).all()
+    people: dict[int | str, dict] = {}
+    iso = lambda dt: aware(dt).isoformat()  # noqa: E731
+    for a in audits:
+        d = a.detail or {}
+        if a.action == "alarm.dispatched":
+            key = d.get("to_user_id") or d.get("to")
+            p = people.setdefault(key, {"user_id": d.get("to_user_id"), "to": d.get("to", ""), "guard": d.get("guard", ""),
+                                        "opened_at": None, "status": "dispatched", "status_at": None})
+            p.update(at=iso(a.ts), auto=bool(d.get("auto")), by=a.user.label if a.user else "", distance=d.get("distance"))
+    for a in audits:
+        p = people.get(a.user_id)
+        if p is None or a.action == "alarm.dispatched":
+            continue
+        if a.action == "alarm.link_opened":
+            p["opened_at"] = p["opened_at"] or iso(a.ts)
+        elif (a.detail or {}).get("status") in STATUSES:
+            p["status"], p["status_at"] = a.detail["status"], iso(a.ts)
+    for t in texts:
+        p = people.get(t.user_id)
+        if p is not None:
+            p["text"], p["text_error"] = t.outcome, t.error
+    return sorted(people.values(), key=lambda p: p["at"])
 
 
 def auto_on(tenant: Tenant | None) -> bool:
@@ -127,7 +155,8 @@ async def dispatch(alarm_id: int, tracker_id: int, by: User | None, *, auto: boo
         db.add(note)
         await db.flush()
         audit(db, alarm.tenant_id, "alarm.dispatched", user_id=by.id if by else None, site_id=alarm.site_id, alarm_id=alarm.id,
-              ip=ip, guard=t.name, to=u.label, distance_m=round(dist) if dist is not None else None, auto=auto)
+              ip=ip, guard=t.name, to=u.label, to_user_id=u.id, distance_m=round(dist) if dist is not None else None,
+              distance=away, auto=auto)
         await db.commit()
         from app.services.serialize import note_dict
         note_data = note_dict(note)

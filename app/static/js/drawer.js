@@ -55,6 +55,22 @@ function paintQuick() {
   const slot = drawer.querySelector(".dispatch-quick-slot");
   if (slot && current) slot.innerHTML = quickHtml(current);
 }
+// Everyone sent to this alarm, like an MDT board: text delivered → opened → en route → on scene → clear.
+const STATUS_WORD = { en_route: "En route", on_scene: "On scene", clear: "Clear" };
+const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+function boardHtml(list) {
+  if (!list.length) return "";
+  return `<div class="mdt-board">${list.map((d) => {
+    const word = STATUS_WORD[d.status] || (d.opened_at ? "Opened the link"
+      : d.text === "delivered" ? "Text delivered" : ["failed", "undelivered"].includes(d.text) ? "Text NOT delivered" : "Dispatched");
+    const cls = STATUS_WORD[d.status] ? d.status : ["failed", "undelivered"].includes(d.text) ? "failed" : "dispatched";
+    return `<div class="mdt-row"><div><b>${esc(d.guard)}</b>${d.to && d.to !== d.guard ? ` <span class="muted">(${esc(d.to)})</span>` : ""}
+        <span class="chip mdt-chip mdt-chip--${cls}">${esc(word)}</span></div>
+      <div class="muted small-print">Sent ${esc(clock(d.at))}${d.auto ? " automatically" : d.by ? ` by ${esc(d.by)}` : ""}${d.distance ? `, ${esc(d.distance)} away` : ""}
+        · text ${esc(d.text || "sending")}${d.opened_at ? ` · opened ${esc(clock(d.opened_at))}` : " · not opened yet"}${d.status_at ? ` · ${esc(STATUS_WORD[d.status])} ${esc(clock(d.status_at))}` : ""}</div></div>`;
+  }).join("")}</div>`;
+}
+let chosen = new Set(), chosenFor = null;       // guards ticked for "Dispatch selected"
 async function loadGuards(a) {
   const box = drawer.querySelector(".drawer-dispatch");
   if (!box) return;
@@ -63,17 +79,23 @@ async function loadGuards(a) {
   if (current?.id !== a.id || guardsFor !== a.id) return;
   lastGuards = { alarmId: a.id, r };
   paintQuick();
-  if (!r.guards.length) { box.hidden = true; return; }
+  if (!r.guards.length && !r.dispatched.length) { box.hidden = true; return; }
+  if (chosenFor !== a.id) { chosen = new Set(); chosenFor = a.id; }
   box.hidden = false;
   const write = isMine(a) || can("platform.support");
-  const sent = r.dispatched.map((d) => `<div class="dispatched-row"><b>Dispatched ${esc(d.to)}</b> <span class="muted">· ${esc(relTime(d.at))} · ${esc(d.outcome)}${d.error ? `: ${esc(d.error)}` : ""}</span></div>`).join("");
-  box.innerHTML = `<div class="media-label">Guards <span class="muted">closest to the ${r.from === "camera" ? "alarm camera" : "site"} first</span></div>
-    ${sent}
-    <ul class="dispatch-list">${r.guards.slice(0, 6).map((c) => {
+  const ok = r.guards.filter((c) => r.texts_ready && c.can_text);
+  for (const id of [...chosen]) if (!ok.some((c) => c.tracker_id === id)) chosen.delete(id);
+  const all = ok.length > 0 && ok.every((c) => chosen.has(c.tracker_id));
+  box.innerHTML = `${r.dispatched.length ? `<div class="media-label">Dispatched <span class="muted">live status from their phones</span></div>${boardHtml(r.dispatched)}` : ""}
+    <div class="media-label">Guards <span class="muted">closest to the ${r.from === "camera" ? "alarm camera" : "site"} first</span></div>
+    ${write && ok.length > 1 ? `<div class="dispatch-choose"><label class="check"><input type="checkbox" data-choose-all ${all ? "checked" : ""}> All guards (${ok.length})</label>
+      <button type="button" class="btn btn-sm btn-primary" data-dispatch-chosen ${chosen.size ? "" : "disabled"}>Dispatch selected (${chosen.size})</button></div>` : ""}
+    <ul class="dispatch-list">${r.guards.map((c) => {
       const f = freshness({ fix_at: c.fix_at, online: c.online });
       const where = c.distance_m == null ? "position unknown" : `${c.distance} away`;
       const block = !r.texts_ready ? "Text messages aren't set up" : c.reason;
-      return `<li class="${c.closest ? "closest" : ""}"><span class="guard-pip guard--${f}"></span>
+      return `<li class="${c.closest ? "closest" : ""}">${write && ok.length > 1 ? `<input type="checkbox" data-choose="${c.tracker_id}" aria-label="Choose ${esc(c.name)}" ${chosen.has(c.tracker_id) ? "checked" : ""} ${block ? "disabled" : ""}>` : ""}
+        <span class="guard-pip guard--${f}"></span>
         <span class="dispatch-who"><b>${esc(c.name)}</b>${c.closest ? ' <span class="chip p2">Closest</span>' : ""}
           <span class="muted small-print">${esc(where)}${f === "offline" ? " · OFFLINE" : f === "stale" ? ` · last seen ${esc(relTime(c.fix_at))}` : ""}${c.person && c.person !== c.name ? ` · ${esc(c.person)}` : ""}</span>
           ${block ? `<span class="muted small-print">${esc(block)}</span>` : ""}</span>
@@ -81,21 +103,44 @@ async function loadGuards(a) {
     }).join("")}</ul>
     ${r.auto && a.state === "new" && r.texts_ready ? '<p class="muted small-print">Marking it <b>Real event</b> texts the closest guard automatically.</p>' : ""}`;
 }
+
+// ---------------------------------------------------------------- timeline: everything, live (also in the report)
+let timelineSoon = null;
+async function loadTimeline(a) {
+  const box = drawer.querySelector(".drawer-timeline");
+  if (!box) return;
+  let rows;
+  try { rows = await api(`/api/alarms/${a.id}/timeline`); } catch { return; }
+  if (current?.id !== a.id) return;
+  box.hidden = false;
+  box.innerHTML = `<div class="media-label">Timeline <span class="muted">live · ${rows.length} entries · also in the incident report</span></div>
+    <ol class="timeline">${rows.map((e) => `<li class="tl tl--${esc(e.kind)}"><time>${esc(new Date(e.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</time>
+      <span><b>${esc(e.what)}</b> <span class="muted">· ${esc(e.who)}</span>${e.detail ? `<div class="muted small-print">${esc(e.detail)}</div>` : ""}</span></li>`).join("")}</ol>`;
+}
+on("alarm.timeline", ({ alarm_id }) => {
+  if (!current || current.id !== alarm_id || drawer.hidden) return;
+  clearTimeout(timelineSoon);
+  timelineSoon = setTimeout(() => { if (current?.id === alarm_id) { loadTimeline(current); loadGuards(current); } }, 250);
+});
 function startGuards(a) {
   stopGuards();
   guardsFor = a.id;
   loadGuards(a);
   guardsTimer = setInterval(() => { if (current && !drawer.hidden) loadGuards(current); }, 15000);
 }
-async function dispatchGuard(btn) {
-  if (!confirm(`Text ${btn.dataset.name} to go to this alarm now?`)) return;
+async function sendDispatch(ids, names, btn) {
+  if (!confirm(`Text ${names} to go to this alarm now?`)) return;
   btn.disabled = true;
   try {
-    const r = await api(`/api/alarms/${current.id}/dispatch`, { method: "POST", body: { tracker_id: Number(btn.dataset.dispatch) } });
-    toast(`Dispatched ${esc(r.to)}${r.distance ? ` (${esc(r.distance)} away)` : ""}: text to ${esc(r.phone)}`);
-    loadGuards(current);
-  } catch (err) { toast(esc(err.message), { kind: "error" }); btn.disabled = false; }
+    const r = await api(`/api/alarms/${current.id}/dispatch`, { method: "POST", body: { tracker_ids: ids } });
+    toast(`Dispatched ${r.sent.map((x) => `${esc(x.to)}${x.distance ? ` (${esc(x.distance)})` : ""}`).join(", ")}`
+      + (r.failed.length ? `. Not sent: ${r.failed.map((f) => `${esc(f.name)}: ${esc(f.error)}`).join("; ")}` : ""), r.failed.length ? { kind: "error" } : {});
+    chosen.clear();
+    loadGuards(current); loadTimeline(current);
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+  finally { btn.disabled = false; }
 }
+const dispatchGuard = (btn) => sendDispatch([Number(btn.dataset.dispatch)], btn.dataset.name, btn);
 
 export function closeDrawer() {
   current = null;
@@ -249,7 +294,8 @@ export async function openDrawer(id, fallback) {
       <div class="drawer-details"></div>
       <div class="drawer-side"><section class="drawer-dispatch" hidden></section>
       <section class="drawer-where" hidden><div class="media-label">Where <span class="muted">top-down</span></div>
-        <div class="where-mount"></div><div class="where-note muted"></div></section></div>
+        <div class="where-mount"></div><div class="where-note muted"></div></section>
+      <section class="drawer-timeline" hidden></section></div>
     </div>`;
   render(a);
   player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
@@ -257,6 +303,7 @@ export async function openDrawer(id, fallback) {
   mountWhere(a).catch((err) => console.error("top-down map in the alarm details failed", err));
   api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
   startGuards(a);
+  loadTimeline(a);
   drawer.hidden = false;
   backdrop.hidden = false;
   drawer.querySelector("#drawer-close").focus();
@@ -268,12 +315,17 @@ drawer.addEventListener("click", async (e) => {
   if (next) { const a = openAlarms.get(Number(next.dataset.next)); return openDrawer(Number(next.dataset.next), a); }
   const disp = e.target.closest("[data-dispatch]");
   if (disp) return dispatchGuard(disp);
+  const many = e.target.closest("[data-dispatch-chosen]");
+  if (many && chosen.size) {
+    const names = lastGuards.r.guards.filter((c) => chosen.has(c.tracker_id)).map((c) => c.name);
+    return sendDispatch([...chosen], names.length > 2 ? `${names.length} guards (${names.join(", ")})` : names.join(" and "), many);
+  }
   if (e.target.id === "drawer-export") return openExport(current);
   if (e.target.id === "note-add") return addNote();
   const verdict = e.target.dataset.ack;
   if (verdict) {
     const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target, verdict);
-    if (updated) { current = updated; render(updated); loadGuards(updated); }
+    if (updated) { current = updated; render(updated); loadGuards(updated); loadTimeline(updated); }
     return;
   }
   const override = e.target.dataset.override;
@@ -288,6 +340,16 @@ drawer.addEventListener("click", async (e) => {
       toast(`Verdict changed to ${VERDICT[override].toLowerCase()}`);
     } catch (err) { toast(esc(err.message), { kind: "error" }); e.target.disabled = false; }
   }
+});
+drawer.addEventListener("change", (e) => {
+  if (!lastGuards || lastGuards.alarmId !== current?.id) return;
+  if (e.target.matches("[data-choose]")) {
+    const id = Number(e.target.dataset.choose);
+    if (e.target.checked) chosen.add(id); else chosen.delete(id);
+  } else if (e.target.matches("[data-choose-all]")) {
+    chosen = new Set(e.target.checked ? lastGuards.r.guards.filter((c) => c.can_text).map((c) => c.tracker_id) : []);
+  } else return;
+  loadGuards(current);
 });
 backdrop.addEventListener("click", closeDrawer);
 drawer.addEventListener("keydown", (e) => {

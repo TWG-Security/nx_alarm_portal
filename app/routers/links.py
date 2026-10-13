@@ -7,6 +7,7 @@
 - POST /twilio/sms                            replies to our number (YES / STOP / HELP), Twilio-signed
 - GET /sms-terms                              the public text-message terms (carriers and Twilio ask for it)
 - POST /api/a/{token}/share                   "Share my location now": the texted person's location-link token
+- POST /api/a/{token}/status                  En route / On scene / Clear (an MDT's status buttons), logged on the timeline
 
 Everything is limited to the link's one alarm and the live view of its site's cameras. An unknown token is recorded as a failed sign-in
 (kind "alarm_link"), so an address that guesses gets banned (BanGate guards these paths). Opening the
@@ -21,6 +22,7 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
+from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import alarm_links, platform_settings, security_guard, sms
@@ -75,7 +77,8 @@ async def alarm_page(token: str, request: Request, db: AsyncSession = Depends(ge
     data.pop("nx_ack_result", None)
     response = render(request, "alarm_link.html", state="ok", alarm=data, token=token,
                       sent_to=who.label if who else "", expires_at=link.expires_at.isoformat(),
-                      directions=sms.directions_url(alarm.site))
+                      directions=sms.directions_url(alarm.site),
+                      guard_status=await _guard_status(db, alarm.id, link.user_id) if who else "")
     response.headers.update(PRIVATE)
     return response
 
@@ -311,3 +314,45 @@ async def link_share_location(token: str, request: Request, db: AsyncSession = D
     from app.services.bus import bus
     bus.publish(t.tenant_id, "tracker.moved", trackers.tracker_dict(t))
     return {"token": url.rstrip("/").rsplit("/", 1)[-1], "name": t.name}
+
+
+
+async def _guard_status(db: AsyncSession, alarm_id: int, user_id: int) -> str:
+    from sqlalchemy import select
+    from app.models import AuditLog
+    row = await db.scalar(select(AuditLog).where(AuditLog.alarm_id == alarm_id, AuditLog.user_id == user_id,
+                                                 AuditLog.action == "guard.status").order_by(AuditLog.id.desc()).limit(1))
+    return (row.detail or {}).get("status", "") if row else ""
+
+
+class StatusIn(BaseModel):
+    status: str = Field(pattern="^(en_route|on_scene|clear)$")
+
+
+@router.post("/api/a/{token}/status")
+async def link_guard_status(token: str, body: StatusIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """The guard taps En route / On scene / Clear. Logged on the alarm's timeline with where they were (their freshest
+    tracked position under 3 minutes old) and how far that is from the alarm; the dispatcher's screen updates live."""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models import Tracker
+    from app.services import dispatch
+    from app.services.trackers import aware, metres
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(404 if status == "invalid" else 410)
+    if link.user_id is None:
+        raise HTTPException(400, "This link wasn't sent to a person")
+    where = {}
+    recent = utcnow() - timedelta(minutes=3)
+    t = await db.scalar(select(Tracker).where(Tracker.tenant_id == alarm.tenant_id, Tracker.user_id == link.user_id,
+                                              Tracker.lat.is_not(None), Tracker.fix_at >= recent).order_by(Tracker.fix_at.desc()).limit(1))
+    if t is not None:
+        where = {"lat": round(t.lat, 6), "lng": round(t.lng, 6), "fix_at": aware(t.fix_at).isoformat()}
+        target = dispatch.target(alarm)
+        if target:
+            where["distance"] = sms.distance_words(metres(target[0], target[1], t.lat, t.lng))
+    audit(db, alarm.tenant_id, "guard.status", user_id=link.user_id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), status=body.status, **where)
+    await db.commit()
+    return {"ok": True, "status": body.status, "position": bool(where)}

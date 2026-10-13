@@ -52,7 +52,7 @@ export function createSharer(token, { everyS = 10, onState = () => {} } = {}) {
     send();
   }
   function onError(err) {
-    if (err.code === 1) { stop(false); state("off", "Location is blocked for this page. Allow location for this site in the phone's settings, then try again."); return; }
+    if (err.code === 1) { stop(false); state("blocked", "Location is blocked for this page. See “Location blocked?” below to allow it, then tap again."); return; }
     state("warn", err.code === 3 ? "Waiting for the phone's GPS…" : "The phone can't find its location right now. Still trying…");
   }
   async function keepAwake() { try { lock = await navigator.wakeLock?.request("screen"); } catch { lock = null; } }
@@ -83,4 +83,17 @@ export function createSharer(token, { everyS = 10, onState = () => {} } = {}) {
     if (watch != null && !e.persisted) navigator.sendBeacon?.(`/api/g/${encodeURIComponent(token)}/stop`, new Blob(["{}"], { type: "application/json" }));
   });
   return { start, stop, get active() { return watch != null; } };
+}
+
+/**
+ * Ask for the location right away, inside the tap. Safari (iPhone) only shows its "Allow location?" question for a
+ * request made directly in the tap; one made after waiting on the network can be refused without asking.
+ * Resolves "ok" | "blocked" | "unavailable".
+ */
+export function askLocationNow() {
+  if (!navigator.geolocation) return Promise.resolve("unavailable");
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(() => resolve("ok"), (e) => resolve(e.code === 1 ? "blocked" : "ok"),
+      { enableHighAccuracy: true, maximumAge: 60000, timeout: 30000 });
+  });
 }
