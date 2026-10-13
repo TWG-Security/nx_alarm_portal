@@ -740,10 +740,10 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .guard--stale .guard-label, .guard--none .guard-label { color: #cfcfcf; }
 .guard--err .guard-dot { box-shadow: 0 0 0 2px #C0392B, 0 2px 6px rgba(0,0,0,.5); }
 .guard-list { list-style: none; margin: 0; padding: 0; }
-.guard-list li { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 6px 4px; border-radius: 6px; cursor: pointer; }
+
 .guard-list li:hover, .guard-list li.following { background: var(--hover, rgba(127,127,127,.12)); }
-.guard-list li.following b::after { content: " · following"; font-weight: 400; color: #E08A30; }
-.guard-list .small-print { flex-basis: 100%; padding-left: 20px; margin-top: -2px; }
+
+
 .guard-pip { width: 12px; height: 12px; border-radius: 50%; background: var(--guard-c, #8a8a8a); flex: 0 0 auto; }
 
 /* ---- top bar: My account (always visible; icon only on narrow screens) */
@@ -902,3 +902,27 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .loc-test-result dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; margin: 6px 0; }
 .loc-test-result dt { color: var(--text-muted); }
 .loc-test-result dd { margin: 0; word-break: break-word; }
+
+/* Guards section (map side panel): collapsible header, eye = show / hide on the map, one tidy row per guard:
+   status dot | name + status line | Locate + History icon buttons. */
+.guard-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.guard-toggle { display: flex; align-items: center; gap: 6px; background: none; border: 0; padding: 0; color: inherit; cursor: pointer; min-width: 0; }
+.guard-toggle h3 { margin: 0; }
+.guard-chev { display: inline-flex; color: var(--text-muted); transition: transform .15s; }
+.guard-toggle[aria-expanded="true"] .guard-chev { transform: rotate(90deg); }
+.guard-count { font-size: 11px; color: var(--text-muted); border: 1px solid var(--border); border-radius: 10px; padding: 0 6px; line-height: 16px; }
+.guard-head-tools { display: flex; align-items: center; gap: 8px; }
+.guard-btn { display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; flex: 0 0 auto;
+  border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text-muted); cursor: pointer; }
+.guard-btn:hover, .guard-btn:focus-visible { color: var(--text); border-color: #E08A30; }
+.guard-btn[aria-pressed="false"] { color: #E08A30; }
+.guard-btn:disabled { opacity: .5; cursor: wait; }
+.guard-list li { display: grid; grid-template-columns: 12px minmax(0, 1fr) auto; align-items: center; gap: 2px 10px; padding: 7px 6px;
+  border-radius: 6px; cursor: pointer; }
+.guard-main { display: flex; flex-direction: column; min-width: 0; }
+.guard-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.guard-sub { font-size: 12px; color: var(--text-muted); line-height: 1.3; }                  /* wraps: "last seen …" matters */
+.guard-following { font-weight: 400; font-size: 12px; color: #E08A30; }
+.guard-actions { display: flex; gap: 4px; }
+.guard-hidden-note { margin: 6px 0 0; }
+.guard-list { margin-top: 8px; }

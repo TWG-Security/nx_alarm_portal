@@ -11,6 +11,19 @@ const FRESH_S = 180, STALE_S = 900;       // green under 3 min, amber under 15 m
 const TRAIL_CHOICES = [5, 15, 30, 60], TRAIL_KEY = "twg-guard-trail-min";
 let trailMin = (() => { try { const v = Number(localStorage.getItem(TRAIL_KEY)); return TRAIL_CHOICES.includes(v) ? v : 5; } catch { return 5; } })();
 const MPH = 2.23694;
+// The side panel's Guards section can be collapsed, and guards hidden from the map (both remembered here).
+const COLLAPSE_KEY = "twg-guards-collapsed", SHOW_KEY = "twg-guards-shown";
+const remembered = (key, fallback) => { try { const v = localStorage.getItem(key); return v == null ? fallback : v === "1"; } catch { return fallback; } };
+const remember = (key, on) => { try { localStorage.setItem(key, on ? "1" : "0"); } catch { /* applied, just not remembered */ } };
+// Line icons (stroke = currentColor), like the rest of the portal's buttons.
+const svg = (d, size = 16) => `<svg viewBox="0 0 24 24" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON = {
+  locate: svg('<circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2.2"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/>'),
+  history: svg('<path d="M3 12a9 9 0 1 0 2.7-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7.5V12l3 2"/>'),
+  eye: svg('<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>'),
+  eyeOff: svg('<path d="M10.6 5.1A10.9 10.9 0 0 1 12 5c6.4 0 10 7 10 7a17 17 0 0 1-3 3.9M6.6 6.6C3.7 8.5 2 12 2 12s3.6 7 10 7a10 10 0 0 0 5.4-1.6"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2"/><path d="M3 3l18 18"/>'),
+  chevron: svg('<path d="M9 6l6 6-6 6"/>', 14),
+};
 
 export function freshness(t, now = Date.now()) {
   if (!t.fix_at) return "none";
@@ -34,7 +47,10 @@ function statusText(t, f = freshness(t)) {
  */
 export function mountGuards(lmap, listEl, { onChange } = {}) {
   const guards = new Map();          // id -> { t, marker, trail, line }
-  lmap.createPane("guards").style.zIndex = 640;          // above cones and site pins, below popups
+  const pane = lmap.createPane("guards");
+  pane.style.zIndex = 640;          // above cones and site pins, below popups
+  let collapsed = remembered(COLLAPSE_KEY, false), shown = remembered(SHOW_KEY, true);
+  pane.style.display = shown ? "" : "none";
   let follow = null;
 
   function icon(t) {
@@ -182,17 +198,26 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
     if (!all.length) { listEl.replaceChildren(); return; }
     // Live updates don't redraw the list while someone is picking a history time (it would close the picker).
     if (!force && hist && listEl.contains(document.activeElement) && document.activeElement.matches("input, select")) return;
-    listEl.innerHTML = `<div class="guard-head"><h3>Guards</h3><label class="guard-trail">Trail
-        <select data-trail aria-label="Trail length">${TRAIL_CHOICES.map((m) => `<option value="${m}" ${m === trailMin ? "selected" : ""}>${m} min</option>`).join("")}</select></label></div>
-      <ul class="guard-list">${all.map((t) => {
+    const live = all.filter((t) => ["live", "late"].includes(freshness(t))).length;
+    listEl.innerHTML = `<div class="guard-head">
+        <button type="button" class="guard-toggle" data-guards-toggle aria-expanded="${!collapsed}" title="${collapsed ? "Show" : "Hide"} the guards list">
+          <span class="guard-chev">${ICON.chevron}</span><h3>Guards</h3><span class="guard-count">${live}/${all.length}</span></button>
+        <span class="guard-head-tools">
+          ${collapsed ? "" : `<label class="guard-trail" title="How much trail each guard leaves on the map">Trail
+            <select data-trail aria-label="Trail length">${TRAIL_CHOICES.map((m) => `<option value="${m}" ${m === trailMin ? "selected" : ""}>${m} min</option>`).join("")}</select></label>`}
+          <button type="button" class="guard-btn" data-guards-eye aria-pressed="${shown}" title="${shown ? "Hide guards on the map" : "Show guards on the map"}">${shown ? ICON.eye : ICON.eyeOff}</button>
+        </span></div>
+      ${collapsed ? "" : `${shown ? "" : '<p class="muted small-print guard-hidden-note">Hidden on the map.</p>'}<ul class="guard-list">${all.map((t) => {
       const f = freshness(t);
       return `<li data-guard="${t.id}" class="${follow === t.id ? "following" : ""}" tabindex="0" title="${esc(t.error || t.device_name || "")}">
-        <span class="guard-pip guard--${f}"></span><b>${esc(t.name)}</b>
-        <button type="button" class="guard-refresh guard-locate" data-locate="${t.id}" title="${t.source === "phone" ? `Text ${esc(t.name)} asking them to share their location now` : `Get ${esc(t.name)}'s position from InControl2 now`}" aria-label="Locate ${esc(t.name)}">📍</button>
-        <button type="button" class="guard-refresh" data-history="${t.id}" title="Where ${esc(t.name)} was: pick a time range" aria-label="${esc(t.name)}'s history">🕘</button>
-        <span class="muted small-print${f === "offline" ? " guard-offline-text" : ""}">${esc(statusText(t, f) ?? `${speedText(t)} · ${relTime(t.fix_at)}`)}</span>
-        ${t.error ? '<span class="chip offline" title="' + esc(t.error) + '">!</span>' : ""}</li>`;
-    }).join("")}</ul>${historyHtml()}`;
+        <span class="guard-pip guard--${f}"></span>
+        <span class="guard-main"><span class="guard-name">${esc(t.name)}${follow === t.id ? ' <span class="guard-following">following</span>' : ""}${t.error ? ` <span class="chip offline" title="${esc(t.error)}">!</span>` : ""}</span>
+          <span class="guard-sub${f === "offline" ? " guard-offline-text" : ""}">${esc(statusText(t, f) ?? `${speedText(t)} · ${relTime(t.fix_at)}`)}</span></span>
+        <span class="guard-actions">
+          <button type="button" class="guard-btn" data-locate="${t.id}" title="${t.source === "phone" ? `Locate: text ${esc(t.name)} asking them to share their location now` : `Locate: get ${esc(t.name)}'s position from InControl2 now`}" aria-label="Locate ${esc(t.name)}">${ICON.locate}</button>
+          <button type="button" class="guard-btn" data-history="${t.id}" title="History: where ${esc(t.name)} was, any time range" aria-label="${esc(t.name)}'s history">${ICON.history}</button>
+        </span></li>`;
+    }).join("")}</ul>${historyHtml()}`}`;
   }
 
   function focus(id) {
@@ -204,6 +229,15 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
   }
 
   listEl.addEventListener("click", async (e) => {
+    if (e.target.closest("[data-guards-toggle]")) {
+      collapsed = !collapsed; remember(COLLAPSE_KEY, collapsed); renderList(true); return;
+    }
+    if (e.target.closest("[data-guards-eye]")) {
+      shown = !shown; remember(SHOW_KEY, shown);
+      pane.style.display = shown ? "" : "none";          // markers, trails and a history path all live in this pane
+      renderList(true); onChange?.();                      // and the 3D view
+      return;
+    }
     const loc = e.target.closest("[data-locate]");
     if (loc) {
       e.stopPropagation();
@@ -271,7 +305,7 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
   load().catch(() => {});
 
   return {
-    list: () => [...guards.values()].map((g) => ({ ...g.t, trail: latlngs(g.trail), fresh: freshness(g.t) })),
+    list: () => (shown ? [...guards.values()].map((g) => ({ ...g.t, trail: latlngs(g.trail), fresh: freshness(g.t) })) : []),
     focus,
     destroy() { clearInterval(tick); offs.forEach((off) => off?.()); clearHistory(); for (const id of [...guards.keys()]) remove(id); },
   };
