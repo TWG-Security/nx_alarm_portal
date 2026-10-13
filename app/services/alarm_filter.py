@@ -6,6 +6,11 @@ Levels (priority number in brackets):
   warning  (3) - amber card in the live feed, one soft tone
   ignore       - not stored
 
+Tagged rules only (company setting, Settings → Alarm levels): an NX event raises an alarm only if the NX rule that
+logged it has #critical, #alarm or #warning in its Title/Comment; events from other rules are dropped. It's applied
+only where it can be applied safely (see classify's known_rules): a site whose NX account can't read rules, or a rule
+the portal hasn't read yet, still comes in by its event type, and the portal's own "site connection lost" always does.
+
 How a level is chosen (first match wins):
   1. NX rule tag: the rule's "Title or Comment" contains #critical, #alarm, #warning or #ignore
   2. the NX rule forces acknowledgement -> critical (tenant toggle)
@@ -55,15 +60,17 @@ UNKNOWN_TYPE_LEVEL = "warning"   # new NX event types show up rather than vanish
 class Policy:
     levels: dict[str, str] = field(default_factory=dict)   # tenant overrides of the defaults
     force_ack_critical: bool = True                         # NX "force acknowledgement" rules -> critical
+    tagged_only: bool = False                               # only rules tagged #critical / #alarm / #warning raise alarms
 
     @classmethod
     def from_settings(cls, settings: dict | None) -> "Policy":
         s = (settings or {}).get("alarm_policy") or {}
         levels = {k: v for k, v in (s.get("levels") or {}).items() if v in CHOICES}
-        return cls(levels=levels, force_ack_critical=bool(s.get("force_ack_critical", True)))
+        return cls(levels=levels, force_ack_critical=bool(s.get("force_ack_critical", True)),
+                   tagged_only=bool(s.get("tagged_only", False)))
 
     def to_settings(self) -> dict:
-        return {"levels": dict(self.levels), "force_ack_critical": self.force_ack_critical}
+        return {"levels": dict(self.levels), "force_ack_critical": self.force_ack_critical, "tagged_only": self.tagged_only}
 
     def level_for(self, event_type: str, site_override: dict | None = None) -> str:
         if site_override and site_override.get(event_type) in CHOICES:
@@ -102,8 +109,11 @@ def category_of(event_type: str) -> str:
 
 
 def classify(row: dict, policy: Policy = DEFAULT_POLICY, site_override: dict | None = None,
-             rule_levels: dict[str, str] | None = None) -> Classification:
-    """rule_levels: {nx_rule_id: level} parsed from NX rule comments (see rule_tag)."""
+             rule_levels: dict[str, str] | None = None, known_rules: set[str] | None = None) -> Classification:
+    """rule_levels: {nx_rule_id: level} parsed from NX rule comments (see rule_tag).
+    known_rules: the ids of every rule read from this site's NX, or None when they couldn't be read. With the policy's
+    tagged_only, a row from a known rule without a level tag is dropped; rows from unknown rules (not read yet) and
+    sites whose rules can't be read come through by event type, so a filter that can't be applied never hides an alarm."""
     event = row.get("eventData") or {}
     action = row.get("actionData") or {}
     event_type = event.get("type", "")
@@ -113,6 +123,8 @@ def classify(row: dict, policy: Policy = DEFAULT_POLICY, site_override: dict | N
         return Classification(False)
 
     rule_id = (row.get("ruleId") or "").strip("{}")
+    if policy.tagged_only and known_rules and rule_id and rule_id in known_rules and rule_id not in (rule_levels or {}):
+        return Classification(False, source="untagged")
     if rule_levels and rule_id in rule_levels:
         level, source = rule_levels[rule_id], "rule_tag"
     elif policy.force_ack_critical and action.get("acknowledge"):

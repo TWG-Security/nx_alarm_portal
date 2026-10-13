@@ -48,6 +48,8 @@ class SiteRuntime:
     rule_always: set[str] = field(default_factory=set)          # NX rule ids tagged #24h (raise even when disarmed)
     rule_delays: list[dict] = field(default_factory=list)       # alarm rules whose "Interval of action" holds repeats back
     rule_ids: set[str] = field(default_factory=set)
+    rules: list[dict] = field(default_factory=list)                # the last rule list read from NX (for the rules view)
+    rules_read_at: float | None = None                              # when (epoch s)
     rules_refreshed: float = 0.0
     rules_forbidden: bool = False
     devices_refreshed: float = 0.0
@@ -61,7 +63,7 @@ class SiteRuntime:
 async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str],
                  user_names: dict[str, str] | None = None, policy: Policy = DEFAULT_POLICY,
                  rule_levels: dict[str, str] | None = None, always_armed: set[str] | None = None,
-                 now: int | None = None) -> list[Alarm]:
+                 now: int | None = None, known_rules: set[str] | None = None) -> list[Alarm]:
     """Store qualifying rows as alarms. Returns the alarms to raise now: new ones, plus any
     promoted from "disarmed" by a #24h rule. Security events at a disarmed site are stored
     with state "disarmed" and not returned (see app/services/arming.py)."""
@@ -69,7 +71,7 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     always: set[str] = set()       # event keys that some #24h rule fired on
     acks = lambda r: bool((r.get("actionData") or {}).get("acknowledge"))  # noqa: E731
     for row in rows:
-        c = classify(row, policy, site.alarm_types, rule_levels)
+        c = classify(row, policy, site.alarm_types, rule_levels, known_rules)
         if not c.is_alarm:
             continue
         key = event_key(row)
@@ -179,6 +181,42 @@ def _rule_label(r: dict) -> str:
     return f"{label} ({extra})" if extra else label
 
 
+_LEVEL_ORDER = {"critical": 0, "alarm": 1, "warning": 2, "ignore": 3, "off": 4}
+
+
+def describe_rules(rules: list[dict], policy: Policy, site_override: dict | None = None) -> list[dict]:
+    """The NX rules the portal read, as the map's "NX rules" list shows them: what each one does in the portal
+    (level, or ignored and why), its #tags, and an Interval of action that delays repeats."""
+    from app.services.alarm_filter import EVENT_TYPES, category_of
+    out = []
+    for r in rules:
+        ev, act = r.get("event") or {}, r.get("action") or {}
+        comment = (r.get("comment") or "").strip()
+        t, tag = ev.get("type", ""), rule_tag(comment)
+        enabled = r.get("enabled") is not False
+        if not enabled:
+            level, why = "off", "Disabled in NX"
+        elif tag == "ignore":
+            level, why = "ignore", "#ignore tag"
+        elif tag:
+            level, why = tag, f"#{tag} tag"
+        elif policy.tagged_only:
+            level, why = "ignore", "No #critical / #alarm / #warning tag (tagged rules only)"
+        elif policy.force_ack_critical and act.get("acknowledge"):
+            level, why = "critical", "Force acknowledgement"
+        else:
+            level = policy.level_for(t, site_override)
+            why = "this site's setting" if site_override and t in site_override else (
+                "Settings → Alarm levels" if t in policy.levels else "event type default")
+        interval = int(act.get("intervalS") or 0)
+        out.append({"id": (r.get("id") or "").strip("{}"), "name": _rule_label(r), "comment": comment,
+                    "event_type": t, "event_label": EVENT_TYPES.get(t, (t,))[0], "category": category_of(t),
+                    "action": act.get("type", ""), "enabled": enabled, "tag": tag, "always": arming.rule_always_armed(comment),
+                    "level": level, "why": why, "interval_s": interval,
+                    "delayed": interval > 0 and level not in ("ignore", "off")})
+    return sorted(out, key=lambda x: (_LEVEL_ORDER.get(x["level"], 9), x["category"] != "security", x["name"].lower()))
+
+
 def rule_delays(rules: list[dict], policy: Policy, site_override: dict | None = None) -> list[dict]:
     """Events that reach the portal late because of NX's "Interval of action".
 
@@ -265,6 +303,29 @@ class PollerManager:
         return {"rules_readable": not rt.rules_forbidden, "rule_delays": sec,
                 "system_delays": {"count": len(system), "max_s": max((d["interval_s"] for d in system), default=0),
                                   "worst": max(system, key=lambda d: d["interval_s"])["name"] if system else ""}}
+
+    def rules_view(self, site, policy: Policy) -> dict:
+        """What the portal knows of a site's NX rules right now (no NX call)."""
+        rt = self._rt.get(site.id)
+        if rt is None:
+            return {"readable": None, "read_at": None, "tagged_only": policy.tagged_only, "rules": []}
+        return {"readable": not rt.rules_forbidden if rt.rules_read_at or rt.rules_forbidden else None,
+                "read_at": rt.rules_read_at, "tagged_only": policy.tagged_only,
+                "rules": describe_rules(rt.rules, policy, site.alarm_types)}
+
+    async def check_now(self, site_id: int) -> str:
+        """The site's "Check now": re-read its cameras, users and NX rules and poll its events right away, instead of
+        waiting for the next refresh. Returns "" or what went wrong (the regular loop keeps running either way)."""
+        rt = self._rt.get(site_id)
+        if rt is None:
+            return "This site isn't being monitored (disabled or archived)"
+        rt.devices_refreshed = 0.0
+        rt.rules_refreshed = 0.0
+        try:
+            await self.poll_once(rt)
+        except Exception as e:  # noqa: BLE001 - reported to the operator; the loop handles the site's status
+            return f"{type(e).__name__}: {e}"[:300]
+        return ""
 
     def push_state(self, site_id: int) -> bool | None:
         rt = self._rt.get(site_id)
@@ -377,7 +438,7 @@ class PollerManager:
             relevelled = await self._refresh_rules(rt, db, site, policy, force=True)
         async with rt.ingest_lock:
             created = await ingest(db, site, rows, rt.device_names, rt.user_names, policy, rt.rule_levels,
-                                   rt.rule_always)
+                                   rt.rule_always, known_rules=None if rt.rules_forbidden else rt.rule_ids)
             await db.commit()
         return created, relevelled
 
@@ -428,6 +489,7 @@ class PollerManager:
             log.info("site %s: could not read NX rules (%s)", rt.site_id, exc.__class__.__name__)
             return 0
         rt.rules_forbidden = False
+        rt.rules, rt.rules_read_at = rules, time.time()
         old = rt.rule_levels
         rt.rule_ids = {(r.get("id") or "").strip("{}") for r in rules}
         rt.rule_always = {rid for r in rules

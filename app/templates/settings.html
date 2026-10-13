@@ -36,6 +36,10 @@
       When several rules fire for the same event, the loudest level wins.</span></p>
     <p class="muted" style="margin-bottom:0">Priority order: rule tag → Force acknowledgement (below) → event type (table below).</p>
   </div>
+  <label class="check"><input type="checkbox" id="tagged-only"> <span><b>Only NX rules tagged #critical, #alarm or #warning raise alarms.</b>
+    Events from any other NX rule are ignored (not stored). Put the tag in the rule's <i>Title or Comment</i> in NX.
+    <span class="muted">A site whose NX account can't read rules still sends everything (the map shows a warning), and the
+    portal's own “site connection lost” always comes through. A disarmed site's #24h rules need a level tag too.</span></span></label>
   <label class="check"><input type="checkbox" id="force-ack"> NX rules with <b>Force acknowledgement</b> are always Critical, whatever their event type</label>
   <div class="table-wrap">
     <table>

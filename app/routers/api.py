@@ -302,6 +302,40 @@ async def put_arm_schedule(site_id: int, body: ArmScheduleIn, request: Request, 
     return data
 
 
+async def _site_policy(db: AsyncSession, site: Site) -> Policy:
+    tenant = await db.get(Tenant, site.tenant_id)
+    return Policy.from_settings(tenant.settings if tenant else None)
+
+
+@router.get("/sites/{site_id}/rules")
+async def site_rules(site_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """The NX rules the portal last read for this site and what each does here (level / ignored and why)."""
+    site = await _get_site(db, scope, site_id)
+    return manager.rules_view(site, await _site_policy(db, site))
+
+
+CHECK_EVERY_S = 5.0
+_checked: dict[int, float] = {}
+
+
+@router.post("/sites/{site_id}/check")
+async def check_site(site_id: int, request: Request, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """"Check now": re-read the site from NX right away (status, cameras, rules, new events). Read-only towards NX."""
+    import time as _t
+    site = await _get_site(db, scope, site_id)
+    if _t.monotonic() - _checked.get(site.id, -1e9) < CHECK_EVERY_S:
+        raise HTTPException(429, "Just checked: try again in a few seconds")
+    _checked[site.id] = _t.monotonic()
+    audit(db, site.tenant_id, "site.checked", user_id=scope.user.id, site_id=site.id, ip=client_ip(request))
+    await db.commit()                                   # don't hold the connection while NX answers
+    error = await manager.check_now(site.id)
+    site = await _get_site(db, scope, site_id)
+    await db.refresh(site)
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
+    return {"error": error, "site": data, "rules": manager.rules_view(site, await _site_policy(db, site))}
+
+
 @router.put("/sites/{site_id}/cameras/{device_id}")
 async def place_camera(site_id: int, device_id: str, body: CameraPlaceIn, request: Request,
                        user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
@@ -580,11 +614,13 @@ async def list_audit(scope: Scope = Depends(get_scope), db: AsyncSession = Depen
 class AlarmPolicyIn(BaseModel):
     levels: dict[str, str]
     force_ack_critical: bool = True
+    tagged_only: bool | None = None          # None = keep (pages opened before the setting existed)
 
 
 def _policy_payload(policy: Policy) -> dict:
     return {
         "force_ack_critical": policy.force_ack_critical,
+        "tagged_only": policy.tagged_only,
         "types": [{"type": t, "label": label, "category": cat, "default": default, "level": policy.level_for(t)}
                   for t, (label, cat, default) in EVENT_TYPES.items()],
     }
@@ -614,7 +650,8 @@ async def put_alarm_levels(body: AlarmPolicyIn, request: Request, user: User = D
     old = Policy.from_settings(tenant.settings)
     # Store only differences from the defaults so future default changes still apply.
     overrides = {t: lv for t, lv in body.levels.items() if lv != EVENT_TYPES[t][2]}
-    policy = Policy(levels=overrides, force_ack_critical=body.force_ack_critical)
+    policy = Policy(levels=overrides, force_ack_critical=body.force_ack_critical,
+                    tagged_only=old.tagged_only if body.tagged_only is None else body.tagged_only)
     tenant.settings = {**(tenant.settings or {}), "alarm_policy": policy.to_settings()}
 
     # Re-level alarms that are still open so the console reflects the change right away.
@@ -632,7 +669,7 @@ async def put_alarm_levels(body: AlarmPolicyIn, request: Request, user: User = D
 
     changed = {t: [old.level_for(t), policy.level_for(t)] for t in EVENT_TYPES if old.level_for(t) != policy.level_for(t)}
     audit(db, tid, "settings.alarm_levels", user_id=user.id, ip=client_ip(request), changed=changed,
-          force_ack_critical=policy.force_ack_critical)
+          force_ack_critical=policy.force_ack_critical, tagged_only=policy.tagged_only)
     await db.commit()
     bus.publish(tid, "alarms.reload", {})
     return _policy_payload(policy)

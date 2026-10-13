@@ -67,6 +67,11 @@ RULES = {k: {"id": "{%s}" % uuid.uuid5(uuid.NAMESPACE_URL, k), "comment": c, "en
                             ("panic24", "Hold-up button #24h", "softTrigger", 0))}
 @app.get("/rest/v4/events/rules")
 async def rules(): return list(RULES.values())
+@app.post("/_rules/{kind}")
+async def set_rule_comment(kind: str, comment: str = ""):
+    """Tests: change a rule's Title/Comment (its #tags), like editing it in NX."""
+    RULES[kind]["comment"] = comment
+    return RULES[kind]
 _FRAME: list = []
 FRAMES = {"mode": "normal", "last_inject": 0.0}
 @app.post("/_frames/{mode}")

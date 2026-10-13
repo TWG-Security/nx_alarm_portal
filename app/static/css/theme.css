@@ -941,3 +941,13 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
   #state-seg { display: flex; flex-wrap: wrap; max-width: 100%; }
   #state-seg button { flex: 1 1 auto; padding: 0 8px; }
 }
+/* NX rules list (map → site → View NX rules) */
+.rules-dialog { width: min(1000px, calc(100vw - 24px)); max-height: 85vh; padding: 16px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
+.rules-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+.rules-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; margin-bottom: 10px; }
+.rules-head h2 { margin: 0 0 2px; }
+.rules-table td { vertical-align: top; }
+.rules-table tr.rule-off td { opacity: .6; }
+.text-warn { color: #b8661a; }
+/* Bigger top-bar clock (the user, 2026-10-13: "i want the time bigger") */
+.sys-clock { font-size: 18px; font-weight: 700; letter-spacing: .02em; }

@@ -84,7 +84,7 @@ function renderDetail() {
       ${s.status_detail ? `<dt>Detail</dt><dd>${esc(s.status_detail)}</dd>` : ""}
       <dt>Last contact</dt><dd>${relTime(s.last_seen_at)}</dd>
       <dt>Alarm feed</dt><dd>${s.push ? '<span class="chip online">Live push</span>' : s.push === false ? '<span class="chip">Polling only (5 s)</span>' : "—"}</dd>
-      <dt>NX rules</dt><dd>${ruleHealthHtml(s)}</dd>
+      <dt>NX rules</dt><dd>${ruleHealthHtml(s)} <button type="button" class="btn btn-sm" data-rules title="Every NX rule the portal read for this site, and what it does here">View NX rules</button></dd>
       <dt>NX</dt><dd>${esc(s.nx_site_name || "—")} ${s.nx_version ? `<span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
       <dt>Cameras</dt><dd>${s.camera_count}</dd>
       ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
@@ -92,10 +92,71 @@ function renderDetail() {
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${s.lat != null ? `<button class="btn btn-sm btn-primary" type="button" data-plan title="Aerial view from straight above, with this site's cameras">Top-down view</button>
         <button class="btn btn-sm" type="button" data-globe title="Fly into a 3D aerial view of this site">3D view</button>` : ""}
+      <button class="btn btn-sm" type="button" data-check title="Ask NX now: status, cameras, rules and new events (instead of waiting for the next refresh)">Check now</button>
       <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all">Alarm history</a>
       ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">Edit site</a>` : ""}
     </div>`;
 }
+
+// ---------------------------------------------------------------- site check + NX rules list
+const LEVEL_CHIP = { critical: '<span class="chip p1">Critical</span>', alarm: '<span class="chip p2">Alarm</span>',
+  warning: '<span class="chip p3">Warning</span>', ignore: '<span class="chip">Ignored</span>', off: '<span class="chip">Off in NX</span>' };
+const rulesDlg = document.createElement("dialog");
+rulesDlg.className = "rules-dialog";
+document.body.append(rulesDlg);
+function paintRules(s, v, error = "") {
+  const raised = v.rules.filter((r) => !["ignore", "off"].includes(r.level)).length;
+  rulesDlg.innerHTML = `<div class="rules-head"><div><h2>NX rules · ${esc(s.name)}</h2>
+      <div class="muted small-print">${v.read_at ? `Read from NX ${esc(relTime(v.read_at * 1000))}` : "Not read yet"} · ${v.rules.length} rules, ${raised} raise alarms here
+      ${v.tagged_only ? " · <b>tagged rules only</b> (Settings → Alarm levels)" : ""}</div></div>
+      <div style="display:flex;gap:6px;flex:0 0 auto"><button type="button" class="btn btn-sm" data-rules-check>Check now</button>
+      <button type="button" class="btn btn-sm" data-rules-close aria-label="Close">✕</button></div></div>
+    ${error ? `<div class="alert alert-error">Check failed: ${esc(error)}</div>` : ""}
+    ${v.readable === false ? `<div class="alert alert-error"><b>This site's NX account can't read rules</b> (NX answered 403), so #tags can't be seen${v.tagged_only
+      ? " and <b>every event comes in</b>: tagged rules only can't be applied here" : ""}. Give the NX account rule-read rights (e.g. the Power Users group).</div>` : ""}
+    ${v.rules.length ? `<div class="table-wrap"><table class="rules-table"><thead><tr><th>In the portal</th><th>NX rule (Title / Comment)</th><th>Event</th><th>Notes</th></tr></thead><tbody>
+      ${v.rules.map((r) => `<tr class="${["ignore", "off"].includes(r.level) ? "rule-off" : ""}">
+        <td>${LEVEL_CHIP[r.level] || esc(r.level)}<div class="muted small-print">${esc(r.why)}</div></td>
+        <td><b>${esc(r.name)}</b>${r.tag || r.always ? `<div class="small-print">${r.tag ? `<code>#${esc(r.tag)}</code> ` : ""}${r.always ? "<code>#24h</code>" : ""}</div>` : ""}</td>
+        <td>${esc(r.event_label)}<div class="muted small-print mono">${esc(r.event_type)} → ${esc(r.action)}</div></td>
+        <td class="small-print">${r.delayed ? `<span class="text-warn">Repeats held back up to ${r.interval_s} s (Interval of action)</span>` : ""}
+          ${r.always && v.tagged_only && !r.tag ? '<span class="text-warn">#24h but no level tag: ignored</span>' : ""}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="muted">${v.readable === false ? "" : "No rules read yet. Press Check now."}</p>`}`;
+}
+async function openRules(siteId, check = false) {
+  const s = sites.get(siteId);
+  if (!s) return;
+  if (!rulesDlg.open) rulesDlg.showModal();
+  rulesDlg.dataset.site = siteId;
+  rulesDlg.innerHTML = `<p class="muted">${check ? "Checking with NX…" : "Loading…"}</p>`;
+  try {
+    if (check) {
+      const r = await api(`/api/sites/${siteId}/check`, { method: "POST" });
+      saveSiteData(r.site);
+      paintRules(sites.get(siteId), r.rules, r.error);
+    } else paintRules(s, await api(`/api/sites/${siteId}/rules`));
+  } catch (err) { rulesDlg.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div><button type="button" class="btn btn-sm" data-rules-close>Close</button>`; }
+}
+function saveSiteData(data) { if (data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); } }
+rulesDlg.addEventListener("click", (e) => {
+  if (e.target.closest("[data-rules-close]") || e.target === rulesDlg) return rulesDlg.close();
+  if (e.target.closest("[data-rules-check]")) openRules(Number(rulesDlg.dataset.site), true);
+});
+document.getElementById("site-detail").addEventListener("click", async (e) => {
+  const s = sites.get(selectedId);
+  if (!s) return;
+  if (e.target.closest("[data-rules]")) return openRules(s.id);
+  const btn = e.target.closest("[data-check]");
+  if (!btn) return;
+  btn.disabled = true; btn.textContent = "Checking…";
+  try {
+    const r = await api(`/api/sites/${s.id}/check`, { method: "POST" });
+    saveSiteData(r.site);
+    toast(r.error ? `${esc(s.name)}: ${esc(r.error)}` : `${esc(s.name)} checked: ${esc(STATUS[r.site.status] || r.site.status)}, ${r.site.camera_count} cameras, ${r.rules.rules.length} NX rules`,
+          r.error ? { kind: "error" } : {});
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+  finally { btn.disabled = false; btn.textContent = "Check now"; }
+});
 
 // ---------------------------------------------------------------- right: live feed
 const FEED_MAX = 100;
