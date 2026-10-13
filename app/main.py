@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
         await site_models.resume()
         from app.services import trackers
         tasks.append(asyncio.create_task(trackers.run(), name="guard-trackers"))
+        from app.services import clock
+        tasks.append(asyncio.create_task(clock.run(), name="clock-check"))
     yield
     await site_models.shutdown()
     for t in tasks:
@@ -125,6 +127,13 @@ def create_app() -> FastAPI:
     @app.get("/healthz", include_in_schema=False)
     async def healthz():
         return PlainTextResponse("ok")
+
+    @app.get("/api/time", include_in_schema=False)
+    async def server_time():
+        """The server's clock (pages correct their own with it) and whether it's NTP-synced (app/services/clock.py)."""
+        from fastapi.responses import JSONResponse
+        from app.services import clock
+        return JSONResponse(clock.public(), headers={"Cache-Control": "no-store"})
 
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
     app.add_middleware(VersionedStatic)     # outermost: /static/v/<hash>/... -> /static/..., cached for good

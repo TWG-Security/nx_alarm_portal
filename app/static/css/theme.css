@@ -930,3 +930,14 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .guard-list li.is-hidden .guard-pip, .guard-list li.is-hidden .guard-main { opacity: .45; }
 .guard-btn[data-guard-eye][aria-pressed="false"] { color: #E08A30; }
 #sites-head .badge { margin-left: 2px; }
+/* Top-bar clock (server NTP time) */
+.sys-clock { font-variant-numeric: tabular-nums; font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; padding: 0 4px; cursor: default; }
+.sys-clock--warn { color: #E08A30; }
+.sys-clock--bad { color: #fff; background: #C0392B; border-radius: 4px; padding: 2px 6px; }
+@media (max-width: 560px) { .sys-clock { display: none; } }          /* phones: the phone shows the time */
+/* Phones: the Alarms page's state buttons (Open / Active calls / Acknowledged / While disarmed / All) wrap instead of
+   making the page wider than the screen (448 px on a 390 px phone once "Active calls" was added). */
+@media (max-width: 560px) {
+  #state-seg { display: flex; flex-wrap: wrap; max-width: 100%; }
+  #state-seg button { flex: 1 1 auto; padding: 0 8px; }
+}
