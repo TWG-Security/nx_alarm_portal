@@ -41,7 +41,7 @@ def alarm_ms(pg):
 MARKER = "() => { const m = document.querySelector('.guard-icon .guard'); if (!m) return null; const r = m.getBoundingClientRect(); return [Math.round(r.x), Math.round(r.y)]; }"
 
 with sync_playwright() as p:
-    ic2("ok")
+    ic2("reset")
     b = p.chromium.launch()
     ctx = b.new_context(viewport={"width": 1500, "height": 950})
     pg = ctx.new_page()
@@ -101,6 +101,15 @@ with sync_playwright() as p:
                          arg=before, timeout=60000)
     check(True, f"the patrol car moved on the map {time.time() - t0:.0f} s later (fake IC2 reports every 20 s, polled every 15 s)")
     check(pg.locator(".leaflet-guards-pane path").count() >= 1, "its trail is drawn")
+    t0 = time.time()
+    pg.click("#guard-list li:has-text('Patrol Car 1') [data-refresh]")
+    pg.wait_for_selector(".toast:has-text('position from')", timeout=10000)
+    check(True, f"↻ in the Guards list gets the position now ({time.time() - t0:.1f} s)")
+    urllib.request.urlopen(urllib.request.Request(f"{FAKE_NX}/_ic2/rename/3?name=Patrol%20Car%207", method="POST"))
+    pg.wait_for_timeout(5200)                               # a refresh asks IC2 at most every 5 s per guard
+    pg.click("#guard-list li:has-text('Patrol Car 1') [data-refresh]")
+    pg.wait_for_selector("#guard-list li:has-text('Patrol Car 7')", timeout=10000)
+    check("Patrol Car 7" in pg.inner_text(".guard--live .guard-label"), "a router renamed in InControl2 is renamed on the map")
     pg.screenshot(path=f"{out}/guards-map.png")
     print(f"  alarm with guards on the map: {alarm_ms(pg)} ms")
 
@@ -113,7 +122,7 @@ with sync_playwright() as p:
     pg.wait_for_function("document.querySelector('#globe canvas') && document.getElementById('globe-msg').hidden", timeout=40000)
     pg.wait_for_timeout(2500)
     labels = pg.evaluate("() => window.__globe.entities.values.map((e) => e.label && e.label.text && e.label.text.getValue()).filter(Boolean)")
-    check(any("PATROL CAR 1" in l for l in labels) and any("PARKED TRAILER" in l for l in labels), "the 3D view shows both")
+    check(any("PATROL CAR 7" in l for l in labels) and any("PARKED TRAILER" in l for l in labels), "the 3D view shows both")
     pg.screenshot(path=f"{out}/guards-3d.png")
     pg.click("#globe-close"); pg.wait_for_timeout(500)
 

@@ -17,7 +17,9 @@ function paint() {
   $("gt-secret").placeholder = data.secret_set ? "Saved (type to replace)" : "";
   $("gt-secret-hint").textContent = data.secret_set ? "Leave blank to keep the saved secret." : "";
   const ok = data.last_ok_at && (!data.last_error_at || data.last_ok_at > data.last_error_at);
-  $("gt-status").innerHTML = !data.enabled ? '<div class="alert">Guard tracking is off.</div>'
+  $("gt-status").innerHTML = !data.enabled ? (data.trackers.length
+      ? '<div class="alert alert-error"><b>Tracking is off</b>, so the guards below get no positions. Tick <b>Track guards</b> and <b>Save</b>.</div>'
+      : '<div class="alert">Guard tracking is off.</div>')
     : ok ? `<div class="alert alert-ok">Working: last read from InControl2 ${esc(relTime(data.last_ok_at))}.</div>`
     : data.last_error ? `<div class="alert alert-error">InControl2 problem ${esc(relTime(data.last_error_at))}: ${esc(data.last_error)}</div>`
     : '<div class="alert">On. Waiting for the first read (add a tracker below).</div>';
@@ -27,7 +29,8 @@ function paint() {
     <td>${esc(t.device_name || "")}<div class="muted small-print mono">${esc(t.serial)}</div></td>
     <td>${t.fix_at ? `${esc(relTime(t.fix_at))}<div class="muted small-print">${t.lat.toFixed(5)}, ${t.lng.toFixed(5)}</div>` : '<span class="muted">none yet</span>'}
       ${t.error ? `<div class="alert alert-error small-print" style="margin:4px 0 0">${esc(t.error)}</div>` : ""}</td>
-    <td class="actions">${MANAGE ? `<label class="check" style="margin:0"><input type="checkbox" data-f="enabled" ${t.enabled ? "checked" : ""}> On</label>
+    <td class="actions">${MANAGE ? `<button class="btn btn-sm" type="button" data-refresh title="Get its position from InControl2 now">↻ Refresh</button>
+      <label class="check" style="margin:0"><input type="checkbox" data-f="enabled" ${t.enabled ? "checked" : ""}> On</label>
       <button class="btn btn-sm btn-danger" type="button" data-remove>Remove</button>` : ""}</td></tr>`).join("")
     || '<tr><td colspan="4" class="empty">Nothing tracked yet. Use <b>Find routers</b> below.</td></tr>';
 }
@@ -147,6 +150,16 @@ $("gt-trackers").addEventListener("change", async (e) => {
   catch (err) { toast(esc(err.message), { kind: "error" }); paint(); }
 });
 $("gt-trackers").addEventListener("click", async (e) => {
+  if (e.target.matches("[data-refresh]")) {
+    const id = e.target.closest("tr").dataset.id;
+    e.target.disabled = true; e.target.textContent = "Refreshing…";
+    try {
+      const t = await api(`/api/trackers/${id}/refresh`, { method: "POST" });
+      toast(t.error ? `${esc(t.name)}: ${esc(t.error)}` : `${esc(t.name)}: position from ${esc(relTime(t.fix_at))}`, t.error ? { kind: "error" } : {});
+    } catch (err) { toast(esc(err.message), { kind: "error" }); }
+    await load().catch(() => {});
+    return;
+  }
   if (!e.target.matches("[data-remove]")) return;
   const tr = e.target.closest("tr"), t = data.trackers.find((x) => String(x.id) === tr.dataset.id);
   if (!confirm(`Stop tracking ${t.name}? Its position history goes too.`)) return;

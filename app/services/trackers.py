@@ -34,6 +34,10 @@ _clients: dict[int, tuple[tuple[str, str], peplink.Client]] = {}     # source id
 _last_prune: float | None = None
 transport = None                                # tests: an httpx transport for the IC2 client
 _wake: asyncio.Event | None = None
+NAME_SYNC_S = 600                # router names are re-read from InControl2 this often (and on a manual refresh)
+REFRESH_MIN_S = 5.0              # a manual refresh asks IC2 at most this often per tracker
+_names_at: dict[tuple, float] = {}             # (tenant, org, group) -> last name read (monotonic)
+_refreshed_at: dict[int, float] = {}           # tracker id -> last manual refresh
 
 
 def wake() -> None:
@@ -93,6 +97,35 @@ async def _fetch(client: peplink.Client, t: dict, slots: asyncio.Semaphore) -> d
             return {"id": t["id"], "error": str(e)}
 
 
+async def _names(client: peplink.Client, org: str, group: int) -> dict[int, str]:
+    """Router names in one group (the group location list carries them; never the device list)."""
+    try:
+        return {int(d["id"]): d["name"] for d in await client.group_locations(org, group) if d.get("id") is not None and d.get("name")}
+    except peplink.PeplinkError as e:
+        log.info("IC2 names for %s/%s unavailable: %s", org, group, e)
+        return {}
+
+
+async def _with_names(clients: dict, trackers: list[dict], results: list[dict], force: bool = False) -> None:
+    """Attach each router's current InControl2 name to its result, re-reading each group every NAME_SYNC_S."""
+    now = time.monotonic()
+    due = {(t["tenant"], t["org"], t["group"]) for t in trackers
+           if force or now - _names_at.get((t["tenant"], t["org"], t["group"]), -1e9) > NAME_SYNC_S}
+    if not due:
+        return
+    keys = list(due)
+    found = await asyncio.gather(*(_names(clients[k[0]], k[1], k[2]) for k in keys))
+    names = {}
+    for k, got in zip(keys, found):
+        if got:
+            _names_at[k] = now
+        names[k] = got
+    for t, r in zip(trackers, results):
+        name = names.get((t["tenant"], t["org"], t["group"]), {}).get(t["device"])
+        if name:
+            r["device_name"] = name
+
+
 async def poll_once() -> float:
     """One round over every enabled tracker of every company whose tracking is on (each with its own
     InControl2 credentials). Returns how long to wait before the next."""
@@ -112,6 +145,7 @@ async def poll_once() -> float:
     results = await asyncio.gather(*(_fetch(clients[t["tenant"]], t, slots) for t in trackers))
     for t, r in zip(trackers, results):
         r["tenant"] = t["tenant"]
+    await _with_names(clients, trackers, results)
     await _store(results)
     if _last_prune is None or time.monotonic() - _last_prune > 3600:
         _last_prune = time.monotonic()
@@ -131,8 +165,16 @@ async def _store(results: list[dict]) -> None:
             t = await db.get(Tracker, r["id"])
             if t is None:
                 continue
-            before = (t.error, t.fix_at)
+            before = (t.error, t.fix_at, t.name)
             t.checked_at = now
+            new_name = r.get("device_name")
+            if new_name and new_name != t.device_name:
+                # Renamed in InControl2: a guard still called by the router's name follows it; a name given in
+                # the portal stays (only the router name shown under it changes).
+                if t.device_name and t.name == t.device_name:
+                    t.name = new_name[:100]
+                log.info("tracker %s: router renamed %r -> %r", t.id, t.device_name, new_name)
+                t.device_name = new_name[:200]
             if "error" in r:
                 t.error = r["error"][:300]
                 errors.setdefault(r["tenant"], []).append(r["error"])
@@ -143,7 +185,7 @@ async def _store(results: list[dict]) -> None:
                     t.error = "The router hasn't reported a GPS position (no fix, or GPS is off)"
                 elif t.fix_at is None or fix.at > aware(t.fix_at):
                     _move(db, t, fix)
-            if (t.error, t.fix_at) != before:
+            if (t.error, t.fix_at, t.name) != before:
                 moved.append(t)
         for src in (await db.scalars(select(TrackerSource).where(TrackerSource.tenant_id.in_(list(counts))))).all():
             errs = errors.get(src.tenant_id, [])
@@ -165,6 +207,29 @@ def _move(db, t: Tracker, fix: peplink.Fix) -> None:
     if gap is None or gap >= MIN_MOVE_M or last_point is None or (fix.at - last_point).total_seconds() >= POINT_EVERY_S:
         db.add(TrackerPoint(tracker_id=t.id, ts=fix.at, lat=fix.lat, lng=fix.lng, speed=fix.speed))
     t.lat, t.lng, t.speed, t.fix_at = fix.lat, fix.lng, fix.speed, fix.at
+
+
+async def refresh_one(tracker_id: int) -> dict | None:
+    """Ask InControl2 for one tracker's position (and router name) now: the map's / Sites page's refresh button."""
+    async with sessionmaker()() as db:
+        t = await db.get(Tracker, tracker_id)
+        if t is None:
+            return None
+        src = await db.scalar(select(TrackerSource).where(TrackerSource.tenant_id == t.tenant_id, TrackerSource.kind == "peplink"))
+        client = client_for(src) if src and src.enabled else None
+        row = {"id": t.id, "tenant": t.tenant_id, "org": t.ic2_org, "group": t.ic2_group, "device": t.ic2_device, "tz": t.tz}
+        current = tracker_dict(t)
+    if client is None:
+        raise peplink.PeplinkError("Tracking is switched off for this company (Sites → Guards & vehicles)")
+    if time.monotonic() - _refreshed_at.get(tracker_id, -1e9) < REFRESH_MIN_S:
+        return current
+    _refreshed_at[tracker_id] = time.monotonic()
+    result = await _fetch(client, row, asyncio.Semaphore(1))
+    result["tenant"] = row["tenant"]
+    await _with_names({row["tenant"]: client}, [row], [result], force=True)
+    await _store([result])
+    async with sessionmaker()() as db:
+        return tracker_dict(await db.get(Tracker, tracker_id))
 
 
 async def run() -> None:

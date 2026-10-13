@@ -2,7 +2,7 @@
 // InControl2: app/services/trackers.py). Markers and a 30-minute trail on the Leaflet map (street map and
 // top-down view alike), a "Guards" list in the side panel, and the data for the 3D view.
 // Positions arrive about every 1-2 minutes, so the marker shows how fresh its position is.
-import { api, esc, on, relTime } from "./common.js";
+import { api, esc, on, relTime, toast } from "./common.js";
 
 const FRESH_S = 180, STALE_S = 900;       // green under 3 min, amber under 15 min, then grey "last seen"
 const MPH = 2.23694;
@@ -81,7 +81,8 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
       return `<li data-guard="${t.id}" class="${follow === t.id ? "following" : ""}" tabindex="0" title="${esc(t.error || t.device_name || "")}">
         <span class="guard-pip guard--${f}"></span><b>${esc(t.name)}</b>
         <span class="muted small-print">${f === "none" ? "no position yet" : f === "stale" ? `last seen ${esc(relTime(t.fix_at))}` : `${esc(speedText(t))} · ${esc(relTime(t.fix_at))}`}</span>
-        ${t.error ? '<span class="chip offline" title="' + esc(t.error) + '">!</span>' : ""}</li>`;
+        ${t.error ? '<span class="chip offline" title="' + esc(t.error) + '">!</span>' : ""}
+        <button type="button" class="guard-refresh" data-refresh="${t.id}" title="Get ${esc(t.name)}'s position from InControl2 now" aria-label="Refresh ${esc(t.name)}'s position">↻</button></li>`;
     }).join("")}</ul>`;
   }
 
@@ -93,7 +94,19 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
     renderList();
   }
 
-  listEl.addEventListener("click", (e) => {
+  listEl.addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-refresh]");
+    if (btn) {
+      e.stopPropagation();
+      btn.disabled = true; btn.classList.add("spinning");
+      try {
+        const t = await api(`/api/trackers/${btn.dataset.refresh}/refresh`, { method: "POST" });
+        upsert(t);
+        toast(t.error ? `${esc(t.name)}: ${esc(t.error)}` : `${esc(t.name)}: position from ${esc(relTime(t.fix_at))}`, t.error ? { kind: "error" } : {});
+      } catch (err) { toast(esc(err.message), { kind: "error" }); }
+      finally { btn.disabled = false; btn.classList.remove("spinning"); }
+      return;
+    }
     const li = e.target.closest("[data-guard]");
     if (li) focus(Number(li.dataset.guard));
   });

@@ -3,6 +3,7 @@
 
   GET    /api/trackers                     the company's trackers with a short trail (map pages)
   GET    /api/trackers/{id}/trail          position history (?minutes=, at most TRAIL_KEEP_DAYS)
+  POST   /api/trackers/{id}/refresh        ask InControl2 for its position now (anyone who sees it)
   GET    /api/tracking                     the company's InControl2 settings + its trackers (admins)
   PUT    /api/tracking/source              Client ID / Secret / on-off / interval
   POST   /api/tracking/test                get a token and count the organizations it sees
@@ -65,6 +66,21 @@ async def tracker_trail(tracker_id: int, minutes: int = Query(60, ge=1, le=svc.T
     if t is None:
         raise HTTPException(404)
     return {"id": t.id, "points": (await _trails(db, [t.id], minutes))[t.id]}
+
+
+@router.post("/api/trackers/{tracker_id}/refresh")
+async def refresh_tracker(tracker_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    t = await db.scalar(select(Tracker).where(Tracker.id == tracker_id, scope.where(Tracker.tenant_id)))
+    if t is None:
+        raise HTTPException(404)
+    await db.commit()                        # don't hold the connection while IC2 answers
+    try:
+        out = await svc.refresh_one(tracker_id)
+    except peplink.PeplinkError as e:
+        raise HTTPException(502, str(e)) from None
+    if out is None:
+        raise HTTPException(404)
+    return out
 
 
 # ------------------------------------------------------------------------- setup (Sites page, admins)
@@ -220,6 +236,12 @@ async def add_tracker(body: TrackerIn, request: Request, user: User = Depends(re
     db.add(t)
     await db.flush()
     audit(db, tenant.id, "tracker.added", user_id=user.id, ip=client_ip(request), name=t.name, serial=t.serial)
+    src = await _source(db, tenant.id)
+    if src is not None and not src.enabled and src.client_id and src.secret_enc:
+        # Tracking a router means "track it": switch tracking on (2026-10-13: a router was tracked with it off,
+        # and its position never showed).
+        src.enabled = True
+        audit(db, tenant.id, "tracking.settings", user_id=user.id, ip=client_ip(request), fields=["enabled"], auto=True)
     await db.commit()
     bus.publish(t.tenant_id, "tracker.moved", svc.tracker_dict(t))
     svc.wake()

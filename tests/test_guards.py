@@ -23,7 +23,9 @@ def fake_ic2(monkeypatch):
     monkeypatch.setattr(get_settings(), "peplink_api_base", "http://ic2.test/_ic2")
     monkeypatch.setattr(svc, "transport", httpx.ASGITransport(app=fake_nx.app))
     monkeypatch.setattr(svc, "_clients", {})
-    fake_nx.IC2.update(mode="ok", stopped_at=None, calls=[])
+    fake_nx.IC2.update(mode="ok", stopped_at=None, calls=[], names={})
+    monkeypatch.setattr(svc, "_names_at", {})
+    monkeypatch.setattr(svc, "_refreshed_at", {})
     yield fake_nx.IC2
     fake_nx.IC2.update(mode="ok", stopped_at=None)
 
@@ -234,3 +236,53 @@ async def test_old_points_are_pruned(client, session):
     svc._last_prune = None
     await svc.poll_once()
     assert (await session.scalar(select(TrackerPoint).where(TrackerPoint.lat == 1))) is None
+
+
+async def test_refresh_now_and_router_renames(client, session, monkeypatch):
+    """↻ asks InControl2 at once (anyone who sees the guard; at most every 5 s); a router renamed in InControl2
+    renames a guard still called after it, but a name given in the portal stays."""
+    from tests.test_users import _user
+    tenant, admin = await _setup(client, session, track=False)
+    for name, dev in (("Patrol Car 1", 3), ("Night Trailer", 7)):          # 7 is named "Parked Trailer" in IC2
+        await client.post("/api/tracking/trackers", json={"name": name, "org": "devorg", "group": 38, "device": dev,
+                                                           "device_name": "Patrol Car 1" if dev == 3 else "Parked Trailer"})
+    car = next(t for t in (await client.get("/api/trackers")).json() if t["name"] == "Patrol Car 1")
+    op = await _user(session, tenant, "noc@twgsecurity.com")
+    await login(client, op.email)
+    fake_nx.IC2["calls"].clear()
+    fake_nx.IC2["stopped_at"] = time.time()
+    r = await client.post(f"/api/trackers/{car['id']}/refresh")
+    assert r.status_code == 200 and r.json()["lat"] is not None
+    assert fake_nx.IC2["calls"].count("/_ic2/rest/o/devorg/g/38/d/3/loc") == 1
+    await client.post(f"/api/trackers/{car['id']}/refresh")                  # within 5 s: not asked again
+    assert fake_nx.IC2["calls"].count("/_ic2/rest/o/devorg/g/38/d/3/loc") == 1
+
+    # Renamed in InControl2: picked up on the next name check (forced by a refresh here).
+    fake_nx.IC2["names"].update({3: "Patrol Car 7", 7: "Trailer West"})
+    monkeypatch.setattr(svc, "_refreshed_at", {})
+    names = {t["id"]: t for t in (await client.get("/api/trackers")).json()}
+    for tid in names:
+        await client.post(f"/api/trackers/{tid}/refresh")
+    after = {t["id"]: (t["name"], t["device_name"]) for t in (await client.get("/api/trackers")).json()}
+    trailer_id = next(i for i, t in names.items() if t["name"] == "Night Trailer")
+    assert after[car["id"]] == ("Patrol Car 7", "Patrol Car 7")             # followed the router
+    assert after[trailer_id] == ("Night Trailer", "Trailer West")            # the portal name stays
+
+    acme = Tenant(name="Acme", kind="customer")
+    session.add(acme)
+    await session.commit()
+    other = await _user(session, acme, "x@acme.test", role="admin")
+    await login(client, other.email)
+    assert (await client.post(f"/api/trackers/{car['id']}/refresh")).status_code == 404
+
+
+async def test_tracking_a_router_switches_tracking_on(client, session):
+    tenant, admin = await make_tenant_user(session)
+    await login(client, admin.email)
+    await client.put("/api/tracking/source", json={"enabled": False, "client_id": "dev-client", "secret": "dev-secret"})
+    assert not (await client.get("/api/tracking")).json()["enabled"]
+    r = await client.post("/api/tracking/trackers", json={"name": "Mikey Mobile", "org": "devorg", "group": 38, "device": 3})
+    assert r.json()["enabled"] is True
+    fake_nx.IC2["stopped_at"] = time.time()
+    await svc.poll_once()
+    assert (await client.get("/api/trackers")).json()[0]["lat"] is not None

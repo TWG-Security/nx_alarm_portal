@@ -201,7 +201,7 @@ async def twilio_mode(mode: str):
 import math as _math
 from datetime import datetime as _dt, timezone as _tz
 from zoneinfo import ZoneInfo as _Zone
-IC2 = {"mode": "ok", "tokens": set(), "stopped_at": None, "calls": []}
+IC2 = {"mode": "ok", "tokens": set(), "stopped_at": None, "calls": [], "names": {}}
 IC2_STEP_S, IC2_SITE = 20, (40.2665, -76.8838)
 
 def _ic2_local(t):
@@ -226,7 +226,11 @@ TRAILER = {"la": 40.2671, "lo": -76.8829, "isExist": True}
 TRAILER_T = time.time() - 86400                      # last reported a day ago
 
 def _ic2_devices(org_wide=True):
-    """org_wide: like IC2's org-wide /loc, positions are a cache 30 min old with UTC timestamps."""
+    """org_wide: like IC2's org-wide /loc, positions are a cache 30 min old with UTC timestamps.
+    Names can be changed with POST /_ic2/rename/{device}?name=... (like renaming a router in InControl2)."""
+    return [{**d, "name": IC2["names"].get(d["id"], d["name"])} for d in _ic2_devices_raw(org_wide)]
+
+def _ic2_devices_raw(org_wide=True):
     trailer = {**TRAILER, "ts": _ic2_utc(TRAILER_T) if org_wide else _ic2_local(TRAILER_T)}
     return [{"id": 3, "group_id": 38, "sn": "293B-1E37-276B", "name": "Patrol Car 1", "status": "online",
              "product_name": "Pepwave MAX BR1 Pro 5G", "points": [_ic2_car(local=not org_wide, age_s=1800 if org_wide else 0)]},
@@ -287,9 +291,16 @@ async def ic2_device_loc(org: str, group: int, dev: int, request: Request):
 
 @app.post("/_ic2/mode/{mode}")
 async def ic2_mode(mode: str):
-    IC2["mode"] = "ok" if mode == "stop" else mode
+    if mode == "reset":
+        IC2["names"].clear()
+    IC2["mode"] = "ok" if mode in ("stop", "reset") else mode
     IC2["stopped_at"] = time.time() if mode == "stop" else None
     return {"mode": mode}
+
+@app.post("/_ic2/rename/{dev}")
+async def ic2_rename(dev: int, name: str):
+    IC2["names"][dev] = name
+    return {"ok": True}
 
 @app.get("/_ic2/calls")
 async def ic2_calls(): return IC2["calls"][-200:]
