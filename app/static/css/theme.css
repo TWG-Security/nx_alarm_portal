@@ -456,6 +456,9 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
   .nav { order: 3; flex-basis: 100%; padding-bottom: 6px; }
 }
 @media (max-width: 560px) {
+  /* Phones: the action row wraps instead of pushing the page wider than the screen. */
+  .topbar-actions { flex-shrink: 1; min-width: 0; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+  .scope-switch { max-width: 44vw; }
   .alarm { grid-template-columns: 4px 1fr; }
   .alarm .right { grid-column: 2; flex-direction: row; align-items: center; justify-content: flex-start; }
   .kv { grid-template-columns: 1fr; }
@@ -740,3 +743,15 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .guard-list li.following b::after { content: " · following"; font-weight: 400; color: #E08A30; }
 .guard-list .small-print { flex-basis: 100%; padding-left: 20px; margin-top: -2px; }
 .guard-pip { width: 12px; height: 12px; border-radius: 50%; background: var(--guard-c, #8a8a8a); flex: 0 0 auto; }
+
+/* ---- top bar: My account (always visible; icon only on narrow screens) */
+.account-btn { display: inline-flex; align-items: center; gap: 6px; height: auto; min-height: 32px; padding: 3px 10px; text-decoration: none; }
+.account-btn svg { width: 18px; height: 18px; flex: 0 0 auto; }
+.account-text { display: flex; flex-direction: column; line-height: 1.1; text-align: left; }
+.account-text small { font-weight: 400; font-size: 11px; color: var(--text-muted); max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-btn.active { border-color: var(--orange, #E08A30); }
+@media (max-width: 900px) { .account-text { display: none; } .account-btn { padding: 6px 8px; } }
+
+/* ---- Account page: alarm texts card */
+.texts-card .texts-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0 14px; }
+.texts-card .ed-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 6px 0; }

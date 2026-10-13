@@ -916,3 +916,51 @@ async def test_link_shows_the_sites_cameras_live(session, client):
     assert 'data-view="live"' in page and 'data-view="cameras"' in page
     assert other_site.id != site.id
     await manager.shutdown()
+
+
+@respx.mock
+async def test_people_sign_themselves_up_on_their_account_page(session, client):
+    """Account page → Alarm texts: own number, level, when, sites; the same reply-YES consent as the Users page."""
+    t, site, p = await world(session)
+    await texts_on(session)
+    op = User(tenant_id=t.id, email="guard@twgsecurity.com", display_name="Guard", password_hash=hash_password(PASSWORD), role="operator")
+    session.add(op)
+    await session.commit()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMo", "status": "queued"}))
+    await login(client, op.email)
+    t0 = (await client.get("/api/account/texts")).json()
+    assert t0["ready"] and t0["phone"] == "" and [s["name"] for s in t0["sites"]] == ["TWG Security Office"]
+
+    r = await client.put("/api/account/texts", json={"phone": "(570) 555-8181", "sms_level": "alarm", "sms_when": "both",
+                                                     "sms_sites": [site.id]})
+    assert r.status_code == 200, r.text
+    me = r.json()
+    assert me["phone"] == "+15705558181" and me["sms_consent"] == "pending" and me["sms_sites"] == [site.id]
+    await sms.drain()
+    assert sent_to(twilio) == ["+15705558181"] and "YES" in body_of(twilio.calls.last)
+    assert (await client.post("/api/account/texts/test")).status_code == 400          # not until they reply YES
+    assert (await client.put("/api/account/texts", json={"phone": "5705558181", "sms_level": "alarm",
+                                                          "sms_sites": [999]})).status_code == 400   # another company's / no site
+    row = await session.scalar(select(AuditLog).where(AuditLog.action == "user.updated").order_by(AuditLog.id.desc()))
+    assert row.user_id == op.id and row.detail["self_service"] is True
+
+    # Typing numbers to text strangers is limited: a handful of opt-in texts a day per person.
+    for i in range(10):
+        r = await client.put("/api/account/texts", json={"phone": f"570555{9000 + i}", "sms_level": "alarm"})
+        await sms.drain()
+        if r.status_code == 429:
+            break
+    assert r.status_code == 429 and "a day" in r.json()["detail"]
+    assert len(twilio.calls) == 5
+
+    # Turning texts off needs no opt-in; removing the number turns them off.
+    r = await client.put("/api/account/texts", json={"phone": "", "sms_level": "alarm"})
+    assert r.json()["phone"] == "" and r.json()["sms_level"] == "off"
+
+
+async def test_account_texts_are_your_own_only(session, client):
+    t, site, p = await world(session)
+    await login(client, p["crit"].email)
+    me = (await client.get("/api/account/texts")).json()
+    assert me["phone"] == "+15705552222" and me["sms_level"] == "critical" and me["sms_consent"] == "yes"
+    assert all(s["name"] != "Acme" for s in me["sites"])
