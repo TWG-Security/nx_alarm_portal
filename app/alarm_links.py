@@ -25,7 +25,9 @@ def _hash(token: str) -> str:
 
 
 def url(token: str) -> str:
-    return f"{platform_settings.current().portal_url}{PATH}{token}"
+    # Ends in "/": iPhones have been seen to leave a link's last character out of the tappable part
+    # (2026-10-13, MMS alarm text); with the slash last, the link still works if that happens.
+    return f"{platform_settings.current().portal_url}{PATH}{token}/"
 
 
 def picture_url(token: str) -> str:

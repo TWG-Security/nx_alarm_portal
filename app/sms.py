@@ -154,7 +154,9 @@ def directions_url(site) -> str:
         dest = quote(" ".join(site.address.split()), safe=",")
     else:
         return ""
-    return f"https://www.google.com/maps/dir/?api=1&destination={dest}"
+    # travelmode last: if a phone leaves the link's last character out (see alarm_links.page_url), only that
+    # parameter breaks (Google ignores it), never the destination.
+    return f"https://www.google.com/maps/dir/?api=1&destination={dest}&travelmode=driving"
 
 
 VIDEO_LABEL = "VIDEO (alarm clip + live cameras):"
@@ -164,10 +166,12 @@ MAP_LABEL = "MAP (directions to the site):"
 def _links(link: str, site) -> list[str]:
     """The two links, each under its own label with a blank line between, so a phone shows which is which.
     The video link comes first: it's the one to tap."""
-    out = ["", VIDEO_LABEL, link]
+    # A space after each link: an iPhone showed both links one character short (2026-10-13); the space is
+    # what gets cut, and the links also end in characters they can lose (a "/", a spare parameter).
+    out = ["", VIDEO_LABEL, link + " "]
     nav = directions_url(site)
     if nav:
-        out += ["", MAP_LABEL, nav]
+        out += ["", MAP_LABEL, nav + " "]
     return out + ["", "Reply STOP to opt out."]
 
 

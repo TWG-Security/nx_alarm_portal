@@ -54,6 +54,7 @@ async def _alarm(request: Request, db: AsyncSession, token: str) -> Alarm:
     return alarm
 
 
+@router.get("/a/{token}/")
 @router.get("/a/{token}")
 async def alarm_page(token: str, request: Request, db: AsyncSession = Depends(get_db)):
     status, link, alarm = await _resolve(request, db, token)

@@ -109,15 +109,15 @@ async def test_alarm_text_is_plain_and_short(session):
         "Front Door Cam, 11:23:22 AM EDT",
         "",
         "VIDEO (alarm clip + live cameras):",
-        "https://alarmportal.twgsecurity.net/a/" + "x" * 24,
+        "https://alarmportal.twgsecurity.net/a/" + "x" * 24 + " ",            # a space after each link (iPhone)
         "",
         "MAP (directions to the site):",
-        "https://www.google.com/maps/dir/?api=1&destination=40.00000,-75.00000",
+        "https://www.google.com/maps/dir/?api=1&destination=40.00000,-75.00000&travelmode=driving ",
         "",
         "Reply STOP to opt out.",
     ]
     site.lat = site.lng = None
-    assert sms.directions_url(site) == "https://www.google.com/maps/dir/?api=1&destination=100%20Test%20Rd,%20Harrisburg,%20PA"
+    assert sms.directions_url(site) == "https://www.google.com/maps/dir/?api=1&destination=100%20Test%20Rd,%20Harrisburg,%20PA&travelmode=driving"
     assert text.isascii() and len(text) <= 459           # plain text (GSM-7): at most 3 SMS segments; MMS has no segments
 
 
@@ -148,11 +148,11 @@ async def test_alarm_texts_the_right_people_with_a_working_link(session, client)
 
     # The link opens that alarm without signing in, privately.
     link = link_in(body_of(twilio.calls[0]))
-    token = link.rsplit("/", 1)[-1]
-    assert link.startswith("https://alarmportal.twgsecurity.net/a/") and len(token) == 24
+    token = link.rstrip("/").rsplit("/", 1)[-1]
+    assert link.startswith("https://alarmportal.twgsecurity.net/a/") and link.endswith("/") and len(token) == 24
     r = await client.get(f"/a/{token}")
     assert r.status_code == 200 and "Panic button" in r.text and "TWG Security Office" in r.text
-    assert "google.com/maps/dir/?api=1&amp;destination=40.00000,-75.00000" in r.text      # Directions button
+    assert "google.com/maps/dir/?api=1&amp;destination=40.00000,-75.00000&amp;travelmode=driving" in r.text      # Directions button
     assert r.headers["cache-control"] == "no-store" and r.headers["referrer-policy"] == "no-referrer"
     assert "noindex" in r.headers["x-robots-tag"]
     audit = await session.scalar(select(AuditLog).where(AuditLog.action == "alarm.link_opened"))
@@ -451,7 +451,7 @@ def jpeg(w=640, h=360):
 def link_in(body: str) -> str:
     """The alarm link: the line after the VIDEO label."""
     lines = body.split("\n")
-    return lines[lines.index(sms.VIDEO_LABEL) + 1]
+    return lines[lines.index(sms.VIDEO_LABEL) + 1].strip()
 
 
 def nx_picture(ts):
@@ -688,7 +688,7 @@ async def test_guard_is_texted_only_when_an_operator_confirms(session, client):
     assert len(log) == 2 and all(r.alarm_id == alarm.id and r.outcome == "sent" for r in log)
 
     # The guard's link shows it confirmed, with the note.
-    token = link_in(body_of(confirmed[0])).rsplit("/", 1)[-1]
+    token = link_in(body_of(confirmed[0])).rstrip("/").rsplit("/", 1)[-1]
     page = (await client.get(f"/a/{token}")).text
     assert "Confirmed real by mike" in page and "Man in black hoodie" in page
 
@@ -964,3 +964,26 @@ async def test_account_texts_are_your_own_only(session, client):
     me = (await client.get("/api/account/texts")).json()
     assert me["phone"] == "+15705552222" and me["sms_level"] == "critical" and me["sms_consent"] == "yes"
     assert all(s["name"] != "Acme" for s in me["sites"])
+
+
+def test_links_survive_a_phone_dropping_their_last_character():
+    """An iPhone showed both links of an MMS alarm text one character short (2026-10-13). Each link is
+    followed by a space and ends in a character it can lose."""
+    from types import SimpleNamespace
+    site = SimpleNamespace(name="Mikey Home Beta", address="226 West Woodhaven Drive", lat=41.06243, lng=-75.78967, timezone="")
+    lines = sms._links("https://alarmportal.twgsecurity.net/a/Qfb0iC3PBpe1XyDOO7hB9996/", site)
+    video, nav = lines[2], lines[5]
+    assert video.endswith("/ ") and nav.endswith("&travelmode=driving ")
+    assert "destination=41.06243,-75.78967&" in nav                     # the location is never the last character
+
+
+async def test_the_alarm_page_opens_with_or_without_the_trailing_slash(session, client):
+    from app import alarm_links
+    _, site, p = await world(session)
+    alarm = await make_alarm(session, site)
+    token = await alarm_links.mint(session, alarm, p["all"], 24)
+    await session.commit()
+    assert alarm_links.url(token).endswith(f"/a/{token}/")
+    for path in (f"/a/{token}", f"/a/{token}/"):
+        assert (await client.get(path)).status_code == 200, path
+    assert (await client.get(f"/a/{token[:-1]}/")).status_code in (404, 410)   # a cut token doesn't open anything

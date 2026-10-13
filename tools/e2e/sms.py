@@ -167,12 +167,13 @@ with sync_playwright() as p:
     check(lines[0].startswith("TWG ALARM: ") and lines[1] == "Fake Test Site" and lines[2] == "Harrisburg, PA",
           "text: alarm, then site name, then address, one per line")
     check("MAP (directions to the site):" in lines and lines[lines.index("MAP (directions to the site):") + 1]
-          == "https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380",
+          == "https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380&travelmode=driving ",
           "text has the labelled MAP link on its own line")
     check("VIDEO (alarm clip + live cameras):" in lines and lines.index("VIDEO (alarm clip + live cameras):")
           < lines.index("MAP (directions to the site):"), "the labelled VIDEO link comes first")
     check(lines[-1] == "Reply STOP to opt out.", "text ends with the opt-out line")
-    link = lines[lines.index("VIDEO (alarm clip + live cameras):") + 1]
+    link = lines[lines.index("VIDEO (alarm clip + live cameras):") + 1].strip()
+    check(link.endswith("/"), "the alarm link ends in '/' (still works if a phone drops its last character)")
     check(text["media"].endswith("/alarm.jpg"), "text is an MMS with the alarm picture")
     pic = urllib.request.urlopen(text["media"])
     check(pic.status == 200 and pic.headers["content-type"] == "image/jpeg", f"picture loads for Twilio ({len(pic.read())} bytes)")
