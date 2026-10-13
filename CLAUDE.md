@@ -69,7 +69,7 @@ NX site ─┬─ push: JSON-RPC wss /jsonrpc  rest.v4.events.log.subscribe ─�
 | Area | Files |
 |---|---|
 | Settings (all env/.env) | `app/config.py` |
-| Models: tenants, users, groups, sites, alarms, alarm_notes, audit_log | `app/models.py` (every table has `tenant_id`); migrations `migrations/versions/0001-0012` |
+| Models: tenants, users, groups, sites, alarms, alarm_notes, audit_log | `app/models.py` (every table has `tenant_id`); migrations `migrations/versions/0001-0016` |
 | Backups | `tools/backup.sh` (pg_dump + .env + checksums, restore-verified, rotation) |
 | Alarm levels (critical 1 / alarm 2 / warning 3 / ignore) | `app/services/alarm_filter.py` |
 | NX row → portal fields, captions | `app/services/nx_events.py` |
@@ -237,7 +237,7 @@ docker compose exec -T db psql -U portal -d portal -c "select id,name,status fro
 ## Develop and test
 ```bash
 cd ~/nx_alarm_portal
-.venv/bin/python -m pytest -q                         # 171 tests; clip and report tests use system ffmpeg
+.venv/bin/python -m pytest -q                         # 176 tests; clip and report tests use system ffmpeg
 POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8099 (SQLite, fresh DB)
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
@@ -252,6 +252,7 @@ POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.cameras /tmp
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.topdown /tmp # same on the top-down view, + alarm latency while open / panning, exit restores the street map
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.dismiss /tmp # Dismiss everywhere; 600-alarm burst, bulk dismiss, critical latency meanwhile
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.sms /tmp     # alarm texts: Platform tab, Users numbers, link on a phone (clip, live), Twilio failing/hanging + alarm latency
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.sms_confirmed /tmp  # guard texted only on Real event (note, link), STOP-free stand down, Twilio hanging + ack/alarm latency
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.globe /tmp   # 3D view: software-GL refusal, forced open + watchdog, alarm latency while open, failed load
 PROBE_PASS_FILE=... .venv/bin/python -m tools.e2e.prod_probe listen 120      # PRODUCTION: SSE over LAN + tunnel at once, per-alarm latency; also arm|disarm|alarms
 tools/dev_down.sh
@@ -276,6 +277,7 @@ tools/dev_down.sh
    - **Delivery follow-up** (production 2026-10-12: alarm 1880's MMS was accepted, then failed 63019 "media failed to download"; the picture request never reached the app, likely lost at Cloudflare/tunnel; 1833 and 1881 delivered fine): `sms._watch` polls `GET /Messages/{sid}.json` at `WATCH_AT_S` (3…240 s), updates `sms_log.outcome` to delivered / failed / undelivered with `explain(code)`, and **resends a failed MMS without the picture**. Tasks in `_watchers` (cancelled on shutdown, so a text sent just before a restart isn't followed up). Tests set `sms.WATCH = False` except the follow-up tests. Read a message's status by hand with a container script (`sms.config()` + Twilio API), never printing the token.
    - **Per-site texts** (user, 2026-10-12, migration 0015): `users.sms_sites` = list of site ids, None = every site (incl. new ones); filtered in `sms._handle`; API `sms_sites` (POST/PUT) and `sms_all_sites: true` (PUT) via `api._site_choice` (own company's unarchived sites, ≥1).
    - **Background tasks** (user: "make sure they're not getting stuck"): `sms._spawn` wraps every task in `wait_for(TASK_MAX_S=120)` (summaries: window + 120 s), `sms.shutdown()` in `main.lifespan` (2 s grace then cancel), `sms.status()` on the Platform tab. A test hang on 2026-10-12 was a test cancelling a text mid-DB-write after the SQLite engine closed (aiosqlite's shielded close never finished); tests now `drain()` instead.
+   - **Texts when an operator confirms (mobile guards)** (user, 2026-10-13: "sms if the alarm goes off or if the alarm is verified by an operator ... to a mobile security guard"; migration 0016, built, **not deployed yet**): `users.sms_when` raised (default, everyone before) | confirmed | both; Users dialogs "Send". `sms.notify_verdicts(confirmed, withdrawn, by_id)` is called after commit from `ack.acknowledge` (verdict real, not bulk) and `api.bulk_edit` (one text per person for the newest, "+N more"). Defaults chosen: confirmed texts go for **any alarm level** (level "No texts" still = none), skip the confirming operator, **bypass flood control** (still counted), only for alarms < `CONFIRM_MAX_AGE_S` = 1 h old; Real → False/Dismissed sends **STAND DOWN** to everyone who got the confirmed text (`sms_log.purpose` confirmed / stand_down). Link page shows "Confirmed real by …" and the operator note. Measured dev: confirmed text at Twilio 204-219 ms after the Real event click; with Twilio hanging the pop-up closed in 162 ms and alarms reached the screen in 26-38 ms.
    - Possible next steps: acknowledge from the link; texting TWG on-call for customer companies' alarms; Twilio delivery-status callbacks.
 14c. **Site 1 "Repeat alarms delayed" (read 2026-10-12, the user said "not now"):** four enabled rules with Interval of action 60 s and no interval-0 rule for the same event: `32fac496` AXIS front-of-office (analytics `nx.axis.{c95466c7-…}`, cam `71241cb2`, desktopNotification), `44bfffa4` ObjectClass.Human (cam `1542c3fe`, push), `e0974f76` cvedia armed_person (cam `68512ea9`, **writeToLog**, caption filter "smoking" looks like a leftover), `bb23e5b2` Nx Training soft trigger (cam `2df009a1`, speak). Fix offered: untick the interval on `e0974f76`; add Write-to-log copies (interval off) of the other three. Needs the user's OK (writes to NX). The TWG gateway's NX connector withholds the rule list (2 password fields); read rules through the app container instead.
 14b. **Top-down site view** (the user asked 2026-10-12 for an NX-style flat map "where we can add cameras, not in 3d mode", with a screenshot of NX's map: drone photo, blue cones). Deployed 2026-10-12 13:31 UTC (`ac037e8`).

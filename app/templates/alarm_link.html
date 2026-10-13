@@ -10,13 +10,16 @@
   <div class="card link-card" id="link-alarm">
     <div class="link-title">
       <span class="chip p{{ alarm.priority }}">{{ {1: "Critical", 2: "Alarm", 3: "Warning"}[alarm.priority] }}</span>
-      {% if alarm.state == "acknowledged" %}<span class="chip online">Acknowledged{% if alarm.acked_by %} by {{ alarm.acked_by }}{% endif %}</span>{% endif %}
+      {% if alarm.verdict == "real" %}<span class="chip p1">Confirmed real{% if alarm.verdict_by %} by {{ alarm.verdict_by }}{% endif %}</span>
+      {% elif alarm.verdict == "false" %}<span class="chip online">False alarm: stand down</span>
+      {% elif alarm.state == "acknowledged" %}<span class="chip online">Acknowledged{% if alarm.acked_by %} by {{ alarm.acked_by }}{% endif %}</span>{% endif %}
       <h1>{{ alarm.caption or alarm.event_type }}</h1>
     </div>
     <dl class="link-facts">
       <dt>Site</dt><dd>{{ alarm.site_name }}{% if alarm.site_address %}<div class="muted">{{ alarm.site_address }}</div>{% endif %}</dd>
       {% if alarm.source_name %}<dt>Camera</dt><dd>{{ alarm.source_name }}</dd>{% endif %}
       <dt>When</dt><dd id="link-when" data-ms="{{ alarm.event_ts_ms }}"></dd>
+      {% if alarm.ack_note %}<dt>Operator note</dt><dd class="link-desc">{{ alarm.ack_note }}</dd>{% endif %}
       {% if alarm.description %}<dt>Details</dt><dd class="link-desc">{{ alarm.description }}</dd>{% endif %}
     </dl>
     <div id="link-player"></div>

@@ -12,6 +12,14 @@ whose sites (users.sms_sites: None = every site, else a list of site ids) includ
 alarms never text (the same rule as sound and pop-ups). Invited people who haven't signed in yet count:
 someone can get texts without ever using the portal.
 
+When (users.sms_when): "raised" texts when the alarm goes off (above), "confirmed" only once an operator marks
+it Real event (a mobile guard: dispatch on a verified alarm), "both" does both. A confirmed text goes for an
+alarm of any level (the operator's verdict is the signal; "No texts" still means none), names who confirmed
+it and their note, and is never held back by flood control. Only alarms under CONFIRM_MAX_AGE_S old text
+(re-marking old alarms in the Alarms page must not send guards out); a bulk edit sends each person one text
+for the newest alarm with the count. The operator who confirmed isn't texted. If the verdict later changes
+from Real event to something else, everyone who got the confirmed text gets a STAND DOWN text.
+
 Flood control: at most sms_max_per_10min texts per person in any 10 minutes. Alarms past that are
 counted, and one summary text ("12 more alarms at ...", with a link to the newest) goes out as soon as
 the window allows. Nothing is dropped silently.
@@ -61,6 +69,8 @@ DB_SLOTS = 2                 # background tasks using the database at once (the 
 SEND_SLOTS = 4               # Twilio requests at once
 LEVELS = {"off": 0, "critical": 1, "alarm": 2}    # the loudest alarm priority that texts (1 critical, 2 alarm)
 LEVEL_WORD = {1: "CRITICAL", 2: "ALARM", 3: "WARNING"}
+WHEN = ("raised", "confirmed", "both")      # users.sms_when
+CONFIRM_MAX_AGE_S = 3600     # a verdict on an older alarm sends no text
 
 
 # ---------------------------------------------------------------- phone numbers
@@ -126,9 +136,10 @@ def _ascii(s: str, limit: int) -> str:
     return s if len(s) <= limit else s[: limit - 3].rstrip() + "..."
 
 
-def _clock(alarm: Alarm) -> str:
+def _clock(alarm: Alarm, at: datetime | None = None) -> str:
+    """The event time (or `at`) in the site's time zone."""
     tz = arming.zone(alarm.site.timezone if alarm.site else None)
-    t = datetime.fromtimestamp(alarm.event_ts_ms / 1000, timezone.utc).astimezone(tz)
+    t = (at if at is not None else datetime.fromtimestamp(alarm.event_ts_ms / 1000, timezone.utc)).astimezone(tz)
     return t.strftime("%-I:%M:%S %p %Z")
 
 
@@ -169,6 +180,41 @@ def alarm_text(alarm: Alarm, link: str) -> str:
         lines.append(f"Directions: {nav}")
     lines += [f"View alarm: {link}", "Reply STOP to opt out."]
     return "\n".join(line for line in lines if line)
+
+
+def confirmed_text(alarm: Alarm, link: str, by: str, more: int = 0) -> str:
+    """An operator marked the alarm Real event. Like alarm_text, plus who confirmed it, when, and their note:
+
+    TWG CONFIRMED: Panic button
+    TWG Security Office
+    123 Main St, Harrisburg, PA
+    Front Door Cam, 2:03:22 PM EDT
+    Confirmed real by Mike Miller, 2:04:10 PM EDT
+    Note: man in black hoodie at the loading dock
+    Directions: https://www.google.com/maps/dir/?api=1&destination=40.26650,-76.88380
+    View alarm: https://alarmportal.twgsecurity.net/a/...
+    Reply STOP to opt out.
+    """
+    lines = alarm_text(alarm, link).split("\n")
+    lines[0] = lines[0].replace(f"TWG {LEVEL_WORD.get(alarm.priority, 'ALARM')}:", "TWG CONFIRMED:", 1)
+    extra = [f"Confirmed real by {_ascii(by, 40) or 'an operator'}, {_clock(alarm, alarm.verdict_at or utcnow())}"]
+    if more:
+        extra.append(f"(+{more} more confirmed alarm{'s' if more != 1 else ''}, see the portal)")
+    note = _ascii(alarm.ack_note, 120)
+    if note:
+        extra.append(f"Note: {note}")
+    at = next((i for i, line in enumerate(lines) if line.startswith(("Directions:", "View alarm:"))), len(lines))
+    return "\n".join(lines[:at] + extra + lines[at:])
+
+
+def stand_down_text(alarm: Alarm, verdict: str, by: str, more: int = 0) -> str:
+    word = {"false": "a false alarm", "dismissed": "dismissed"}.get(verdict, "no longer confirmed")
+    site = _ascii(alarm.site.name if alarm.site else "", 60)
+    what = _ascii(alarm.caption or alarm.event_type, 60)
+    also = f" (and {more} more)" if more else ""
+    return (f"TWG STAND DOWN: {what} at {site}{also} is no longer confirmed real. "
+            f"{_ascii(by, 40) or 'An operator'} marked it {word}, {_clock(alarm, alarm.verdict_at or utcnow())}.\n"
+            f"Reply STOP to opt out.")
 
 
 def summary_text(count: int, sites: list[str], since: Alarm, newest: Alarm, link: str) -> str:
@@ -592,6 +638,7 @@ async def _handle(alarm_id: int, arrived: float) -> None:
             levels = [k for k, v in LEVELS.items() if v >= alarm.priority]
             users = (await db.scalars(select(User).where(User.tenant_id == alarm.tenant_id, User.is_active.is_(True),
                                                          User.phone != "", User.sms_level.in_(levels),
+                                                         User.sms_when.in_(("raised", "both")),
                                                          User.sms_consent == "yes"))).all()
             users = [u for u in users if u.sms_sites is None or alarm.site_id in u.sms_sites]   # "Only these sites"
             for u in users:
@@ -617,6 +664,95 @@ async def _handle(alarm_id: int, arrived: float) -> None:
             _spawn(_send(cfg, u, body, "alarm", alarm, arrived, media))
     except Exception:  # noqa: BLE001 - never let a text problem escape into the event loop's error log only
         log.exception("sms: alarm %s could not be texted", alarm_id)
+
+
+# ---------------------------------------------------------------- confirmed by an operator
+def notify_verdicts(confirmed: list[int], withdrawn: list[tuple[int, str]], by_id: int) -> None:
+    """After an acknowledgement or verdict change is committed. confirmed: alarm ids that just became Real event;
+    withdrawn: (alarm id, new verdict) that were Real event and aren't now. Never waits."""
+    if not platform_settings.current().sms_ready:
+        return
+    arrived = time.time()
+    if confirmed:
+        _spawn(_handle_confirmed(list(confirmed), by_id, arrived))
+    if withdrawn:
+        _spawn(_handle_withdrawn(list(withdrawn), by_id))
+
+
+def _recent(alarm: Alarm) -> bool:
+    return alarm.event_ts_ms >= (time.time() - CONFIRM_MAX_AGE_S) * 1000
+
+
+async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) -> None:
+    try:
+        _, db_slots = _slots()
+        plan: list[tuple[User, str, str, Alarm]] = []
+        async with db_slots, sessionmaker()() as db:
+            cfg = await config(db)
+            if cfg is None:
+                return
+            alarms = (await db.scalars(select(Alarm).where(Alarm.id.in_(alarm_ids), Alarm.verdict == "real"))).unique().all()
+            old = [a.id for a in alarms if not _recent(a)]
+            if old:
+                log.info("sms: alarms %s confirmed but over %d s old: not texted", old, CONFIRM_MAX_AGE_S)
+            alarms = [a for a in alarms if _recent(a)]
+            by = await db.get(User, by_id)
+            for tenant_id in sorted({a.tenant_id for a in alarms}):
+                group = [a for a in alarms if a.tenant_id == tenant_id]
+                users = (await db.scalars(select(User).where(User.tenant_id == tenant_id, User.is_active.is_(True),
+                                                             User.phone != "", User.sms_level != "off",
+                                                             User.sms_when.in_(("confirmed", "both")),
+                                                             User.sms_consent == "yes", User.id != by_id))).all()
+                for u in users:
+                    mine = [a for a in group if u.sms_sites is None or a.site_id in u.sms_sites]
+                    if not mine:
+                        continue
+                    newest = max(mine, key=lambda a: a.id)
+                    token = await alarm_links.mint(db, newest, u, cfg.link_hours)
+                    _sent.setdefault(u.id, deque()).append(time.monotonic())   # counts toward the window, never held
+                    plan.append((u, confirmed_text(newest, alarm_links.url(token), by.label if by else "", len(mine) - 1),
+                                 token, newest))
+            await db.commit()
+        pictures = {}
+        if plan and cfg.pictures:
+            for a in {a.id: a for *_, a in plan}.values():
+                pictures[a.id] = await alarm_picture(a) is not None
+        for u, body, token, a in plan:
+            _spawn(_send(cfg, u, body, "confirmed", a, arrived, alarm_links.picture_url(token) if pictures.get(a.id) else ""))
+    except Exception:  # noqa: BLE001
+        log.exception("sms: confirmed alarms %s could not be texted", alarm_ids)
+
+
+async def _handle_withdrawn(changes: list[tuple[int, str]], by_id: int) -> None:
+    """Real event changed to false / dismissed: tell everyone who was texted that it was confirmed."""
+    try:
+        _, db_slots = _slots()
+        plan: list[tuple[User, str, Alarm]] = []
+        verdicts = dict(changes)
+        async with db_slots, sessionmaker()() as db:
+            cfg = await config(db)
+            if cfg is None:
+                return
+            rows = (await db.execute(select(SmsLog.user_id, SmsLog.alarm_id).where(
+                SmsLog.alarm_id.in_(list(verdicts)), SmsLog.purpose == "confirmed",
+                SmsLog.outcome.in_(("sent", "delivered"))).distinct())).all()
+            got: dict[int, list[int]] = {}
+            for uid, aid in rows:
+                if uid is not None:
+                    got.setdefault(uid, []).append(aid)
+            by = await db.get(User, by_id)
+            for uid, aids in got.items():
+                u = await db.get(User, uid)
+                alarms = [a for a in [await db.get(Alarm, aid) for aid in sorted(set(aids))] if a and a.verdict != "real"]
+                if u is None or not u.is_active or not u.phone or u.sms_consent != "yes" or not alarms:
+                    continue
+                newest = alarms[-1]
+                plan.append((u, stand_down_text(newest, verdicts.get(newest.id, newest.verdict), by.label if by else "",
+                                                len(alarms) - 1), newest))
+        for u, body, a in plan:
+            _spawn(_send(cfg, u, body, "stand_down", a, time.time()))
+    except Exception:  # noqa: BLE001
+        log.exception("sms: stand-down texts for %s failed", changes)
 
 
 # ---------------------------------------------------------------- consent

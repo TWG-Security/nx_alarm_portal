@@ -64,6 +64,8 @@ class User(Base):
     phone: Mapped[str] = mapped_column(String(20), default="")
     sms_level: Mapped[str] = mapped_column(String(10), default="off")
     sms_sites: Mapped[list | None] = mapped_column(JSONType, nullable=True)     # site ids that text them; None = every site
+    # When they're texted: raised (the alarm goes off) | confirmed (an operator marks it Real event) | both
+    sms_when: Mapped[str] = mapped_column(String(10), default="raised", server_default="raised")
     # Consent (carrier rules): none | pending (opt-in request sent) | yes (replied YES) | stopped (replied STOP)
     sms_consent: Mapped[str] = mapped_column(String(10), default="none")
     sms_consent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
