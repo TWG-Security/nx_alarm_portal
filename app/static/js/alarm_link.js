@@ -5,7 +5,7 @@
 import { CFG, fmtTime } from "./common.js";
 import { mountPlayer } from "./player.js";
 import { mountLive } from "./live.js";
-import { askLocationNow, createSharer } from "./share_core.js";
+import { createSharer, isIOS, locationPermission } from "./share_core.js";
 
 const a = CFG.alarm, token = CFG.token;
 const STILL_EVERY_MS = 3000;     // a still per visible camera every 3 s (~40 KB each): light on phone data and the NX relay
@@ -25,20 +25,17 @@ if (CFG.canShare && $("link-share-start")) {
     $("link-share-facts").textContent = facts;
     try { if (on) sessionStorage.setItem(KEY, "1"); else sessionStorage.removeItem(KEY); } catch { /* fine */ }
   };
-  async function startSharing() {
-    $("link-share-start").disabled = true;
-    const asked = askLocationNow();          // in the tap itself, so Safari asks "Allow location?"
-    try {
-      if (!sharer) {
+  // The location request happens right here in the tap (Safari asks "Allow location?" only then); the location
+  // link's token is fetched alongside and used for the first position.
+  function startSharing() {
+    if (!sharer) {
+      sharer = createSharer(async () => {
         const r = await fetch(`/api/a/${token}/share`, { method: "POST", credentials: "omit" });
         if (!r.ok) throw new Error(r.status === 410 ? "This alarm link has expired" : "Couldn't start sharing");
-        const { token: shareToken } = await r.json();
-        sharer = createSharer(shareToken, { everyS: 10, onState: paint });
-      }
-      if (await asked === "blocked") { paint("blocked", "Location is blocked for this page. See “Location blocked?” below to allow it, then tap again.", ""); return; }
-      sharer.start();
-    } catch (err) { paint("warn", err.message, ""); }
-    finally { $("link-share-start").disabled = false; }
+        return (await r.json()).token;
+      }, { everyS: 10, onState: paint });
+    }
+    sharer.start();
   }
   $("link-share-start").addEventListener("click", startSharing);
 
@@ -65,7 +62,12 @@ if (CFG.canShare && $("link-share-start")) {
     finally { document.querySelectorAll(".mdt-btn").forEach((x) => { x.disabled = false; }); }
   });
   $("link-share-stop").addEventListener("click", () => sharer?.stop());
-  try { if (sessionStorage.getItem(KEY) === "1") startSharing(); } catch { /* fine */ }
+  if (isIOS()) document.querySelector(".ios-tip").hidden = false;
+  (async () => {
+    let again = false;
+    try { again = sessionStorage.getItem(KEY) === "1"; } catch { /* fine */ }
+    if (again && await locationPermission() === "granted") startSharing();         // no tap: only if already allowed
+  })();
 }
 
 $("link-when").textContent = new Date(a.event_ts_ms).toLocaleString([], { dateStyle: "medium", timeStyle: "medium" });

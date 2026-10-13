@@ -895,3 +895,4 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .cam-cal-foot { display: flex; align-items: center; gap: 8px; }
 .cam-cal-foot .muted { flex: 1; }
 .cam-actions { display: flex; gap: 6px; padding: 6px 8px; }
+.ios-tip { margin: 8px 0 0; border-left: 3px solid #E08A30; padding: 4px 8px; }

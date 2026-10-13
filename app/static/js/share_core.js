@@ -11,17 +11,23 @@ const metres = (a, b) => {
 export const ago = (ms) => { const s = Math.round((Date.now() - ms) / 1000); return s < 5 ? "just now" : s < 90 ? `${s} s ago` : `${Math.round(s / 60)} min ago`; };
 
 /**
- * token: the location link's token. onState(kind, text, facts): kind "on" | "wait" | "warn" | "off" | "gone".
- * Returns { start(), stop(tell = true), get active() }.
+ * token: the location link's token, or a function returning a promise of it (the alarm page fetches it, and the
+ * location request must still happen inside the tap: Safari refuses one made after waiting on the network).
+ * onState(kind, text, facts): kind "on" | "wait" | "warn" | "off" | "blocked" | "gone".
+ * Returns { start(), stop(tell = true), get active() }. start() makes exactly one location request (watchPosition):
+ * two at once (as an earlier version did) let Safari refuse the second while its prompt for the first was open.
  */
 export function createSharer(token, { everyS = 10, onState = () => {} } = {}) {
+  let tok = typeof token === "function" ? null : token;
+  const getToken = async () => (tok ??= await token());
   let watch = null, last = null, sentAt = 0, sentPos = null, timer = null, lock = null, failures = 0, kind = "off", text = "Not sharing";
   const facts = () => !last ? (watch != null ? "Waiting for the phone's GPS…" : "")
     : `Last position ${ago(last.ts)} · accurate to ${Math.round(last.accuracy)} m${sentAt ? ` · sent ${ago(sentAt)}` : ""}`;
   const state = (k, t) => { kind = k; text = t; onState(k, t, facts()); };
 
   async function post(path, body) {
-    const r = await fetch(`/api/g/${encodeURIComponent(token)}/${path}`, {
+    const t = await getToken();
+    const r = await fetch(`/api/g/${encodeURIComponent(t)}/${path}`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}), credentials: "omit", keepalive: true });
     if (r.status === 404 || r.status === 410) { stop(false); state("gone", "This link no longer works. Ask dispatch for a new one."); throw new Error("gone"); }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -82,20 +88,16 @@ export function createSharer(token, { everyS = 10, onState = () => {} } = {}) {
   });
   // Closing the page: tell dispatch (best effort; a phone that just dies is shown offline after 3 minutes).
   window.addEventListener("pagehide", (e) => {
-    if (watch != null && !e.persisted) navigator.sendBeacon?.(`/api/g/${encodeURIComponent(token)}/stop`, new Blob(["{}"], { type: "application/json" }));
+    if (watch != null && !e.persisted && tok) navigator.sendBeacon?.(`/api/g/${encodeURIComponent(tok)}/stop`, new Blob(["{}"], { type: "application/json" }));
   });
   return { start, stop, get active() { return watch != null; } };
 }
 
 /**
- * Ask for the location right away, inside the tap. Safari (iPhone) only shows its "Allow location?" question for a
- * request made directly in the tap; one made after waiting on the network can be refused without asking.
- * Resolves "ok" | "blocked" | "unavailable".
+ * Whether this page may use the location without asking: "granted" | "denied" | "prompt" | "unknown". Reopening a
+ * page resumes sharing only when "granted": Safari silently refuses a request that doesn't come from a tap.
  */
-export function askLocationNow() {
-  if (!navigator.geolocation) return Promise.resolve("unavailable");
-  return new Promise((resolve) => {
-    navigator.geolocation.getCurrentPosition(() => resolve("ok"), (e) => resolve(e.code === 1 ? "blocked" : "ok"),
-      { enableHighAccuracy: true, maximumAge: 60000, timeout: 30000 });
-  });
+export async function locationPermission() {
+  try { return (await navigator.permissions.query({ name: "geolocation" })).state; } catch { return "unknown"; }
 }
+export const isIOS = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);

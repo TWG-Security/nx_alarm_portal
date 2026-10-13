@@ -1,5 +1,5 @@
 // The guard's location-sharing page (/g/<token>, app/routers/share.py). The sharing itself is share_core.js.
-import { askLocationNow, createSharer } from "./share_core.js";
+import { createSharer, isIOS, locationPermission } from "./share_core.js";
 
 const { token, everyS } = window.PORTAL;
 const $ = (id) => document.getElementById(id);
@@ -17,6 +17,14 @@ const sharer = createSharer(token, {
     try { if (on) localStorage.setItem(KEY, "1"); else localStorage.removeItem(KEY); } catch { /* not remembered */ }
   },
 });
-$("share-start").addEventListener("click", () => { askLocationNow(); sharer.start(); });
+$("share-start").addEventListener("click", () => sharer.start());          // one request, inside the tap
 $("share-stop").addEventListener("click", () => sharer.stop());
-try { if (localStorage.getItem(KEY) === "1") sharer.start(); } catch { /* not remembered */ }
+if (isIOS()) document.querySelector(".ios-tip").hidden = false;
+// Reopened while sharing: carry on by itself only if the browser already allows location (no tap = no prompt).
+(async () => {
+  let again = false;
+  try { again = localStorage.getItem(KEY) === "1"; } catch { /* not remembered */ }
+  if (!again) return;
+  if (await locationPermission() === "granted") sharer.start();
+  else { $("share-state").textContent = "Tap Start sharing to share your location again"; $("share-state").className = "share-state share-state--wait"; }
+})();
