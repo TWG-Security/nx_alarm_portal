@@ -1090,3 +1090,20 @@ details.sp-status li, details.sp-status p { font-size: 12px; line-height: 1.45; 
 @container (max-width: 820px) { .drawer-lower { grid-template-columns: minmax(0, 1fr); } }
 /* the map pane's own toolbars sit under the details; the top-down bar is wider than a narrow pane and peeked out */
 body:has(.drawer--docked) .map-canvas .globe-bar { visibility: hidden; }
+
+/* Alarm details: smaller videos so the details fit without scrolling (the user, 2026-10-14: "make the video smaller so
+   it can have more information on one page without scrolling"). Each video is at most --vid-h tall (about a fifth
+   of the screen); ⤢ / double-click shows one full screen. Side by side down to a phone-width pane. */
+.drawer { --vid-h: clamp(130px, 20vh, 220px); --vid-w: calc(var(--vid-h) * 16 / 9); }
+.drawer .drawer-media { grid-template-columns: repeat(2, minmax(0, var(--vid-w))); justify-content: start; gap: 12px; max-width: none; }
+.drawer .drawer-media.single { grid-template-columns: minmax(0, var(--vid-w)); }
+.drawer .drawer-media .player, .drawer .drawer-media .live-pane { margin-bottom: 0; }
+.drawer .drawer-lower { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 10px; }
+.drawer-where .where-mount { height: max(var(--vid-h), 200px); }
+.drawer .drawer-details .kv { grid-template-columns: 96px minmax(0, 1fr); }
+@container (max-width: 560px) { .drawer .drawer-media { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 640px) { .drawer .drawer-lower { grid-template-columns: minmax(0, 1fr); } }
+.vid-big { position: absolute; right: 6px; bottom: 6px; z-index: 3; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px;
+  background: rgba(0, 0, 0, .6); color: #fff; font: 700 17px/30px var(--font); cursor: pointer; }
+.vid-big:hover, .vid-big:focus-visible { background: rgba(0, 0, 0, .85); outline: 2px solid #E08A30; }
+.player-stage:fullscreen, .live-stage:fullscreen { border-radius: 0; aspect-ratio: auto; }

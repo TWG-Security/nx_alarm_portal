@@ -378,6 +378,7 @@ export async function openDrawer(id, fallback) {
   render(a);
   player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
   if (a.device_id) live = mountLive(drawer.querySelector(".live-mount"), a);
+  addBigButtons();
   mountWhere(a).catch((err) => console.error("top-down map in the alarm details failed", err));
   api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
   startGuards(a);
@@ -388,8 +389,31 @@ export async function openDrawer(id, fallback) {
   drawer.querySelector("#drawer-close").focus();
 }
 
+// The videos are kept small so the details fit without scrolling (the user, 2026-10-14: "make the video smaller so
+// it can have more information on one page without scrolling"); ⤢ or a double-click shows one full screen, boxes and
+// all (the stage is what goes full screen, so player.js keeps drawing the boxes over it).
+function addBigButtons() {
+  for (const stage of drawer.querySelectorAll(".drawer-media .player-stage, .drawer-media .live-stage")) {
+    stage.insertAdjacentHTML("beforeend", '<button type="button" class="vid-big" data-big title="Full screen (double-click the video; Esc to come back)" aria-label="Show this video full screen">⤢</button>');
+  }
+}
+function toggleBig(stage) {
+  if (document.fullscreenElement) return document.exitFullscreen().catch(() => {});
+  stage.requestFullscreen?.().catch((err) => toast(esc(`Full screen isn't available here (${err.message})`), { kind: "error" }));
+}
+// A new alarm or a lost connection always comes back out of full screen, so its pop-up, feed card and banner show.
+const leaveBig = () => { if (document.fullscreenElement && drawer.contains(document.fullscreenElement)) document.exitFullscreen().catch(() => {}); };
+on("alarm.arrived", leaveBig);
+on("connection", (c) => { if (c.down) leaveBig(); });
+drawer.addEventListener("dblclick", (e) => {
+  const stage = e.target.closest(".drawer-media .player-stage, .drawer-media .live-stage");
+  if (stage && !e.target.closest("button, input, select, a")) toggleBig(stage);
+});
+
 drawer.addEventListener("click", async (e) => {
   if (e.target.closest("#drawer-close")) return closeDrawer();
+  const big = e.target.closest("[data-big]");
+  if (big) return toggleBig(big.closest(".player-stage, .live-stage"));
   if (e.target.id === "call-end") return endCall(e.target);
   const next = e.target.closest("[data-next]");
   if (next) { const a = openAlarms.get(Number(next.dataset.next)); return openDrawer(Number(next.dataset.next), a); }
@@ -405,6 +429,9 @@ drawer.addEventListener("click", async (e) => {
   const verdict = e.target.dataset.ack;
   if (verdict) {
     const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target, verdict);
+    // False alarm: nothing more to do here, so the details close (the user, 2026-10-14: "when false alarm is click
+    // close that alarm"); the toast confirms it. Real event stays open for Dispatch.
+    if (updated && verdict === "false") return closeDrawer();
     if (updated) { current = updated; render(updated); loadGuards(updated); loadTimeline(updated); }
     return;
   }
@@ -490,7 +517,7 @@ document.getElementById("export-form").addEventListener("submit", async (e) => {
     expStatus.innerHTML = `<div class="alert alert-error"><b>Export failed:</b> ${esc(err.message)}</div>`;
   } finally { btn.disabled = false; }
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && current && !document.querySelector("dialog[open]")) closeDrawer(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && current && !document.querySelector("dialog[open]") && !document.fullscreenElement) closeDrawer(); });
 
 // Someone else acknowledged the alarm we're looking at.
 on("store", ({ alarm, alarms } = {}) => {

@@ -71,7 +71,7 @@ async def make_alarm(session, site, priority=2, caption="Panic button", **kw):
     global n
     n += 1
     a = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=f"k{n}", event_type="softTrigger", priority=priority,
-              caption=caption, source_name="Front Door Cam", device_id="dev-1",
+              caption=caption, source_name=kw.pop("source_name", "Front Door Cam"), device_id=kw.pop("device_id", "dev-1"),
               event_ts_ms=kw.pop("event_ts_ms", 1_760_282_602_000), **kw)
     session.add(a)
     await session.commit()
@@ -1269,3 +1269,47 @@ async def test_a_gif_text_the_carrier_refuses_is_not_sent_again(session, monkeyp
     assert len(twilio.calls) == 1
     rows = (await session.scalars(select(SmsLog))).all()
     assert [(r.purpose, r.outcome) for r in rows] == [("alarm_gif", "failed")]
+
+
+@respx.mock
+async def test_a_burst_from_one_camera_gets_one_gif_text(session, monkeypatch, no_gif_cache):
+    """The user, 2026-10-14, two intrusions 3.4 s apart on one camera: "it sends two gifs i only want one". Every
+    alarm keeps its own alarm text; only the first GIF goes. Another camera still gets its own; a GIF that wasn't
+    sent frees the camera; after GIF_ONE_PER_S the camera's next alarm gets a GIF again."""
+    alarm_gif = no_gif_cache
+    _, site, people = await world(session)
+    await texts_on(session, sms_pictures=True)
+    fake_media(monkeypatch, alarm_gif, gif_delay=0.1)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMx"}))
+
+    def bodies(n0=0):
+        return [parse_qs(c.request.content.decode())["Body"][0].split(":")[0] for c in twilio.calls[n0:]]
+    a1 = await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)
+    sms.notify([a1])
+    await sms.drain()
+    a2 = await make_alarm(session, site, event_ts_ms=now_ms() - 6_600)
+    sms.notify([a2])
+    other = await make_alarm(session, site, event_ts_ms=now_ms() - 6_000, device_id="dev-2", source_name="Back Lot Cam")
+    sms.notify([other])
+    await _gif_texts_done()
+    assert sorted(bodies()) == sorted(["TWG ALARM"] * 3 + ["TWG ALARM VIDEO"] * 2), bodies()
+    gifs = [parse_qs(c.request.content.decode())["MediaUrl"][0] for c in twilio.calls if "alarm.gif" in c.request.content.decode()]
+    rows = (await session.scalars(select(SmsLog).where(SmsLog.purpose == "alarm_gif"))).all()
+    assert sorted(r.alarm_id for r in rows) == sorted([a1.id, other.id]) and len(gifs) == 2
+    # a camera whose GIF text didn't go (no GIF made) doesn't block the next alarm's GIF
+    sms.reset()
+    fake_media(monkeypatch, alarm_gif, gif=None)
+    sms.notify([await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)])
+    await _gif_texts_done()
+    fake_media(monkeypatch, alarm_gif, gif_delay=0.1)
+    n0 = len(twilio.calls)
+    sms.notify([await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)])
+    await _gif_texts_done()
+    assert bodies(n0) == ["TWG ALARM", "TWG ALARM VIDEO"], bodies(n0)
+    # and a minute later the same camera's next alarm gets its GIF
+    monkeypatch.setattr(sms, "GIF_ONE_PER_S", 0.2)
+    await asyncio.sleep(0.25)
+    n0 = len(twilio.calls)
+    sms.notify([await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)])
+    await _gif_texts_done()
+    assert bodies(n0) == ["TWG ALARM", "TWG ALARM VIDEO"], bodies(n0)

@@ -602,33 +602,66 @@ async def _send(cfg: Twilio, user: User, body: str, purpose: str, alarm: Alarm |
 
 
 GIF_TEXT_MAX_S = 30          # the GIF follow-up gives up if the GIF isn't made within this (nothing waits on it)
+# One GIF text per camera per person in this long: an analytics burst (the user, 2026-10-14, two intrusions 3.4 s apart
+# on one camera: "it sends two gifs i only want one") gets an alarm text per alarm but a single GIF. A follow-up that
+# ends up not sent (no GIF, false alarm, ...) frees the camera for the next alarm's GIF.
+GIF_ONE_PER_S = 60
+_gif_claims: dict[tuple[int, str], tuple[int, float]] = {}   # (user id, camera or site) -> (alarm id, when claimed)
+
+
+def _claim_gif(user: User, alarm: Alarm) -> bool:
+    key, now = (user.id, alarm.device_id or f"site {alarm.site_id}"), time.time()
+    held = _gif_claims.get(key)
+    if held and now - held[1] < GIF_ONE_PER_S:
+        log.info("sms: alarm %s: no GIF text to %s (alarm %s's GIF from the same camera %.0f s ago covers it)",
+                 alarm.id, masked(user.phone), held[0], now - held[1])
+        return False
+    _gif_claims[key] = (alarm.id, now)
+    for k in [k for k, (_, at) in _gif_claims.items() if now - at >= GIF_ONE_PER_S]:
+        del _gif_claims[k]
+    return True
+
+
+def _release_gif(user: User, alarm: Alarm) -> None:
+    key = (user.id, alarm.device_id or f"site {alarm.site_id}")
+    if _gif_claims.get(key, (None,))[0] == alarm.id:
+        del _gif_claims[key]
 
 
 async def _alarm_then_gif(cfg: Twilio, user: User, body: str, alarm: Alarm, arrived: float, media: str,
                           token: str, gif_body: str) -> None:
     """The alarm text exactly as without a follow-up; once Twilio took it, the GIF follow-up is its own task."""
-    if await _send(cfg, user, body, "alarm", alarm, arrived, media) == "sent":
+    if await _send(cfg, user, body, "alarm", alarm, arrived, media) == "sent" and _claim_gif(user, alarm):
         _spawn(_gif_after(cfg, user, alarm, token, gif_body), _gif_tasks, limit_s=GIF_TEXT_MAX_S + TASK_MAX_S)
 
 
 async def _gif_after(cfg: Twilio, user: User, alarm: Alarm, token: str, body: str) -> None:
+    sent = False
+    try:
+        sent = await _gif_follow_up(cfg, user, alarm, token, body)
+    finally:
+        if not sent:
+            _release_gif(user, alarm)
+
+
+async def _gif_follow_up(cfg: Twilio, user: User, alarm: Alarm, token: str, body: str) -> bool:
     from app.services import alarm_gif, clips
     wait = (alarm.event_ts_ms + alarm_gif.GIF_POST_MS + clips.PARTIAL_LAG_MS) / 1000 - time.time()
     if wait > 0:                         # until NX has recorded the seconds after the alarm: the full GIF, not a short one
         await asyncio.sleep(wait)
     if await alarm_gif.alarm_gif(alarm, budget_s=GIF_TEXT_MAX_S) is None:
         log.info("sms: alarm %s: no GIF, so no GIF text to %s (they have the still)", alarm.id, masked(user.phone))
-        return
+        return False
     _, db_slots = _slots()
     async with db_slots, sessionmaker()() as db:
         verdict = await db.scalar(select(Alarm.verdict).where(Alarm.id == alarm.id))
     if verdict in ("false", "dismissed"):
         log.info("sms: alarm %s was marked %s: no GIF text to %s", alarm.id, verdict, masked(user.phone))
-        return
+        return False
     if len(_sent.get(user.id, ())) >= cfg.max_per_window:
         log.info("sms: alarm %s: no GIF text to %s (flood control is holding their texts)", alarm.id, masked(user.phone))
-        return
-    await _send(cfg, user, body, "alarm_gif", alarm, time.time(), alarm_links.gif_url(token))
+        return False
+    return await _send(cfg, user, body, "alarm_gif", alarm, time.time(), alarm_links.gif_url(token)) == "sent"
 
 
 async def send_test(to: str, by: str, *, user: User | None = None) -> tuple[str, str]:
@@ -1135,6 +1168,7 @@ def reset() -> None:
         t.cancel()
     _tasks.clear()
     _gif_tasks.clear()
+    _gif_claims.clear()
     _flushers.clear()
     _watchers.clear()
     _started.clear()
