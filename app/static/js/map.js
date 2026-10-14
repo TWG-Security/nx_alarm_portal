@@ -3,6 +3,7 @@ import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, open
 import { openDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
+import { openRuleEditor } from "./rule_editor.js";
 
 const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
@@ -135,6 +136,7 @@ function paintRules(s, v, error = "") {
       <div style="display:flex;gap:6px;flex:0 0 auto;align-items:center;flex-wrap:wrap;justify-content:flex-end">
       <div class="seg" role="group" aria-label="Show"><button type="button" data-rules-filter="all" class="${rulesFilter === "all" ? "active" : ""}">All rules</button>
         <button type="button" data-rules-filter="tagged" class="${rulesFilter === "tagged" ? "active" : ""}">Tagged only (${v.rules.filter((r) => r.tag).length})</button></div>
+      ${admin && v.readable !== false ? '<button type="button" class="btn btn-sm btn-primary" data-rule-new>+ New rule</button>' : ""}
       <button type="button" class="btn btn-sm" data-rules-check>Check now</button>
       <button type="button" class="btn btn-sm" data-rules-close aria-label="Close">✕</button></div></div>
     ${error ? `<div class="alert alert-error">Check failed: ${esc(error)}</div>` : ""}
@@ -157,6 +159,7 @@ async function openRules(siteId, check = false) {
   const s = sites.get(siteId);
   if (!s) return;
   if (!rulesDlg.open) rulesDlg.showModal();
+  ruleEditor = null;
   rulesDlg.dataset.site = siteId;
   rulesDlg.innerHTML = `<p class="muted">${check ? "Checking with NX…" : "Loading…"}</p>`;
   try {
@@ -168,7 +171,21 @@ async function openRules(siteId, check = false) {
   } catch (err) { rulesDlg.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div><button type="button" class="btn btn-sm" data-rules-close>Close</button>`; }
 }
 function saveSiteData(data) { if (data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); } }
+// The full rule editor (rule_editor.js) takes over the dialog; "Quick edit" (tags, on/off, interval) is the fallback
+// when the site's NX can't describe its rule engine.
+let ruleEditor = null;
+function openEditor(ruleId) {
+  const { s } = rulesState;
+  editingRule = null;
+  const back = (v) => { ruleEditor = null; paintRules(sites.get(s.id) || s, v || rulesState.v); };
+  ruleEditor = openRuleEditor(rulesDlg, { site: s, ruleId, onDone: (v) => back(v), onCancel: () => back(),
+    onQuickEdit: (id) => { ruleEditor = null; editingRule = id; paintRules(rulesState.s, rulesState.v); } });
+}
+const editorDirty = () => ruleEditor?.dirty() && !confirm("Close without saving your changes to this rule?");
+rulesDlg.addEventListener("cancel", (e) => { if (editorDirty()) e.preventDefault(); else ruleEditor = null; });
 rulesDlg.addEventListener("click", async (e) => {
+  if (e.target === rulesDlg && ruleEditor) { if (editorDirty()) return; ruleEditor = null; return rulesDlg.close(); }
+  if (ruleEditor) return;                                    // the editor handles its own clicks
   if (e.target.closest("[data-rules-close]") || e.target === rulesDlg) { editingRule = null; return rulesDlg.close(); }
   if (e.target.closest("[data-rules-check]")) return openRules(Number(rulesDlg.dataset.site), true);
   const f = e.target.closest("[data-rules-filter]");
@@ -178,7 +195,8 @@ rulesDlg.addEventListener("click", async (e) => {
     return paintRules(rulesState.s, rulesState.v);
   }
   const ed = e.target.closest("[data-rule-edit]");
-  if (ed && rulesState) { editingRule = editingRule === ed.dataset.ruleEdit ? null : ed.dataset.ruleEdit; return paintRules(rulesState.s, rulesState.v); }
+  if (ed && rulesState) return openEditor(ed.dataset.ruleEdit);
+  if (e.target.closest("[data-rule-new]") && rulesState) return openEditor(null);
   if (e.target.closest("[data-re-cancel]") && rulesState) { editingRule = null; return paintRules(rulesState.s, rulesState.v); }
   const save = e.target.closest("[data-re-save]");
   if (save && rulesState) {

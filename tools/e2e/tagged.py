@@ -96,10 +96,11 @@ with sync_playwright() as p:
     check(pg.locator(".rules-table tbody tr").count() == 1, "filter Tagged only: just the tagged rule")
     pg.click("[data-rules-filter=all]")
     pg.click("tr:has-text('Line crossing') [data-rule-edit]")
-    pg.select_option("[data-re=level]", "alarm")
-    pg.fill("[data-re=interval]", "0")
+    pg.wait_for_selector(".rx [data-x=event-type]", timeout=15000)
+    pg.select_option(".rx [data-d=level]", "alarm")
+    pg.fill(".rx input[data-k=intervalS]", "0")
     pg.screenshot(path=f"{out}/tagged-edit.png")
-    pg.click("[data-re-save]")
+    pg.click(".rx [data-x=save]")
     pg.wait_for_selector(".toast:has-text('Saved in NX')", timeout=10000)
     sent = [x for x in patches() if "comment" in x]
     check(sent and sent[-1]["comment"] == "Line crossing #alarm" and sent[-1]["action"]["intervalS"] == 0,

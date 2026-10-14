@@ -6,6 +6,9 @@ Fire events:  curl -X POST localhost:8199/_inject/panic   (critical: soft trigge
               curl -X POST localhost:8199/_inject/line    (alarm: analytics line crossing)
               curl -X POST localhost:8199/_inject/dock    (warning: camera disconnected)
               curl -X POST localhost:8199/_inject/panic24 (critical soft trigger from a rule tagged #24h)
+              curl -X POST localhost:8199/_inject/axis    (AXIS Object Analytics "Front Lot started": a zone event)
+Rule editor: manifests from tools/fixtures/nx61_rule_manifest.json, analytics plugins / camera manifest / drawn zones,
+POST|PUT|DELETE /rest/v4/events/rules; POST /_rules_mode/merge makes PATCH deep-merge event/action.
 Inspect NX-side write-backs:  curl localhost:8199/_state
 Clips: /rest/v4/devices/{id}/media.mp4 returns an ffmpeg test pattern (MPEG-4 Part 2, like many
 NX secondary streams) tagged with NX's startTimeMs comment; set FAKE_NX_FFMPEG if ffmpeg isn't on PATH.
@@ -25,8 +28,15 @@ app = FastAPI()
 EVENTS, ACKS, BOOKMARKS, TRACKS = [], [], [], []
 SUBSCRIBERS: set = set()   # JSON-RPC websockets subscribed to rest.v4.events.log
 FFMPEG = os.environ.get("FAKE_NX_FFMPEG", "ffmpeg")
-DEV = [{"id": "{11111111-1111-1111-1111-111111111111}", "name": "Front Gate PTZ", "deviceType": "Camera"},
-       {"id": "{22222222-2222-2222-2222-222222222222}", "name": "Loading Dock", "deviceType": "Camera"}]
+AXIS_ENGINE, CVEDIA_ENGINE = "{cb4a4ec3-31e4-7fe7-ba2a-e3464b407edc}", "{09d04f5a-19bd-90de-ff78-73e60cdac2ca}"
+AXIS_SCENARIO = "nx.axis.{c95466c7-a66e-d03d-7e39-13f1a05704cb}"
+# Like NX 6.1: analytics plugins enabled per camera, I/O ports in options.ioSettings.
+DEV = [{"id": "{11111111-1111-1111-1111-111111111111}", "name": "Front Gate PTZ", "deviceType": "Camera", "model": "AXISQ1798LE",
+        "userEnabledAnalyticsEngineIds": [AXIS_ENGINE],
+        "options": {"ioSettings": [{"id": "I0", "portType": "input", "inputName": "Gate contact"},
+                                   {"id": "I1", "portType": "output", "outputName": "Strobe"}]}},
+       {"id": "{22222222-2222-2222-2222-222222222222}", "name": "Loading Dock", "deviceType": "Camera",
+        "userEnabledAnalyticsEngineIds": [CVEDIA_ENGINE]}]
 # 1x1 grey JPEG
 JPG = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00fbfcffd9")
 
@@ -67,6 +77,80 @@ RULES = {k: {"id": "{%s}" % uuid.uuid5(uuid.NAMESPACE_URL, k), "comment": c, "en
                             ("panic24", "Hold-up button #24h", "softTrigger", 0))}
 @app.get("/rest/v4/events/rules")
 async def rules(): return list(RULES.values())
+
+# The rule editor's catalogue (tools/fixtures/nx61_rule_manifest.json is trimmed from a real NX 6.1.2), analytics
+# plugins with a camera manifest + a drawn zone (CVEDIA-style) and one without (AXIS: its zones show up in events).
+MANIFEST = json.load(open(os.path.join(os.path.dirname(__file__), "fixtures", "nx61_rule_manifest.json")))
+@app.get("/rest/v4/events/manifest/events")
+async def manifest_events():
+    return MANIFEST["events"] if RULE_MODE.get("manifest", "ok") == "ok" else JSONResponse({"error": "not found"}, status_code=404)
+@app.get("/rest/v4/events/manifest/actions")
+async def manifest_actions(): return MANIFEST["actions"]
+def _refused():
+    """RULE_MODE write=refuse: rule writes answer 403 like an NX account without rights."""
+    return JSONResponse({"error": "4", "errorString": "Forbidden"}, status_code=403) if RULE_MODE.get("write") == "refuse" else None
+@app.get("/rest/v4/analytics/engines")
+async def engines(): return [{"id": AXIS_ENGINE, "name": "Axis"}, {"id": CVEDIA_ENGINE, "name": "CVEDIA-RT"}]
+@app.get("/rest/v4/analytics/engines/{eid}/deviceAgents/{did}/manifest")
+async def agent_manifest(eid: str, did: str):
+    if eid.strip("{}") != CVEDIA_ENGINE.strip("{}"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"eventTypes": [{"id": "cvedia.rt.intrusion", "name": "Intrusion"}, {"id": "cvedia.rt.loitering", "name": "Loitering"}],
+            "objectTypes": [{"id": "nx.base.Person", "name": "Person"}, {"id": "nx.base.Vehicle", "name": "Vehicle"}]}
+@app.get("/rest/v4/analytics/engines/{eid}/deviceAgents/{did}/settings")
+async def agent_settings(eid: str, did: str):
+    if eid.strip("{}") != CVEDIA_ENGINE.strip("{}"):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"model": {"type": "Settings", "sections": [{"type": "Section", "caption": "Areas", "items": [
+                {"type": "PolygonFigure", "name": "area1", "caption": "Area 1"},
+                {"type": "PolygonFigure", "name": "area2", "caption": "Area 2"},
+                {"type": "LineFigure", "name": "line1", "caption": "Tripwire 1"}]}]},
+            "values": {"area1": json.dumps({"figure": {"points": [[0.1, 0.5], [0.9, 0.5], [0.9, 0.95], [0.1, 0.95]]}, "label": "Dock Apron"}),
+                       "area2": json.dumps({"figure": None}),
+                       "line1": {"figure": {"points": [[0.2, 0.3], [0.8, 0.3]]}, "label": ""}}}
+@app.get("/rest/v4/userGroups")
+async def user_groups(): return [{"id": "{00000000-0000-0000-0000-100000000000}", "name": "Administrators"},
+                                 {"id": "{00000000-0000-0000-0000-100000000001}", "name": "Power Users"}]
+@app.get("/rest/v4/servers")
+async def servers(): return [{"id": "{33333333-3333-3333-3333-333333333333}", "name": "Fake NX Server"}]
+RULE_MODE = {"patch": "replace", "write": "ok", "manifest": "ok"}
+@app.post("/_rules_mode/{mode}")
+async def rules_mode(mode: str):
+    """merge: PATCH deep-merges event/action (tests the PUT fallback); replace: back to NX's behaviour;
+    refuse / allow: rule writes answer 403 / work; nomanifest / manifest: the event catalogue 404s / works."""
+    if mode in ("merge", "replace"):
+        RULE_MODE["patch"] = mode
+    elif mode in ("refuse", "allow"):
+        RULE_MODE["write"] = "refuse" if mode == "refuse" else "ok"
+    elif mode in ("nomanifest", "manifest"):
+        RULE_MODE["manifest"] = "missing" if mode == "nomanifest" else "ok"
+    return RULE_MODE
+@app.post("/rest/v4/events/rules")
+async def rule_create(req: Request):
+    if _refused(): return _refused()
+    body = await req.json()
+    rid = "{%s}" % uuid.uuid4()
+    RULES[f"new-{rid}"] = {"id": rid, **body}
+    RULE_PATCHES.append({"id": rid, "created": body})
+    return RULES[f"new-{rid}"]
+@app.put("/rest/v4/events/rules/{rid}")
+async def rule_replace(rid: str, req: Request):
+    if _refused(): return _refused()
+    k = next((k for k, r in RULES.items() if r["id"].strip("{}") == rid.strip("{}")), None)
+    if not k:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    body = await req.json()
+    RULE_PATCHES.append({"id": rid, "replaced": body})
+    RULES[k] = {"id": RULES[k]["id"], **body}
+    return RULES[k]
+@app.delete("/rest/v4/events/rules/{rid}")
+async def rule_delete(rid: str):
+    if _refused(): return _refused()
+    k = next((k for k, r in RULES.items() if r["id"].strip("{}") == rid.strip("{}")), None)
+    if not k:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    RULE_PATCHES.append({"id": rid, "deleted": True})
+    return RULES.pop(k)
 def _rule_by_id(rid: str):
     return next((r for r in RULES.values() if r["id"].strip("{}") == rid.strip("{}")), None)
 
@@ -79,12 +163,17 @@ RULE_PATCHES: list = []
 @app.patch("/rest/v4/events/rules/{rid}")
 async def rule_patch(rid: str, req: Request):
     """Like NX: a partial update of the fields sent (RULE_PATCHES records them for tests)."""
+    if _refused(): return _refused()
     r = _rule_by_id(rid)
     if not r:
         return JSONResponse({"error": "not found"}, status_code=404)
     body = await req.json()
     RULE_PATCHES.append({"id": rid, **body})
-    r.update(body)
+    for k, v in body.items():
+        if RULE_MODE["patch"] == "merge" and isinstance(v, dict) and isinstance(r.get(k), dict):
+            r[k] = {**r[k], **v}
+        else:
+            r[k] = v
     return r
 
 @app.get("/_rule_patches")
@@ -164,13 +253,20 @@ async def metadata(tid: str):
 @app.get("/_state")
 async def state(): return {"acks": ACKS, "bookmarks": BOOKMARKS, "events": len(EVENTS)}
 @app.post("/_inject/{kind}")
-async def inject(kind: str):
+async def inject(kind: str, rule_id: str = ""):
+    """rule_id: log the event as fired by that rule (e.g. one made in the portal's rule editor)."""
     ts = int(time.time()*1000); aid = str(uuid.uuid4()); FRAMES["last_inject"] = time.time()
-    base = {"timestampMs": ts, "ruleId": RULES.get(kind, RULES["panic"])["id"], "flags": "noFlags", "aggregatedInfo": {"total": 1}}
+    rid = rule_id or RULES.get(kind, RULES["line" if kind == "axis" else "panic"])["id"]
+    base = {"timestampMs": ts, "ruleId": rid, "flags": "noFlags", "aggregatedInfo": {"total": 1}}
     dev = DEV[0]["id"] if kind != "dock" else DEV[1]["id"]
     if kind in ("panic", "panic24"):
         ev = {"type": "softTrigger", "state": "instant", "deviceId": dev, "userId": "{u-1}", "triggerName": "", "timestamp": str(ts*1000)}
         act = {"id": aid, "type": "desktopNotification", "acknowledge": False, "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
+    elif kind == "axis":                                    # AXIS Object Analytics scenario ("zone") event, as NX 6.1 logs it
+        ev = {"type": "analytics", "state": "started", "deviceId": dev, "caption": "", "description": "Front Lot started",
+              "engineId": AXIS_ENGINE, "eventTypeId": AXIS_SCENARIO, "timestamp": str(ts*1000),
+              "key": "tnsaxis:CameraApplicationPlatform/ObjectAnalytics/Device1Scenario1"}
+        act = {"id": aid, "type": "desktopNotification", "caption": "AXIS Object Analytics", "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     elif kind == "line":
         ev = {"type": "analytics", "state": "instant", "deviceId": dev, "caption": "Rule Engine: Line Detector - Crossed", "eventTypeId": "nx.onvif.RuleEngine.LineDetector.Crossed", "timestamp": str(ts*1000)}
         act = {"id": aid, "type": "bookmark", "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}

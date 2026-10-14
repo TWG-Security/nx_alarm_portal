@@ -315,6 +315,10 @@ class PollerManager:
                 "read_at": rt.rules_read_at, "tagged_only": policy.tagged_only,
                 "rules": describe_rules(rt.rules, policy, site.alarm_types)}
 
+    def rules_raw(self, site_id: int) -> list[dict]:
+        rt = self._rt.get(site_id)
+        return list(rt.rules) if rt else []
+
     async def check_now(self, site_id: int) -> str:
         """The site's "Check now": re-read its cameras, users and NX rules and poll its events right away, instead of
         waiting for the next refresh. Returns "" or what went wrong (the regular loop keeps running either way)."""

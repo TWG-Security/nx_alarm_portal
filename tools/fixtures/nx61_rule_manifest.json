@@ -1,0 +1,1817 @@
+{
+"events": {
+"analytics": {
+"id": "analytics",
+"groupId": "",
+"displayName": "Analytics Event",
+"description": "Triggered when an analytics event is triggered on source device.",
+"flags": "instant|prolonged",
+"fields": [
+{
+"type": "state",
+"fieldName": "state",
+"displayName": "Begin When",
+"properties": {
+"visible": true,
+"value": "1",
+"openApiSchema": {
+"default": "started",
+"enum": [
+"none",
+"started",
+"stopped",
+"instant"
+]
+}
+}
+},
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Occurs At",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "analyticsEventType",
+"fieldName": "eventTypeId",
+"displayName": "Of Type",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "textLookup",
+"fieldName": "caption",
+"displayName": "And Caption",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"containsKeywords",
+"doesNotContainKeywords",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+},
+{
+"type": "textLookup",
+"fieldName": "description",
+"displayName": "And Description",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"containsKeywords",
+"doesNotContainKeywords",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+},
+{
+"type": "analyticsAttributes",
+"fieldName": "attributes",
+"displayName": "And attributes",
+"properties": {
+"openApiSchema": {
+"default": ""
+}
+}
+}
+]
+},
+"analyticsObject": {
+"id": "analyticsObject",
+"groupId": "",
+"displayName": "Analytics Object Detected",
+"description": "",
+"flags": "prolonged",
+"fields": [
+{
+"type": "state",
+"fieldName": "state",
+"displayName": "State",
+"properties": {
+"visible": true,
+"value": "1",
+"openApiSchema": {
+"default": "started",
+"enum": [
+"none",
+"started",
+"stopped",
+"instant"
+]
+}
+}
+},
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Occurs At",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "analyticsObjectType",
+"fieldName": "objectTypeId",
+"displayName": "Of Type",
+"properties": {
+"visible": true,
+"optional": false,
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "objectLookup",
+"fieldName": "attributes",
+"displayName": "And Object",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"hasAttributes",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+}
+]
+},
+"cameraInput": {
+"id": "cameraInput",
+"groupId": "",
+"displayName": "Input Signal on Camera",
+"description": "",
+"flags": "prolonged",
+"fields": [
+{
+"type": "state",
+"fieldName": "state",
+"displayName": "State",
+"properties": {
+"visible": true,
+"value": "1",
+"openApiSchema": {
+"default": "started",
+"enum": [
+"none",
+"started",
+"stopped",
+"instant"
+]
+}
+}
+},
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Occurs At",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": true
+}
+},
+{
+"type": "inputPort",
+"fieldName": "inputPortId",
+"displayName": "With ID",
+"properties": {
+"openApiSchema": {
+"default": ""
+}
+}
+}
+]
+},
+"deviceDisconnected": {
+"id": "deviceDisconnected",
+"groupId": "deviceIssueGroup",
+"displayName": "Camera Disconnected",
+"description": "",
+"flags": "instant",
+"fields": [
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Camera",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": true
+}
+}
+]
+},
+"deviceIpConflict": {
+"id": "deviceIpConflict",
+"groupId": "deviceIssueGroup",
+"displayName": "Camera IP Conflict",
+"description": "",
+"flags": "instant",
+"fields": []
+},
+"generic": {
+"id": "generic",
+"groupId": "",
+"displayName": "Generic Event",
+"description": "",
+"flags": "instant|prolonged",
+"fields": [
+{
+"type": "state",
+"fieldName": "state",
+"displayName": "State",
+"properties": {
+"visible": true,
+"value": "3",
+"openApiSchema": {
+"default": "instant",
+"enum": [
+"none",
+"started",
+"stopped",
+"instant"
+]
+}
+}
+},
+{
+"type": "textLookup",
+"fieldName": "source",
+"displayName": "And Source",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"containsKeywords",
+"doesNotContainKeywords",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+},
+{
+"type": "textLookup",
+"fieldName": "caption",
+"displayName": "And Caption",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"containsKeywords",
+"doesNotContainKeywords",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+},
+{
+"type": "textLookup",
+"fieldName": "description",
+"displayName": "And Description",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"containsKeywords",
+"doesNotContainKeywords",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+},
+{
+"type": "customizableFlag",
+"fieldName": "omitLogging",
+"displayName": "Omit logging",
+"properties": {
+"openApiSchema": {
+"default": false
+}
+}
+}
+]
+},
+"integrationDiagnostic": {
+"id": "integrationDiagnostic",
+"groupId": "",
+"displayName": "Integration Diagnostic",
+"description": "",
+"flags": "instant",
+"fields": [
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Occurs At",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": true
+}
+},
+{
+"type": "analyticsEngine",
+"fieldName": "engineId",
+"displayName": "For Plugin",
+"properties": {}
+},
+{
+"type": "textLookup",
+"fieldName": "caption",
+"displayName": "And Caption",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"containsKeywords",
+"doesNotContainKeywords",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+},
+{
+"type": "textLookup",
+"fieldName": "description",
+"displayName": "And Description",
+"properties": {
+"openApiSchema": {
+"properties": {
+"checkType": {
+"enum": [
+"containsKeywords",
+"doesNotContainKeywords",
+"inList",
+"notInList"
+]
+}
+}
+}
+}
+},
+{
+"type": "analyticsEventLevel",
+"fieldName": "level",
+"displayName": "And Level Is",
+"properties": {
+"openApiSchema": {
+"default": "",
+"enum": [
+"",
+"info",
+"warning",
+"error"
+]
+}
+}
+}
+]
+},
+"motion": {
+"id": "motion",
+"groupId": "",
+"displayName": "Motion on Camera",
+"description": "",
+"flags": "prolonged",
+"fields": [
+{
+"type": "state",
+"fieldName": "state",
+"displayName": "Begin When",
+"properties": {
+"visible": true,
+"value": "1",
+"openApiSchema": {
+"default": "started",
+"enum": [
+"none",
+"started",
+"stopped",
+"instant"
+]
+}
+}
+},
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Occurs At",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": true
+}
+}
+]
+},
+"networkIssue": {
+"id": "networkIssue",
+"groupId": "deviceIssueGroup",
+"displayName": "Network Issue",
+"description": "",
+"flags": "instant",
+"fields": []
+},
+"serverFailure": {
+"id": "serverFailure",
+"groupId": "serverIssueGroup",
+"displayName": "Server Failure",
+"description": "",
+"flags": "instant",
+"fields": []
+},
+"serverStarted": {
+"id": "serverStarted",
+"groupId": "serverIssueGroup",
+"displayName": "Server Started",
+"description": "",
+"flags": "instant",
+"fields": []
+},
+"softTrigger": {
+"id": "softTrigger",
+"groupId": "",
+"displayName": "Soft Trigger",
+"description": "",
+"flags": "instant|prolonged",
+"fields": [
+{
+"type": "state",
+"fieldName": "state",
+"displayName": "State",
+"properties": {
+"visible": false,
+"value": "3"
+}
+},
+{
+"type": "uniqueId",
+"fieldName": "triggerId",
+"displayName": "Invisible",
+"properties": {}
+},
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Occurs At",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": true
+}
+},
+{
+"type": "user",
+"fieldName": "userId",
+"displayName": "By",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "customizableText",
+"fieldName": "triggerName",
+"displayName": "Name",
+"properties": {
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "customizableIcon",
+"fieldName": "triggerIcon",
+"displayName": "Icon",
+"properties": {
+"openApiSchema": {
+"default": ""
+}
+}
+}
+]
+},
+"storageIssue": {
+"id": "storageIssue",
+"groupId": "serverIssueGroup",
+"displayName": "Storage Issue",
+"description": "",
+"flags": "instant",
+"fields": []
+}
+},
+"actions": {
+"acknowledge": {
+"id": "acknowledge",
+"groupId": "",
+"displayName": "Acknowledge",
+"description": "",
+"flags": "instant|system",
+"fields": []
+},
+"bookmark": {
+"id": "bookmark",
+"groupId": "",
+"displayName": "Create Bookmark",
+"description": "Create Bookmark",
+"flags": "prolonged",
+"fields": [
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "At",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "duration",
+"displayName": "",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 5
+}
+}
+},
+{
+"type": "time",
+"fieldName": "recordBefore",
+"displayName": "Pre-Recording",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 1
+}
+}
+},
+{
+"type": "time",
+"fieldName": "recordAfter",
+"displayName": "Post-Recording",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 0
+}
+}
+},
+{
+"type": "text",
+"fieldName": "tags",
+"displayName": "Add Tags",
+"properties": {
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "name",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "description",
+"displayName": "Description",
+"properties": {
+"visible": false
+}
+}
+]
+},
+"buzzer": {
+"id": "buzzer",
+"groupId": "",
+"displayName": "Buzzer",
+"description": "Enable an NVR buzzer",
+"flags": "prolonged",
+"fields": [
+{
+"type": "servers",
+"fieldName": "serverIds",
+"displayName": "At",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "duration",
+"displayName": "For",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 5
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Action Throttling",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"desktopNotification": {
+"id": "desktopNotification",
+"groupId": "",
+"displayName": "Show Desktop Notification",
+"description": "Show Desktop Notification",
+"flags": "instant|userFiltered|eventPermissions",
+"fields": [
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "flag",
+"fieldName": "acknowledge",
+"displayName": "Force Acknowledgment",
+"properties": {
+"openApiSchema": {
+"default": false
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "caption",
+"displayName": "Caption",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "description",
+"displayName": "Description",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "tooltip",
+"displayName": "Tooltip text",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "eventDevices",
+"fieldName": "deviceIds",
+"displayName": "Event Devices",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "sourceName",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "level",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "icon",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "customIcon",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "clientAction",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "url",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "extendedCaption",
+"displayName": "",
+"properties": {
+"visible": false
+}
+}
+]
+},
+"deviceOutput": {
+"id": "deviceOutput",
+"groupId": "",
+"displayName": "Device Output",
+"description": "Modify the output state of the device",
+"flags": "prolonged",
+"fields": [
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "At",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "outputPort",
+"fieldName": "outputPortId",
+"displayName": "Output ID",
+"properties": {
+"visible": true,
+"optional": false,
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "duration",
+"displayName": "Duration",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 5
+}
+}
+}
+]
+},
+"deviceRecording": {
+"id": "deviceRecording",
+"groupId": "",
+"displayName": "Camera Recording",
+"description": "Start device recording",
+"flags": "prolonged",
+"fields": [
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "On",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "streamQuality",
+"fieldName": "quality",
+"displayName": "Quality",
+"properties": {
+"openApiSchema": {
+"default": "lowest",
+"enum": [
+"lowest",
+"low",
+"normal",
+"high",
+"highest"
+]
+}
+}
+},
+{
+"type": "fps",
+"fieldName": "fps",
+"displayName": "FPS",
+"properties": {
+"openApiSchema": {
+"default": 0
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "duration",
+"displayName": "Duration",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 5
+}
+}
+},
+{
+"type": "time",
+"fieldName": "recordBefore",
+"displayName": "Pre-Recording",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 1
+}
+}
+},
+{
+"type": "time",
+"fieldName": "recordAfter",
+"displayName": "Post-Recording",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 0
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"enterFullscreen": {
+"id": "enterFullscreen",
+"groupId": "",
+"displayName": "Set to Fullscreen",
+"description": "Expand given camera to fullscreen mode if it is displayed on the current layout.",
+"flags": "instant",
+"fields": [
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "Camera",
+"properties": {
+"visible": true,
+"optional": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "layouts",
+"fieldName": "layoutIds",
+"displayName": "On Layout",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "Set for",
+"properties": {
+"visible": false,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": false
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "playbackTime",
+"displayName": "Rewind",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 0
+}
+}
+}
+]
+},
+"exitFullscreen": {
+"id": "exitFullscreen",
+"groupId": "",
+"displayName": "Exit Fullscreen",
+"description": "Exit fullscreen mode for the specified layouts for all users if it is currently displayed.",
+"flags": "instant",
+"fields": [
+{
+"type": "layouts",
+"fieldName": "layoutIds",
+"displayName": "On Layout",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To",
+"properties": {
+"visible": false,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": false
+}
+}
+]
+},
+"http": {
+"id": "http",
+"groupId": "",
+"displayName": "HTTP(S) Request",
+"description": "Send HTTP(S) request.",
+"flags": "instant",
+"fields": [
+{
+"type": "textWithFields",
+"fieldName": "url",
+"displayName": "URL",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "httpMethod",
+"fieldName": "method",
+"displayName": "Method",
+"properties": {
+"openApiSchema": {
+"default": "",
+"enum": [
+"PATCH",
+"",
+"GET",
+"POST",
+"PUT",
+"DELETE"
+]
+}
+}
+},
+{
+"type": "httpHeaders",
+"fieldName": "headers",
+"displayName": "Custom headers",
+"properties": {}
+},
+{
+"type": "textWithFields",
+"fieldName": "content",
+"displayName": "Content",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "contentType",
+"fieldName": "contentType",
+"displayName": "Content type",
+"properties": {
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "httpAuth",
+"fieldName": "auth",
+"displayName": "HTTP authentication",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"openLayout": {
+"id": "openLayout",
+"groupId": "",
+"displayName": "Open Layout",
+"description": "",
+"flags": "instant",
+"fields": [
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "layout",
+"fieldName": "layoutId",
+"displayName": "",
+"properties": {
+"visible": true,
+"optional": false,
+"openApiSchema": {
+"default": null
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "playbackTime",
+"displayName": "Rewind",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 0
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"panicRecording": {
+"id": "panicRecording",
+"groupId": "",
+"displayName": "Panic Recording",
+"description": "Panic Recording mode switches recording settings for all cameras to maximum FPS and quality.",
+"flags": "prolonged",
+"fields": [
+{
+"type": "optionalTime",
+"fieldName": "duration",
+"displayName": "Duration",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 5
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"playSound": {
+"id": "playSound",
+"groupId": "",
+"displayName": "Play Sound",
+"description": "Play sound on the specified device(s) and display desktop notification.",
+"flags": "instant|eventPermissions",
+"fields": [
+{
+"type": "sound",
+"fieldName": "sound",
+"displayName": "",
+"properties": {
+"visible": true,
+"optional": false,
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "At",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To Users",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": true
+}
+},
+{
+"type": "volume",
+"fieldName": "volume",
+"displayName": "Volume",
+"properties": {
+"openApiSchema": {
+"default": 0.800000011920929
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"ptzPreset": {
+"id": "ptzPreset",
+"groupId": "",
+"displayName": "Execute PTZ Preset",
+"description": "Execute PTZ Preset to all users.",
+"flags": "instant",
+"fields": [
+{
+"type": "device",
+"fieldName": "deviceId",
+"displayName": "At",
+"properties": {
+"visible": true,
+"optional": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "ptzPreset",
+"fieldName": "presetId",
+"displayName": "PTZ Preset",
+"properties": {
+"visible": true,
+"optional": false,
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "Execute to users",
+"properties": {
+"visible": false,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": false
+}
+}
+]
+},
+"pushNotification": {
+"id": "pushNotification",
+"groupId": "",
+"displayName": "Send Mobile Notification",
+"description": "Sends a mobile notification via the cloud.",
+"flags": "instant|eventPermissions",
+"fields": [
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "caption",
+"displayName": "Header",
+"properties": {
+"openApiSchema": {
+"default": "{event.caption}"
+}
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "description",
+"displayName": "Body",
+"properties": {
+"openApiSchema": {
+"default": "{event.description}\n[{site.name}: {event.source}]"
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+},
+{
+"type": "eventDevices",
+"fieldName": "deviceIds",
+"displayName": "Event Devices",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "level",
+"displayName": "",
+"properties": {
+"visible": false
+}
+}
+]
+},
+"repeatSound": {
+"id": "repeatSound",
+"groupId": "",
+"displayName": "Repeat Sound",
+"description": "Play sound repeatedly on the specified device(s) and display desktop notification.",
+"flags": "prolonged|eventPermissions",
+"fields": [
+{
+"type": "sound",
+"fieldName": "sound",
+"displayName": "Sound",
+"properties": {
+"visible": true,
+"optional": false,
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "At",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": true
+}
+},
+{
+"type": "volume",
+"fieldName": "volume",
+"displayName": "Volume",
+"properties": {
+"openApiSchema": {
+"default": 0.800000011920929
+}
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "caption",
+"displayName": "Caption",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "description",
+"displayName": "Description",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "tooltip",
+"displayName": "Tooltip text",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "sourceName",
+"displayName": "",
+"properties": {
+"visible": false
+}
+}
+]
+},
+"sendEmail": {
+"id": "sendEmail",
+"groupId": "",
+"displayName": "Send Email",
+"description": "",
+"flags": "instant|eventPermissions",
+"fields": [
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "text",
+"fieldName": "emails",
+"displayName": "Additional Recipients",
+"properties": {
+"openApiSchema": {
+"default": ""
+}
+}
+},
+{
+"type": "emailMessage",
+"fieldName": "message",
+"displayName": "Email Message",
+"properties": {
+"visible": false,
+"optional": true
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"showOnAlarmLayout": {
+"id": "showOnAlarmLayout",
+"groupId": "",
+"displayName": "Show on Alarm Layout",
+"description": "Put the given device(s) to the Alarm Layout.",
+"flags": "instant",
+"fields": [
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "flag",
+"fieldName": "forceOpen",
+"displayName": "Force Alarm Layout Opening",
+"properties": {
+"value": true,
+"openApiSchema": {
+"default": true
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "playbackTime",
+"displayName": "Rewind",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 0
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+},
+{
+"type": "eventDevices",
+"fieldName": "eventDeviceIds",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "caption",
+"displayName": "Caption",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "description",
+"displayName": "Description",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "tooltip",
+"displayName": "Tooltip text",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "sourceName",
+"displayName": "",
+"properties": {
+"visible": false
+}
+}
+]
+},
+"siteHttp": {
+"id": "siteHttp",
+"groupId": "",
+"displayName": "Internal HTTPS Request",
+"description": "Send HTTPS request to the site.",
+"flags": "instant",
+"fields": [
+{
+"type": "textWithFields",
+"fieldName": "endpoint",
+"displayName": "Endpoint",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "httpMethod",
+"fieldName": "method",
+"displayName": "Method",
+"properties": {
+"value": "POST",
+"openApiSchema": {
+"default": "POST",
+"enum": [
+"PATCH",
+"GET",
+"POST",
+"PUT",
+"DELETE"
+]
+}
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "content",
+"displayName": "Content",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"speak": {
+"id": "speak",
+"groupId": "",
+"displayName": "Speak",
+"description": "Speak text on specified resource(s).",
+"flags": "instant|eventPermissions",
+"fields": [
+{
+"type": "textWithFields",
+"fieldName": "text",
+"displayName": "Text",
+"properties": {
+"visible": true,
+"optional": false
+}
+},
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "At Device",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "To Users",
+"properties": {
+"visible": true,
+"optional": true,
+"acceptAll": false,
+"allowEmptySelection": true
+}
+},
+{
+"type": "volume",
+"fieldName": "volume",
+"displayName": "Volume",
+"properties": {
+"openApiSchema": {
+"default": 0.800000011920929
+}
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+},
+"textOverlay": {
+"id": "textOverlay",
+"groupId": "",
+"displayName": "Show Text Overlay",
+"description": "Displays a text overlay on layout items for specified devices.",
+"flags": "prolonged",
+"fields": [
+{
+"type": "devices",
+"fieldName": "deviceIds",
+"displayName": "At",
+"properties": {
+"visible": true,
+"optional": false,
+"acceptAll": false,
+"allowEmptySelection": false
+}
+},
+{
+"type": "optionalTime",
+"fieldName": "duration",
+"displayName": "For",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 5
+}
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "text",
+"displayName": "Custom Text",
+"properties": {}
+},
+{
+"type": "users",
+"fieldName": "users",
+"displayName": "Show To",
+"properties": {
+"visible": false,
+"optional": true,
+"acceptAll": true,
+"allowEmptySelection": false
+}
+},
+{
+"type": "extractDetail",
+"fieldName": "extendedCaption",
+"displayName": "",
+"properties": {
+"visible": false
+}
+},
+{
+"type": "textWithFields",
+"fieldName": "detailing",
+"displayName": "Description",
+"properties": {
+"visible": false
+}
+}
+]
+},
+"writeToLog": {
+"id": "writeToLog",
+"groupId": "",
+"displayName": "Write to Log",
+"description": "Write a record to the site's log.",
+"flags": "instant",
+"fields": [
+{
+"type": "optionalTime",
+"fieldName": "interval",
+"displayName": "Interval of Action",
+"properties": {
+"value": null,
+"openApiSchema": {
+"default": 60
+}
+}
+}
+]
+}
+},
+"_source": "Trimmed from a real Nx Witness 6.1.2 server (TWG office), 2026-10-14: /rest/v4/events/manifest/events|actions"
+}

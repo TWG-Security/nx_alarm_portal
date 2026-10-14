@@ -958,3 +958,57 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .rule-edit-grid label.check { flex-direction: row; align-items: center; font-size: 13px; }
 .rule-edit-actions { grid-column: 1 / -1; display: flex; gap: 8px; justify-content: flex-end; }
 @media (max-width: 700px) { .rule-edit-grid { grid-template-columns: minmax(0, 1fr); } }
+
+/* NX rule editor (rule_editor.js) */
+.rx { display: flex; flex-direction: column; gap: 12px; }
+.rx .rules-head { margin-bottom: 0; }
+.rx-sec { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px; background: var(--surface-2); }
+.rx-sec h3 { margin: 0 0 8px; color: var(--red-text); }
+.rx-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 16px; align-items: start; }
+.rx-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; margin: 0; }
+.rx-field.check { flex-direction: row; align-items: center; align-self: center; }
+.rx-wide { grid-column: 1 / -1; }
+.rx-label { font-size: 12px; font-weight: 600; color: var(--text-muted); }
+.rx select, .rx input[type="text"], .rx input[type="number"], .rx input[type="search"], .rx textarea {
+  width: 100%; min-width: 0; height: 34px; padding: 0 8px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--bg); color: var(--text); font: 14px var(--font); }
+.rx textarea { height: auto; padding: 6px 8px; resize: vertical; }
+.rx input[type="range"] { width: 100%; }
+.rx-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.rx-row select { flex: 0 0 auto; width: auto; }
+.rx-row input[type="text"] { flex: 1 1 200px; }
+.rx-row .check { margin: 0; }
+.rx-cams { border: 1px solid var(--border); border-radius: 6px; padding: 8px; background: var(--bg); }
+.rx-cams > .check { margin: 0 0 6px; }
+.rx-search { margin-bottom: 6px; }
+.rx-cam-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 2px 12px; max-height: 210px; overflow: auto; }
+.rx-cam-list .check { margin: 0; padding: 3px 0; align-items: flex-start; }
+.rx-cam-list .check input { margin-top: 2px; }
+.rx-disabled { opacity: .45; }
+.rx-chip { font-size: 11px; padding: 0 6px; }
+.rx-zone-chip { background: rgba(224, 138, 48, .18); color: var(--text); }
+.rx-zones { border: 1px dashed var(--border); border-radius: 6px; padding: 8px 10px; }
+.rx-zones-head { margin-bottom: 6px; }
+.rx-zone-cam + .rx-zone-cam { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--border); }
+.rx-zone-cam-name { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-weight: 600; margin-bottom: 6px; }
+.rx-zone-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.rx-zone { border: 1px solid var(--orange); background: transparent; color: var(--text); border-radius: 999px; padding: 4px 10px;
+  font: 600 13px var(--font); cursor: pointer; }
+.rx-zone small { font-weight: 400; color: var(--text-muted); }
+.rx-zone:hover, .rx-zone.active { background: var(--orange); color: var(--on-orange); }
+.rx-zone.active small, .rx-zone:hover small { color: var(--on-orange); }
+.rx-pic { position: relative; margin-top: 8px; max-width: 640px; }
+.rx-pic img { display: block; width: 100%; border-radius: 6px; }
+.rx-pic svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.rx-zone-area { fill: rgba(224, 138, 48, .25); stroke: #E08A30; stroke-width: .5; vector-effect: non-scaling-stroke; }
+.rx-zone-line { fill: none; stroke: #E08A30; stroke-width: 3; vector-effect: non-scaling-stroke; }
+.rx-zone-label { fill: #fff; font: 700 3.2px Arial, sans-serif; paint-order: stroke; stroke: #000; stroke-width: .6px; }
+.rx-summary { padding: 10px 12px; border-left: 3px solid var(--red); background: var(--surface-2); border-radius: 4px; line-height: 1.5; }
+.rx-foot { display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; position: sticky; bottom: -16px;
+  background: var(--surface); padding: 10px 0; border-top: 1px solid var(--border); }
+.rx-foot > div { display: flex; gap: 8px; }
+.rx-sources { display: inline; }
+.rx-sources summary { display: inline; cursor: pointer; text-decoration: underline; }
+.rx-sources ul { margin: 6px 0 0; padding-left: 18px; }
+.linkish { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
+@media (max-width: 700px) { .rx-grid { grid-template-columns: minmax(0, 1fr); } .rx-cam-list { grid-template-columns: minmax(0, 1fr); } }

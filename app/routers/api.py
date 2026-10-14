@@ -358,6 +358,191 @@ async def edit_site_rule(site_id: int, rule_id: str, body: RuleEditIn, request: 
             "rules": manager.rules_view(site, await _site_policy(db, site))}
 
 
+_RULE_ID = re.compile(r"[0-9a-fA-F-]{36}")
+
+
+def _rule_id(rule_id: str) -> str:
+    rule_id = rule_id.strip("{}")
+    if not _RULE_ID.fullmatch(rule_id):
+        raise HTTPException(404, "Rule not found")
+    return rule_id
+
+
+async def _rule_call(db: AsyncSession, site: Site, user: User, request: Request, rule_id: str, coro):
+    """Run a rule write against NX, turning its failures into answers for the admin (and the audit log)."""
+    from app.services import rule_edit
+    try:
+        return await coro
+    except rule_edit.RuleEditError as e:
+        audit(db, site.tenant_id, "nx.rule_edit_failed", user_id=user.id, site_id=site.id, ip=client_ip(request),
+              rule_id=rule_id, error=str(e))
+        await db.commit()
+        raise HTTPException(400, str(e)) from None
+    except httpx.HTTPStatusError as e:
+        detail = ""
+        try:
+            body = e.response.json()
+            detail = str(body.get("errorString") or body.get("error") or body.get("message") or "")[:300]
+        except ValueError:
+            pass
+        audit(db, site.tenant_id, "nx.rule_edit_failed", user_id=user.id, site_id=site.id, ip=client_ip(request),
+              rule_id=rule_id, error=f"HTTP {e.response.status_code} {detail}".strip())
+        await db.commit()
+        if e.response.status_code in (401, 403):
+            raise HTTPException(502, "NX refused: the portal's NX account needs to be in Power Users or Administrators") from None
+        raise HTTPException(502, f"NX refused the change (HTTP {e.response.status_code}){': ' + detail if detail else ''}") from None
+    except (httpx.HTTPError, asyncio.TimeoutError) as e:
+        raise HTTPException(502, f"Couldn't reach NX ({type(e).__name__})") from None
+
+
+async def _catalog(site: Site, refresh: bool = False) -> dict:
+    from app.services import rule_catalog
+    try:
+        return await rule_catalog.get(site, manager.rules_raw(site.id), refresh=refresh)
+    except (RuntimeError, httpx.HTTPError, asyncio.TimeoutError) as e:
+        raise HTTPException(502, f"Couldn't read the site's rule options from NX: {str(e) or type(e).__name__}"[:400]) from None
+
+
+@router.get("/sites/{site_id}/rules/catalog")
+async def site_rule_catalog(site_id: int, refresh: bool = False, user: User = Depends(require_admin),
+                            scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Administrators: what this site's NX rule engine offers (event and action types with their fields, cameras,
+    users, analytics event / object types and zones per camera), for the rule editor's drop-downs."""
+    site = await _get_site(db, scope, site_id, write=True)
+    await db.commit()                                   # don't hold the connection while NX answers
+    return await _catalog(site, refresh)
+
+
+@router.get("/sites/{site_id}/rules/cameras/{device_id}/still.jpg")
+async def rule_camera_still(site_id: int, device_id: str, user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                            db: AsyncSession = Depends(get_db)):
+    """Administrators: a live still of one of the site's cameras, for the rule editor's zone preview."""
+    from fastapi import Response
+    from app.routers.stream import camera_frame
+    site = await _get_site(db, scope, site_id, write=True)
+    await db.commit()
+    device_id = device_id.strip("{}").lower()
+    if device_id not in {d.lower() for d in await _site_cameras(site)}:
+        raise HTTPException(404, "That camera isn't on this site")
+    return Response(await camera_frame(site, device_id, -1), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
+@router.get("/sites/{site_id}/rules/{rule_id}")
+async def site_rule(site_id: int, rule_id: str, user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                    db: AsyncSession = Depends(get_db)):
+    """Administrators: one rule as NX has it now (an action's login is never sent to the browser)."""
+    from app.services import rule_edit
+    site = await _get_site(db, scope, site_id, write=True)
+    rule_id = _rule_id(rule_id)
+    await db.commit()
+    try:
+        rule = await rule_edit._Retrying(manager.client_for(site)).get_rule(rule_id)
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(404 if e.response.status_code == 404 else 502,
+                            "Rule not found" if e.response.status_code == 404 else f"NX answered HTTP {e.response.status_code}") from None
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"Couldn't reach NX ({type(e).__name__})") from None
+    return rule_edit.redact(rule)
+
+
+class RulePart(BaseModel):
+    type: str | None = Field(default=None, max_length=100)
+    fields: dict = Field(default_factory=dict)
+
+
+class RuleFullIn(BaseModel):
+    event: RulePart | None = None
+    action: RulePart | None = None
+    comment: str | None = Field(default=None, max_length=500)
+    level: str | None = Field(default=None, pattern="^(critical|alarm|warning|ignore|none)$")
+    always: bool | None = None
+    enabled: bool | None = None
+
+
+def _level(v: str | None):
+    from app.services import rule_edit
+    return rule_edit.UNCHANGED if v is None else (None if v == "none" else v)
+
+
+def _audit_part(v: dict | None) -> dict | None:
+    from app.services import rule_edit
+    return rule_edit.redact({"action": v}).get("action") if v else v
+
+
+async def _after_rule_write(db: AsyncSession, site: Site) -> dict:
+    await manager.check_now(site.id)                     # the portal uses the new rule (tags, levels) at once
+    return manager.rules_view(site, await _site_policy(db, site))
+
+
+@router.put("/sites/{site_id}/rules/{rule_id}")
+async def save_site_rule(site_id: int, rule_id: str, body: RuleFullIn, request: Request, user: User = Depends(require_admin),
+                         scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Administrators: the full rule editor's Save: event type, cameras, analytics type / zone, filters, action,
+    tags, on/off; written to NX, read back and checked (put back if NX didn't apply it as sent)."""
+    from app.services import rule_edit
+    site = await _get_site(db, scope, site_id, write=True)
+    rule_id = _rule_id(rule_id)
+    await db.commit()
+    catalog = await _catalog(site)
+    before, changes, _ = await _rule_call(db, site, user, request, rule_id, rule_edit.save(
+        manager.client_for(site), rule_id, catalog,
+        event=body.event.model_dump() if body.event else None, action=body.action.model_dump() if body.action else None,
+        comment=body.comment, level=_level(body.level), always=body.always, enabled=body.enabled))
+    if changes:
+        detail = {}
+        for k, v in changes.items():
+            old = before.get(k)
+            detail["nx_action" if k == "action" else k] = {"from": _audit_part(old) if k == "action" else old,
+                                                           "to": _audit_part(v) if k == "action" else v}
+        audit(db, site.tenant_id, "nx.rule_edited", user_id=user.id, site_id=site.id, ip=client_ip(request), rule_id=rule_id, **detail)
+        await db.commit()
+    return {"changed": sorted(changes), "rules": await _after_rule_write(db, site) if changes else
+            manager.rules_view(site, await _site_policy(db, site))}
+
+
+class RuleNewIn(BaseModel):
+    event: RulePart
+    action: RulePart
+    comment: str = Field(default="", max_length=500)
+    level: str = Field(default="none", pattern="^(critical|alarm|warning|ignore|none)$")
+    always: bool = False
+    enabled: bool = True
+
+
+@router.post("/sites/{site_id}/rules")
+async def create_site_rule(site_id: int, body: RuleNewIn, request: Request, user: User = Depends(require_admin),
+                           scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Administrators: a new NX rule on the site, checked by reading it back (deleted again if NX stored it differently)."""
+    from app.services import rule_edit
+    site = await _get_site(db, scope, site_id, write=True)
+    await db.commit()
+    catalog = await _catalog(site)
+    level = None if body.level == "none" else body.level
+    made = await _rule_call(db, site, user, request, "", rule_edit.create(
+        manager.client_for(site), catalog, event=body.event.model_dump(), action=body.action.model_dump(),
+        comment=body.comment, level=level, always=body.always, enabled=body.enabled))
+    rid = (made.get("id") or "").strip("{}")
+    audit(db, site.tenant_id, "nx.rule_created", user_id=user.id, site_id=site.id, ip=client_ip(request), rule_id=rid,
+          rule=rule_edit.redact(made))
+    await db.commit()
+    return {"id": rid, "rules": await _after_rule_write(db, site)}
+
+
+@router.delete("/sites/{site_id}/rules/{rule_id}")
+async def delete_site_rule(site_id: int, rule_id: str, request: Request, user: User = Depends(require_admin),
+                           scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Administrators: delete an NX rule. The audit log keeps the whole rule (minus any login) so it can be rebuilt."""
+    from app.services import rule_edit
+    site = await _get_site(db, scope, site_id, write=True)
+    rule_id = _rule_id(rule_id)
+    await db.commit()
+    before = await _rule_call(db, site, user, request, rule_id, rule_edit.delete(manager.client_for(site), rule_id))
+    audit(db, site.tenant_id, "nx.rule_deleted", user_id=user.id, site_id=site.id, ip=client_ip(request), rule_id=rule_id,
+          rule=rule_edit.redact(before))
+    await db.commit()
+    return {"rules": await _after_rule_write(db, site)}
+
+
 class TaggedOnlyIn(BaseModel):
     on: bool
 
