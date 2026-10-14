@@ -35,7 +35,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from xml.sax.saxutils import escape
 
 from app.config import get_settings
-from app.models import Alarm, AlarmNote, AuditLog, User
+from app.models import Alarm, AlarmNote, AuditLog, SmsLog, User
 from app.services import arming, clips
 from app.services.alarm_filter import LEVEL_NAMES
 
@@ -188,8 +188,15 @@ async def gather(alarm: Alarm, pre: int, post: int, quality: str, need_clip: boo
     return ev
 
 
+GUARD_STATUS = {"en_route": "En route", "on_scene": "On scene", "clear": "Clear"}
+TEXT_PURPOSE = {"alarm": "Alarm text", "confirmed": "Confirmed text", "dispatch": "Dispatch text",
+                "stand_down": "Stand-down text", "summary": "Summary text", "call_ended": "Call-ended text"}
+
+
 async def timeline(db: AsyncSession, alarm: Alarm) -> list[dict]:
-    """What happened, in order: the event, its arrival, then everything the audit log recorded."""
+    """What happened, in order: the event, its arrival, then everything the audit log recorded and every text sent
+    about it (with whether it was delivered). The alarm details' live Timeline and the incident report both use it.
+    Rows: {ts (ms), what, who, detail, kind: event | operator | guard | text | system}."""
     received_ms = int(alarm.received_at.replace(tzinfo=alarm.received_at.tzinfo or timezone.utc).timestamp() * 1000)
     rows = [{"ts": alarm.event_ts_ms, "what": "Event occurred in NX", "who": alarm.source_name or "NX",
              "detail": alarm.caption},
@@ -202,9 +209,20 @@ async def timeline(db: AsyncSession, alarm: Alarm) -> list[dict]:
         AuditLog.ts <= datetime.fromtimestamp(alarm.event_ts_ms / 1000, timezone.utc)).order_by(AuditLog.id.desc()))
     if arm:
         rows.append(_audit_row(arm))
+    rows[0]["kind"] = rows[1]["kind"] = "event"
     for a in (await db.scalars(select(AuditLog).where(AuditLog.alarm_id == alarm.id).order_by(AuditLog.id))).all():
         if a.action != "alarm.received":
             rows.append(_audit_row(a))
+    texts = (await db.execute(select(SmsLog, User).join(User, User.id == SmsLog.user_id, isouter=True)
+                              .where(SmsLog.alarm_id == alarm.id).order_by(SmsLog.id))).all()
+    for t, u in texts:
+        outcome = {"sent": "sent", "delivered": "delivered", "read": "delivered", "failed": "FAILED",
+                   "undelivered": "NOT DELIVERED", "disabled": "not sent (texts off)"}.get(t.outcome, t.outcome)
+        rows.append({"ts": _ms(t.ts), "what": TEXT_PURPOSE.get(t.purpose, f"Text ({t.purpose})"),
+                     "who": u.label if u else f"…{t.to[-4:]}", "kind": "text",
+                     "detail": outcome + (f": {t.error}" if t.error and t.outcome not in ("sent", "delivered") else "")})
+    for r in rows:
+        r.setdefault("kind", "system")
     return sorted(rows, key=lambda r: r["ts"])
 
 
@@ -212,14 +230,35 @@ def _audit_row(a: AuditLog) -> dict:
     d = a.detail or {}
     ts = int(a.ts.replace(tzinfo=a.ts.tzinfo or timezone.utc).timestamp() * 1000)
     who = a.user.label if a.user else "system"
+    if a.action == "alarm.link_opened":
+        return {"ts": ts, "what": "Opened the alarm link", "who": who, "kind": "guard",
+                "detail": f"from their phone ({d['opens']} opens)" if d.get("opens", 1) > 1 else "from their phone"}
+    if a.action == "alarm.link_cameras":
+        return {"ts": ts, "what": "Looked at the site's live cameras", "who": who, "kind": "guard", "detail": ""}
+    if a.action == "tracker.share_from_alarm":
+        return {"ts": ts, "what": "Started sharing their location", "who": who, "kind": "guard", "detail": d.get("name", "")}
+    if a.action == "guard.status":
+        where = f"at {d['lat']:.5f}, {d['lng']:.5f}" if d.get("lat") is not None else "position not shared"
+        away = f" ({d['distance']} from the alarm)" if d.get("distance") else ""
+        return {"ts": ts, "what": GUARD_STATUS.get(d.get("status"), d.get("status", "")), "who": who, "kind": "guard",
+                "detail": where + away}
+    if a.action == "alarm.dispatched":
+        away = f", {d['distance']} away" if d.get("distance") else (", position unknown" if "distance" in d else "")
+        return {"ts": ts, "what": f"Dispatched {d.get('guard', '')}" + (" (automatic, on confirm)" if d.get("auto") else ""),
+                "who": who, "kind": "operator", "detail": f"text to {d.get('to', '')}{away}"}
+    if a.action == "alarm.call_ended":
+        how = {"false": "marked false alarm: guards told to stand down", "dismissed": "dismissed: guards told to stand down"}
+        return {"ts": ts, "what": "Call ended", "who": who, "kind": "operator",
+                "detail": how.get(d.get("verdict"), "guards told the call is over") + (f" · “{d['note']}”" if d.get("note") else "")}
     if a.action == "alarm.acknowledged":
         nx = d.get("nx") or {}
         detail = f"NX write-back: {nx.get('method') or '-'}{' (failed: ' + str(nx.get('error')) + ')' if nx.get('ok') is False else ''}"
         verdict = {"real": "Real event. ", "false": "False alarm. ", "dismissed": "Dismissed. "}.get(d.get("verdict", ""), "")
-        return {"ts": ts, "what": "Acknowledged" + (" (bulk)" if d.get("bulk") else ""), "who": who, "detail": verdict + detail}
+        return {"ts": ts, "what": "Acknowledged" + (" (bulk)" if d.get("bulk") else ""), "who": who, "kind": "operator",
+                "detail": verdict + (f"“{d['note']}” · " if d.get("note") else "") + detail}
     if a.action == "alarm.note":
         text = d.get("text", "")
-        return {"ts": ts, "what": "Note added", "who": who, "detail": text if len(text) <= 90 else text[:88] + "…"}
+        return {"ts": ts, "what": "Note added", "who": who, "kind": "operator", "detail": text if len(text) <= 90 else text[:88] + "…"}
     if a.action == "alarm.verdict":
         name = {"real": "real event", "false": "false alarm", "": "not marked"}
         return {"ts": ts, "what": "Verdict changed" + (" (bulk)" if d.get("bulk") else ""), "who": who,
@@ -466,7 +505,7 @@ def _ms(dt: datetime | None) -> int:
 # ------------------------------------------------------------------ package
 
 def build_zip(alarm: Alarm, ev: Evidence, pdf: bytes, user: User, note: str, now_ms: int,
-              notes: list[dict] | None = None) -> tuple[bytes, dict]:
+              notes: list[dict] | None = None, events: list[dict] | None = None) -> tuple[bytes, dict]:
     tz = arming.zone(alarm.site.timezone if alarm.site else "")
     root = f"alarm-{alarm.id}_{datetime.fromtimestamp(alarm.event_ts_ms / 1000, tz):%Y-%m-%d_%H%M%S}"
     files: dict[str, bytes] = {"incident-report.pdf": pdf}
@@ -490,6 +529,8 @@ def build_zip(alarm: Alarm, ev: Evidence, pdf: bytes, user: User, note: str, now
         "state": alarm.state, "verdict": alarm.verdict or None, "ack_note": alarm.ack_note, "acked_by": alarm.acked_by.label if alarm.acked_by else None,
         "clip": ev.clip.to_dict() if ev.clip else None, "exported_by": user.label, "exported_at_ms": now_ms,
         "notes": [{"by": n["by"], "at_ms": n["ts"], "text": n["text"]} for n in notes or []],
+        "timeline": [{"at_ms": e["ts"], "at_site": _fmt(e["ts"], tz), "what": e["what"], "who": e["who"], "detail": e["detail"]}
+                     for e in events or []],
         "export_note": note, "files": sums,
     }
     buf = io.BytesIO()
@@ -516,6 +557,6 @@ async def export(db: AsyncSession, alarm: Alarm, user: User, fmt: str, note: str
               "clip_sha256": ev.clip_sha256 or None, "pdf_sha256": hashlib.sha256(pdf).hexdigest()}
     if fmt == "pdf":
         return pdf, f"incident-report_alarm-{alarm.id}.pdf", "application/pdf", detail
-    data, info = await asyncio.to_thread(build_zip, alarm, ev, pdf, user, note, now, notes)
+    data, info = await asyncio.to_thread(build_zip, alarm, ev, pdf, user, note, now, notes, events)
     detail["zip_sha256"] = hashlib.sha256(data).hexdigest()
     return data, f"{info['root']}.zip", "application/zip", detail

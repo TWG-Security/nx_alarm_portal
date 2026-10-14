@@ -90,8 +90,9 @@ with sync_playwright() as p:
     pg.wait_for_selector(".guard-icon .guard--live", timeout=15000)
     check("Patrol Car 1" in pg.inner_text(".guard--live .guard-label") and "mph" in pg.inner_text(".guard--live .guard-label"),
           "live marker with name and speed")
-    check(pg.locator(".guard-icon .guard--stale").count() == 1 and "last seen" in pg.inner_text(".guard--stale .guard-label"),
-          "the trailer that reported yesterday is grey: 'last seen …'")
+    check(pg.locator(".guard-icon .guard--offline").count() == 1 and "OFFLINE (router offline)" in pg.inner_text(".guard--offline .guard-label")
+          and "last seen" in pg.inner_text(".guard--offline .guard-label"),
+          "the trailer whose router is off (InControl2: offline) shows OFFLINE, last seen yesterday, at its last position")
     check(pg.locator("#guard-list li").count() == 2, "Guards list in the side panel")
     pg.click("#guard-list li:has-text('Patrol Car 1')"); pg.wait_for_timeout(1200)
     check("following" in pg.get_attribute("#guard-list li:has-text('Patrol Car 1')", "class"), "clicking a guard zooms to it and follows")
@@ -107,15 +108,42 @@ with sync_playwright() as p:
     check(pg.evaluate("localStorage.getItem('twg-guard-trail-min')") == "30", "Trail: 30 min fetches longer history and is remembered")
     pg.select_option("#guard-list [data-trail]", "5")
     t0 = time.time()
-    pg.click("#guard-list li:has-text('Patrol Car 1') [data-refresh]")
+    pg.click("#guard-list li:has-text('Patrol Car 1') [data-locate]")
     pg.wait_for_selector(".toast:has-text('position from')", timeout=10000)
-    check(True, f"↻ in the Guards list gets the position now ({time.time() - t0:.1f} s)")
+    check(True, f"Locate in the Guards list gets a router's position now ({time.time() - t0:.1f} s)")
     urllib.request.urlopen(urllib.request.Request(f"{FAKE_NX}/_ic2/rename/3?name=Patrol%20Car%207", method="POST"))
     pg.wait_for_timeout(5200)                               # a refresh asks IC2 at most every 5 s per guard
-    pg.click("#guard-list li:has-text('Patrol Car 1') [data-refresh]")
+    pg.click("#guard-list li:has-text('Patrol Car 1') [data-locate]")
     pg.wait_for_selector("#guard-list li:has-text('Patrol Car 7')", timeout=10000)
     check("Patrol Car 7" in pg.inner_text(".guard--live .guard-label"), "a router renamed in InControl2 is renamed on the map")
     pg.screenshot(path=f"{out}/guards-map.png")
+    pg.locator("#guard-list").screenshot(path=f"{out}/guards-panel.png")
+
+    # Hide one guard on the map (its own eye), remembered; the other stays.
+    markers = "() => [...document.querySelectorAll('.leaflet-guards-pane .guard-label')].map(e => e.firstChild.textContent.trim())"
+    before = pg.evaluate(markers)
+    pg.click("#guard-list li:has-text('Parked Trailer') [data-guard-eye]")
+    after = pg.evaluate(markers)
+    check("Parked Trailer" in before and "Parked Trailer" not in after and len(after) == len(before) - 1,
+          f"the trailer's eye hides only the trailer ({before} -> {after})")
+    check("hidden on the map" in pg.inner_text("#guard-list li:has-text('Parked Trailer')"), "it stays in the list, marked hidden")
+    pg.reload(); pg.wait_for_selector("#guard-list li", timeout=10000); pg.wait_for_timeout(1500)
+    check("Parked Trailer" not in pg.evaluate(markers) and len(pg.evaluate(markers)) == len(after), "still hidden after a reload")
+    pg.click("#guard-list li:has-text('Parked Trailer') [data-guard-eye]")
+    check("Parked Trailer" in pg.evaluate(markers), "its eye again shows it")
+    # Sites folds away too, remembered.
+    pg.click("#sites-toggle")
+    check(pg.is_hidden("#site-list") and pg.get_attribute("#sites-toggle", "aria-expanded") == "false", "Sites header collapses the sites list")
+    pg.reload(); pg.wait_for_selector("#sites-toggle", timeout=10000)
+    check(pg.is_hidden("#site-list"), "Sites still collapsed after a reload")
+    pg.click("#sites-toggle")
+    check(pg.is_visible("#site-list .site-item"), "Sites header expands it again")
+    pg.click("#guard-list [data-guards-toggle]")
+    check(pg.locator("#guard-list li").count() == 0 and pg.get_attribute("[data-guards-toggle]", "aria-expanded") == "false", "header click collapses the section")
+    pg.reload(); pg.wait_for_selector("#guard-list [data-guards-toggle]", timeout=10000)
+    check(pg.locator("#guard-list li").count() == 0, "still collapsed after a reload")
+    pg.click("#guard-list [data-guards-toggle]")
+    check(pg.locator("#guard-list li").count() == 2, "header click expands it again")
     print(f"  alarm with guards on the map: {alarm_ms(pg)} ms")
 
     # ---- 3D view (forced on: headless has software WebGL only)

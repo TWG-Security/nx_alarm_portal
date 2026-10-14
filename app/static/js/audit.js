@@ -13,7 +13,7 @@ const LABELS = {
   "site.created": "Site added", "site.updated": "Site edited", "site.enabled": "Site enabled", "site.disabled": "Site disabled",
   "support.viewed": "TWG support opened this company", "tenant.created": "Company created", "tenant.updated": "Company edited", "tenant.logo": "Logo changed",
   "group.created": "Group created", "group.updated": "Group edited", "group.deleted": "Group deleted",
-  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
+  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "location.test": "Location test (phone)", "tracker.location_requested": "Location requested", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
   login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited", "user.deleted": "User deleted",
 };
 

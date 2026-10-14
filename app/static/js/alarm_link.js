@@ -5,11 +5,72 @@
 import { CFG, fmtTime } from "./common.js";
 import { mountPlayer } from "./player.js";
 import { mountLive } from "./live.js";
+import { createSharer, isIOS, locationPermission } from "./share_core.js";
+import { mountLocationTest } from "./location_test.js";
 
 const a = CFG.alarm, token = CFG.token;
 const STILL_EVERY_MS = 3000;     // a still per visible camera every 3 s (~40 KB each): light on phone data and the NX relay
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+// "Share my location now": the person this was texted to shows on the dispatcher's map while this page is open.
+if (CFG.canShare && $("link-share-start")) {
+  const KEY = `twg-share-from-${token}`;
+  let sharer = null;
+  const paint = (kind, text, facts) => {
+    const on = !["off", "gone", "blocked"].includes(kind);
+    if (kind === "blocked") document.querySelector(".share-help").open = true;
+    $("link-share-start").hidden = on; $("link-share-stop").hidden = !on;
+    $("link-share-state").textContent = kind === "off" && text === "Not sharing" ? "Not sharing your location." : text;
+    $("link-share-state").className = `share-line share-line--${kind}`;
+    $("link-share-facts").textContent = facts;
+    try { if (on) sessionStorage.setItem(KEY, "1"); else sessionStorage.removeItem(KEY); } catch { /* fine */ }
+  };
+  // The location request happens right here in the tap (Safari asks "Allow location?" only then); the location
+  // link's token is fetched alongside and used for the first position.
+  function startSharing() {
+    if (!sharer) {
+      sharer = createSharer(async () => {
+        const r = await fetch(`/api/a/${token}/share`, { method: "POST", credentials: "omit" });
+        if (!r.ok) throw new Error(r.status === 410 ? "This alarm link has expired" : "Couldn't start sharing");
+        return (await r.json()).token;
+      }, { everyS: 10, onState: paint });
+    }
+    sharer.start();
+  }
+  $("link-share-start").addEventListener("click", startSharing);
+
+  // En route / On scene / Clear, like an MDT: dispatch sees each tap live, with the time and where they were.
+  // En route also starts sharing the location (so dispatch can watch them come).
+  const WORDS = { en_route: "En route", on_scene: "On scene", clear: "Clear" };
+  const showStatus = (st, note = "") => {
+    document.querySelectorAll(".mdt-btn").forEach((b) => b.classList.toggle("on", b.dataset.status === st));
+    $("mdt-state").textContent = st ? `Your status: ${WORDS[st]}${note}` : "Tap your status so dispatch knows where you are.";
+  };
+  showStatus(CFG.status || "");
+  document.querySelector(".mdt").addEventListener("click", async (e) => {
+    const b = e.target.closest("[data-status]");
+    if (!b) return;
+    const st = b.dataset.status;
+    document.querySelectorAll(".mdt-btn").forEach((x) => { x.disabled = true; });
+    try {
+      if (st === "en_route" && !sharer?.active) startSharing();
+      const r = await fetch(`/api/a/${token}/status`, { method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ status: st }) });
+      if (!r.ok) throw new Error(r.status === 410 ? "This alarm link has expired" : "Couldn't reach dispatch. Try again.");
+      showStatus(st, ` · sent to dispatch ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+    } catch (err) { $("mdt-state").textContent = err.message; }
+    finally { document.querySelectorAll(".mdt-btn").forEach((x) => { x.disabled = false; }); }
+  });
+  $("link-share-stop").addEventListener("click", () => sharer?.stop());
+  if (isIOS()) document.querySelector(".ios-tip").hidden = false;
+  mountLocationTest(`/api/a/${token}/diag`);
+  (async () => {
+    let again = false;
+    try { again = sessionStorage.getItem(KEY) === "1"; } catch { /* fine */ }
+    if (again && await locationPermission() === "granted") startSharing();         // no tap: only if already allowed
+  })();
+}
 
 $("link-when").textContent = new Date(a.event_ts_ms).toLocaleString([], { dateStyle: "medium", timeStyle: "medium" });
 $("link-expires").textContent = fmtTime($("link-expires").dataset.iso);

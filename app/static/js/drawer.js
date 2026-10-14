@@ -1,7 +1,9 @@
 // Alarm detail drawer: the recorded clip and live video side by side, details, acknowledge with a
-// verdict (real event / false alarm / dismissed). Used on every page.
+// verdict (real event / false alarm / dismissed), the closest guards with Dispatch, and Next (the next open
+// alarm in the feed's order: most urgent first, oldest first). Used on every page.
 
-import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView } from "./common.js";
+import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
+import { freshness } from "./guards.js";
 import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
 
@@ -13,14 +15,180 @@ const drawer = document.getElementById("drawer");
 const backdrop = document.getElementById("drawer-backdrop");
 let current = null, player = null, live = null, notes = [];
 let where = null;    // { map, plan, site }: the top-down map of where the alarm's camera is
+let guardsTimer = null, guardsFor = null, lastGuards = null;     // lastGuards: { alarmId, r } from /guards
+
+// ---------------------------------------------------------------- Next: the next open alarm in working order
+function nextAlarm(a) {
+  const q = alarmQueue();
+  const i = q.findIndex((x) => x.id === a.id);
+  const rest = q.filter((x) => x.id !== a.id);
+  if (!rest.length) return null;
+  return { alarm: i >= 0 && i + 1 < q.length ? q[i + 1] : rest[0], count: rest.length };
+}
+function nextHtml(a) {
+  const n = nextAlarm(a);
+  return n ? `<button class="btn btn-sm btn-primary" id="drawer-next" data-next="${n.alarm.id}"
+      title="${esc(`${PRIORITY[n.alarm.priority]}: ${n.alarm.caption} at ${n.alarm.site_name}`)}">Next alarm › <span class="next-count">${n.count} more open</span></button>` : "";
+}
+function paintNext() {
+  const slot = drawer.querySelector(".drawer-next-slot");
+  if (slot && current) slot.innerHTML = nextHtml(current);
+}
+on("store", () => { if (current && !drawer.hidden) paintNext(); });
+
+// ---------------------------------------------------------------- guards: closest first, Dispatch
+function stopGuards() { clearInterval(guardsTimer); guardsTimer = null; guardsFor = null; }
+// The two closest guards that can be texted, as big Dispatch buttons right under the title (phones see them first).
+function quickHtml(a) {
+  const g = lastGuards?.alarmId === a.id ? lastGuards.r : null;
+  if (!g || !g.texts_ready || !(isMine(a) || can("platform.support"))) return "";
+  const pick = g.guards.filter((c) => c.can_text).slice(0, 2);
+  if (!pick.length) return "";
+  const sent = new Set(g.dispatched.map((d) => d.to));
+  return `<div class="dispatch-quick">${pick.map((c, i) => `<button type="button" class="btn dispatch-big ${i === 0 ? "btn-primary" : ""}"
+      data-dispatch="${c.tracker_id}" data-name="${esc(c.name)}">
+      <span class="dispatch-big-main">Dispatch ${esc(c.name)}</span>
+      <span class="dispatch-big-sub">${c.distance_m == null ? "position unknown" : `${esc(c.distance)} away`}${c.closest ? " · closest" : ""}${!c.usable && c.distance_m != null ? " · old position" : ""}${sent.has(c.person) || sent.has(c.name) ? " · already sent" : ""}</span>
+    </button>`).join("")}</div>`;
+}
+function paintQuick() {
+  const slot = drawer.querySelector(".dispatch-quick-slot");
+  if (slot && current) slot.innerHTML = quickHtml(current);
+}
+// Everyone sent to this alarm, like an MDT board: text delivered → opened → en route → on scene → clear.
+const STATUS_WORD = { en_route: "En route", on_scene: "On scene", clear: "Clear" };
+const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+function boardHtml(list) {
+  if (!list.length) return "";
+  return `<div class="mdt-board">${list.map((d) => {
+    const word = STATUS_WORD[d.status] || (d.opened_at ? "Opened the link"
+      : d.text === "delivered" ? "Text delivered" : ["failed", "undelivered"].includes(d.text) ? "Text NOT delivered" : "Dispatched");
+    const cls = STATUS_WORD[d.status] ? d.status : ["failed", "undelivered"].includes(d.text) ? "failed" : "dispatched";
+    return `<div class="mdt-row"><div><b>${esc(d.guard)}</b>${d.to && d.to !== d.guard ? ` <span class="muted">(${esc(d.to)})</span>` : ""}
+        <span class="chip mdt-chip mdt-chip--${cls}">${esc(word)}</span></div>
+      <div class="muted small-print">Sent ${esc(clock(d.at))}${d.auto ? " automatically" : d.by ? ` by ${esc(d.by)}` : ""}${d.distance ? `, ${esc(d.distance)} away` : ""}
+        · text ${esc(d.text || "sending")}${d.opened_at ? ` · opened ${esc(clock(d.opened_at))}` : " · not opened yet"}${d.status_at ? ` · ${esc(STATUS_WORD[d.status])} ${esc(clock(d.status_at))}` : ""}</div></div>`;
+  }).join("")}</div>`;
+}
+let chosen = new Set(), chosenFor = null;       // guards ticked for "Dispatch selected"
+async function loadGuards(a) {
+  const box = drawer.querySelector(".drawer-dispatch");
+  if (!box) return;
+  let r;
+  try { r = await api(`/api/alarms/${a.id}/guards`); } catch { return; }
+  if (current?.id !== a.id || guardsFor !== a.id) return;
+  lastGuards = { alarmId: a.id, r };
+  paintQuick();
+  if (!r.guards.length && !r.dispatched.length) { box.hidden = true; return; }
+  if (chosenFor !== a.id) { chosen = new Set(); chosenFor = a.id; }
+  box.hidden = false;
+  const write = isMine(a) || can("platform.support");
+  const ok = r.guards.filter((c) => r.texts_ready && c.can_text);
+  for (const id of [...chosen]) if (!ok.some((c) => c.tracker_id === id)) chosen.delete(id);
+  const all = ok.length > 0 && ok.every((c) => chosen.has(c.tracker_id));
+  box.innerHTML = `${r.dispatched.length ? `<div class="media-label">Dispatched <span class="muted">live status from their phones</span></div>${boardHtml(r.dispatched)}` : ""}
+    <div class="media-label">Guards <span class="muted">closest to the ${r.from === "camera" ? "alarm camera" : "site"} first</span></div>
+    ${write && ok.length > 1 ? `<div class="dispatch-choose"><label class="check"><input type="checkbox" data-choose-all ${all ? "checked" : ""}> All guards (${ok.length})</label>
+      <button type="button" class="btn btn-sm btn-primary" data-dispatch-chosen ${chosen.size ? "" : "disabled"}>Dispatch selected (${chosen.size})</button></div>` : ""}
+    <ul class="dispatch-list">${r.guards.map((c) => {
+      const f = freshness({ fix_at: c.fix_at, online: c.online });
+      const where = c.distance_m == null ? "position unknown" : `${c.distance} away`;
+      const block = !r.texts_ready ? "Text messages aren't set up" : c.reason;
+      return `<li class="${c.closest ? "closest" : ""}">${write && ok.length > 1 ? `<input type="checkbox" data-choose="${c.tracker_id}" aria-label="Choose ${esc(c.name)}" ${chosen.has(c.tracker_id) ? "checked" : ""} ${block ? "disabled" : ""}>` : ""}
+        <span class="guard-pip guard--${f}"></span>
+        <span class="dispatch-who"><b>${esc(c.name)}</b>${c.closest ? ' <span class="chip p2">Closest</span>' : ""}
+          <span class="muted small-print">${esc(where)}${f === "offline" ? " · OFFLINE" : f === "stale" ? ` · last seen ${esc(relTime(c.fix_at))}` : ""}${c.person && c.person !== c.name ? ` · ${esc(c.person)}` : ""}</span>
+          ${block ? `<span class="muted small-print">${esc(block)}</span>` : ""}</span>
+        ${write ? `<button type="button" class="btn btn-sm ${c.closest ? "btn-primary" : ""}" data-dispatch="${c.tracker_id}" data-name="${esc(c.name)}" ${block ? "disabled" : ""}>Dispatch</button>` : ""}</li>`;
+    }).join("")}</ul>
+    ${r.auto && a.state === "new" && r.texts_ready ? '<p class="muted small-print">Marking it <b>Real event</b> texts the closest guard automatically.</p>' : ""}`;
+}
+
+// ---------------------------------------------------------------- timeline: everything, live (also in the report)
+let timelineSoon = null;
+async function loadTimeline(a) {
+  const box = drawer.querySelector(".drawer-timeline");
+  if (!box) return;
+  let rows;
+  try { rows = await api(`/api/alarms/${a.id}/timeline`); } catch { return; }
+  if (current?.id !== a.id) return;
+  box.hidden = false;
+  box.innerHTML = `<div class="media-label">Timeline <span class="muted">newest first · live · ${rows.length} entries · also in the incident report</span></div>
+    <ol class="timeline">${[...rows].reverse().map((e) => `<li class="tl tl--${esc(e.kind)}"><time>${esc(new Date(e.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</time>
+      <span><b>${esc(e.what)}</b> <span class="muted">· ${esc(e.who)}</span>${e.detail ? `<div class="muted small-print">${esc(e.detail)}</div>` : ""}</span></li>`).join("")}</ol>`;
+}
+on("alarm.timeline", ({ alarm_id }) => {
+  if (!current || current.id !== alarm_id || drawer.hidden) return;
+  clearTimeout(timelineSoon);
+  timelineSoon = setTimeout(async () => {
+    if (current?.id !== alarm_id) return;
+    loadTimeline(current); loadGuards(current);
+    try {
+      const a = await api(`/api/alarms/${alarm_id}`);
+      if (current?.id === alarm_id && (a.call_state !== current.call_state || a.state !== current.state)) {
+        const keep = drawer.querySelector("#call-note")?.value || "";
+        current = a; render(a);
+        if (keep && drawer.querySelector("#call-note")) drawer.querySelector("#call-note").value = keep;
+      }
+    } catch { /* the next event or the 15 s refresh catches up */ }
+  }, 250);
+});
+function startGuards(a) {
+  stopGuards();
+  guardsFor = a.id;
+  loadGuards(a);
+  guardsTimer = setInterval(() => { if (current && !drawer.hidden) loadGuards(current); }, 15000);
+}
+async function sendDispatch(ids, names, btn) {
+  if (!confirm(`Text ${names} to go to this alarm now?`)) return;
+  btn.disabled = true;
+  try {
+    const r = await api(`/api/alarms/${current.id}/dispatch`, { method: "POST", body: { tracker_ids: ids } });
+    toast(`Dispatched ${r.sent.map((x) => `${esc(x.to)}${x.distance ? ` (${esc(x.distance)})` : ""}`).join(", ")}`
+      + (r.failed.length ? `. Not sent: ${r.failed.map((f) => `${esc(f.name)}: ${esc(f.error)}`).join("; ")}` : ""), r.failed.length ? { kind: "error" } : {});
+    chosen.clear();
+    loadGuards(current); loadTimeline(current);
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+  finally { btn.disabled = false; }
+}
+const dispatchGuard = (btn) => sendDispatch([Number(btn.dataset.dispatch)], btn.dataset.name, btn);
 
 export function closeDrawer() {
   current = null;
+  stopGuards();
   player?.destroy(); player = null;
   live?.destroy(); live = null;
   closeWhere();
   drawer.hidden = true;
   backdrop.hidden = true;
+}
+
+// A call: a guard was dispatched. A Real event stays open (Active calls) until End call.
+function callHtml(a) {
+  if (a.call_state === "active" && a.state !== "new") {
+    return `<div class="call-box"><h2>Call in progress</h2>
+      <p class="muted">A guard was sent. This alarm stays on the map's <b>Active calls</b> until you end the call.
+        Ending it texts the guards who haven't tapped Clear.</p>
+      <div class="field"><label for="call-note">How it ended <span class="muted">(optional, on the report)</span></label>
+        <textarea id="call-note" maxlength="4000" rows="2" placeholder="e.g. Police took over; site secured; keyholder on site"></textarea></div>
+      <button type="button" class="btn btn-primary call-end" id="call-end">End call</button></div>`;
+  }
+  if (a.call_state === "active" && a.state === "new") {
+    return '<p class="call-hint">A guard is dispatched. <b>Real event</b> keeps this open as an active call until you end it; <b>False alarm</b> or <b>Dismiss</b> ends it and tells the guard to stand down.</p>';
+  }
+  if (a.call_state === "ended") {
+    return `<p class="muted">Call ended${a.call_ended_by ? ` by ${esc(a.call_ended_by)}` : ""}${a.call_ended_at ? ` · ${esc(fmtTime(a.call_ended_at))}` : ""}${a.call_end_note ? `: “${esc(a.call_end_note)}”` : ""}</p>`;
+  }
+  return "";
+}
+async function endCall(btn) {
+  if (!confirm("End this call? The guards still on it get a CALL ENDED text.")) return;
+  btn.disabled = true;
+  try {
+    const a = await api(`/api/alarms/${current.id}/end-call`, { method: "POST", body: { note: drawer.querySelector("#call-note")?.value || "" } });
+    current = a; applyAlarm(a); render(a); loadTimeline(a); loadGuards(a);
+    toast("Call ended");
+  } catch (err) { toast(esc(err.message), { kind: "error" }); btn.disabled = false; }
 }
 
 function render(a) {
@@ -37,12 +205,15 @@ function render(a) {
   drawer.querySelector(".drawer-top").innerHTML = `
     <div class="drawer-head">
       <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
+        ${a.call_state === "active" ? ' <span class="chip call-chip">Call in progress</span>' : a.call_state === "ended" ? ' <span class="chip">Call ended</span>' : ""}
         <h1 style="margin-top:8px">${esc(a.caption)}</h1>
         ${isMine(a) ? "" : `<div><span class="chip tenant-chip">${esc(a.tenant_name || "Another company")}</span></div>`}
         <div><b>${esc(a.site_name)}</b>${a.site_address ? ` <span class="muted">· ${esc(a.site_address)}</span>` : ""}</div>
         ${a.source_name ? `<div class="muted">${esc(a.source_name)}</div>` : ""}</div>
-      <button class="btn btn-sm" id="drawer-close" aria-label="Close">✕</button>
-    </div>`;
+      <div class="drawer-head-actions"><span class="drawer-next-slot">${nextHtml(a)}</span>
+        <button class="btn btn-sm drawer-back" id="drawer-close" aria-label="Close">← ${location.pathname === "/" ? "Back to map" : "Back"}</button></div>
+    </div>
+    <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
     <dl class="kv">
       <dt>Event time</dt><dd>${fmtTime(a.event_ts_ms)}</dd>
@@ -53,6 +224,7 @@ function render(a) {
       <dt>In NX</dt><dd>${a.nx_ack_required ? "Acknowledging here also clears it in NX" : "A bookmark is added in NX on acknowledge (not when dismissed)"}</dd>
     </dl>
     <div class="ack-box">
+      ${callHtml(a)}
       ${disarmed ? `
         <h2>Received while the site was disarmed</h2>
         <p class="muted">This event was recorded but not raised: no sound, no pop-up, no live feed card. Nothing to acknowledge.
@@ -161,27 +333,41 @@ export async function openDrawer(id, fallback) {
     </div>
     <div class="drawer-lower">
       <div class="drawer-details"></div>
+      <div class="drawer-side"><section class="drawer-dispatch" hidden></section>
       <section class="drawer-where" hidden><div class="media-label">Where <span class="muted">top-down</span></div>
         <div class="where-mount"></div><div class="where-note muted"></div></section>
+      <section class="drawer-timeline" hidden></section></div>
     </div>`;
   render(a);
   player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
   if (a.device_id) live = mountLive(drawer.querySelector(".live-mount"), a);
   mountWhere(a).catch((err) => console.error("top-down map in the alarm details failed", err));
   api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
+  startGuards(a);
+  loadTimeline(a);
   drawer.hidden = false;
   backdrop.hidden = false;
   drawer.querySelector("#drawer-close").focus();
 }
 
 drawer.addEventListener("click", async (e) => {
-  if (e.target.id === "drawer-close") return closeDrawer();
+  if (e.target.closest("#drawer-close")) return closeDrawer();
+  if (e.target.id === "call-end") return endCall(e.target);
+  const next = e.target.closest("[data-next]");
+  if (next) { const a = openAlarms.get(Number(next.dataset.next)); return openDrawer(Number(next.dataset.next), a); }
+  const disp = e.target.closest("[data-dispatch]");
+  if (disp) return dispatchGuard(disp);
+  const many = e.target.closest("[data-dispatch-chosen]");
+  if (many && chosen.size) {
+    const names = lastGuards.r.guards.filter((c) => chosen.has(c.tracker_id)).map((c) => c.name);
+    return sendDispatch([...chosen], names.length > 2 ? `${names.length} guards (${names.join(", ")})` : names.join(" and "), many);
+  }
   if (e.target.id === "drawer-export") return openExport(current);
   if (e.target.id === "note-add") return addNote();
   const verdict = e.target.dataset.ack;
   if (verdict) {
     const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target, verdict);
-    if (updated) { current = updated; render(updated); }
+    if (updated) { current = updated; render(updated); loadGuards(updated); loadTimeline(updated); }
     return;
   }
   const override = e.target.dataset.override;
@@ -197,6 +383,16 @@ drawer.addEventListener("click", async (e) => {
     } catch (err) { toast(esc(err.message), { kind: "error" }); e.target.disabled = false; }
   }
 });
+drawer.addEventListener("change", (e) => {
+  if (!lastGuards || lastGuards.alarmId !== current?.id) return;
+  if (e.target.matches("[data-choose]")) {
+    const id = Number(e.target.dataset.choose);
+    if (e.target.checked) chosen.add(id); else chosen.delete(id);
+  } else if (e.target.matches("[data-choose-all]")) {
+    chosen = new Set(e.target.checked ? lastGuards.r.guards.filter((c) => c.can_text).map((c) => c.tracker_id) : []);
+  } else return;
+  loadGuards(current);
+});
 backdrop.addEventListener("click", closeDrawer);
 drawer.addEventListener("keydown", (e) => {
   if (e.target.id === "note-text" && e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); addNote(); }
@@ -204,6 +400,7 @@ drawer.addEventListener("keydown", (e) => {
 // Someone else added a note to the alarm we're looking at.
 on("alarm.note", (n) => {
   if (current && n.alarm_id === current.id && !notes.some((x) => x.id === n.id)) { notes.push(n); renderNotes(); }
+  if (current && n.alarm_id === current.id && /^Dispatched /.test(n.text)) setTimeout(() => current && loadGuards(current), 1500);
 });
 
 // ---------------------------------------------------------------- export (app/services/report.py)

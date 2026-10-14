@@ -231,6 +231,83 @@ def confirmed_text(alarm: Alarm, link: str, by: str, more: int = 0) -> str:
     return "\n".join(lines[:at] + extra + lines[at:])
 
 
+def distance_words(metres: float | None) -> str:
+    """US units, as a guard would say it: "300 ft", "0.4 mi", "12 mi"."""
+    if metres is None:
+        return ""
+    feet = metres * 3.28084
+    if feet < 1000:
+        return f"{max(10, round(feet / 10) * 10):.0f} ft"
+    miles = metres / 1609.344
+    return f"{miles:.1f} mi" if miles < 10 else f"{miles:.0f} mi"
+
+
+SHARE_LABEL = "SHARE YOUR LOCATION (open, tap Start, keep it open):"
+
+
+def dispatch_text(alarm: Alarm, link: str, by: str, distance_m: float | None, share_link: str = "", auto: bool = False) -> str:
+    """An operator sends this guard (the closest one) to the alarm:
+
+    TWG DISPATCH: Panic button
+    TWG Security Office
+    123 Main St, Harrisburg, PA
+    Front Door Cam, 2:03:22 PM EDT
+    Go now. Dispatched by Mike Miller, 2:04:10 PM EDT (you're 0.4 mi away)
+    Note: man in black hoodie at the loading dock
+
+    VIDEO (alarm clip + live cameras):
+    https://...
+
+    MAP (directions to the site):
+    https://www.google.com/maps/dir/...
+
+    SHARE YOUR LOCATION (open, tap Start, keep it open):     <- guards tracked by their phone's browser
+    https://.../g/...
+
+    Reply STOP to opt out.
+    """
+    lines = alarm_text(alarm, link).split("\n")
+    lines[0] = lines[0].replace(f"TWG {LEVEL_WORD.get(alarm.priority, 'ALARM')}:", "TWG DISPATCH:", 1)
+    away = distance_words(distance_m)
+    how = "confirmed real" if auto else "dispatched"
+    extra = [f"Go now. {how.capitalize()} by {_ascii(by, 40) or 'an operator'}, {_clock(alarm, utcnow())}"
+             + (f" (you're {away} away)" if away else "")]
+    note = _ascii(alarm.ack_note, 120)
+    if note:
+        extra.append(f"Note: {note}")
+    at = lines.index("")
+    lines = lines[:at] + extra + lines[at:]
+    if share_link:
+        stop = len(lines) - 2                      # before the blank line + "Reply STOP"
+        lines = lines[:stop] + ["", SHARE_LABEL, share_link + " "] + lines[stop:]
+    return "\n".join(lines)
+
+
+def call_ended_text(alarm: Alarm, by: str, verdict: str = "") -> str:
+    """End of a call, to the guards sent to it: CALL ENDED (End call) or STAND DOWN (marked false / dismissed)."""
+    site = _ascii(alarm.site.name if alarm.site else "", 60)
+    what = _ascii(alarm.caption or alarm.event_type, 60)
+    who = _ascii(by, 40) or "Dispatch"
+    if verdict:
+        word = {"false": "a false alarm", "dismissed": "dismissed"}.get(verdict, verdict)
+        return (f"TWG STAND DOWN: {what} at {site} was marked {word} by {who}, {_clock(alarm, utcnow())}. "
+                f"You can clear.\nReply STOP to opt out.")
+    note = _ascii(alarm.call_end_note, 120)
+    return (f"TWG CALL ENDED: {what} at {site}. {who} ended the call, {_clock(alarm, utcnow())}. You can clear."
+            + (f"\nNote: {note}" if note else "") + "\nReply STOP to opt out.")
+
+
+def locate_text(company: str, by: str, url: str) -> str:
+    """Dispatch wants to see where a guard is, without an alarm (map → Guards → Locate)."""
+    return (f"TWG: {_ascii(by, 40) or 'Dispatch'} at {_ascii(company, 60)} asks where you are. Open the link, tap "
+            f"Start sharing and keep the page open.\n\n{SHARE_LABEL}\n{url} \n\nReply STOP to opt out.")
+
+
+def share_invite_text(company: str, url: str) -> str:
+    return (f"TWG: {_ascii(company, 60)} dispatch asks you to share your location while you're on duty, "
+            f"so the closest guard can be sent to an alarm.\n\n{SHARE_LABEL}\n{url} \n\nReply STOP to opt out.")
+
+
 def stand_down_text(alarm: Alarm, verdict: str, by: str, more: int = 0) -> str:
     word = {"false": "a false alarm", "dismissed": "dismissed"}.get(verdict, "no longer confirmed")
     site = _ascii(alarm.site.name if alarm.site else "", 60)
@@ -358,6 +435,9 @@ async def _record(to: str, purpose: str, outcome: str, error: str, attempts: int
                     row.sms_last_ok_at = utcnow()
                 else:
                     row.sms_last_error, row.sms_last_error_at = f"{masked(to)}: {error}"[:500], utcnow()
+            if entry.alarm_id is not None and entry.tenant_id is not None:
+                from app.audit import timeline_changed
+                timeline_changed(db, entry.tenant_id, entry.alarm_id)
             await db.commit()
             return entry.id
     except Exception as e:  # noqa: BLE001
@@ -404,6 +484,9 @@ async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str) ->
         if entry is not None:
             entry.outcome = outcome
             entry.error = (f"{entry.error}; {error}" if entry.error and error else error or entry.error)[:500]
+            if entry.alarm_id is not None and entry.tenant_id is not None:
+                from app.audit import timeline_changed
+                timeline_changed(db, entry.tenant_id, entry.alarm_id)          # "delivered" shows on the timeline
         if outcome in ("failed", "undelivered"):
             row = await db.get(PlatformSettings, 1)
             if row is not None:
@@ -742,6 +825,7 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
     try:
         _, db_slots = _slots()
         plan: list[tuple[User, str, str, Alarm]] = []
+        auto: list[tuple[int, int]] = []                 # (alarm id, tracker id) to dispatch
         async with db_slots, sessionmaker()() as db:
             cfg = await config(db)
             if cfg is None:
@@ -752,13 +836,32 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
                 log.info("sms: alarms %s confirmed but over %d s old: not texted", old, CONFIRM_MAX_AGE_S)
             alarms = [a for a in alarms if _recent(a)]
             by = await db.get(User, by_id)
+            from app.models import Tenant, Tracker
+            from app.services import dispatch
             for tenant_id in sorted({a.tenant_id for a in alarms}):
                 group = [a for a in alarms if a.tenant_id == tenant_id]
                 users = (await db.scalars(select(User).where(User.tenant_id == tenant_id, User.is_active.is_(True),
                                                              User.phone != "", User.sms_level != "off",
                                                              User.sms_when.in_(("confirmed", "both")),
-                                                             User.sms_consent == "yes", User.id != by_id))).all()
+                                                             User.sms_consent == "yes"))).all()
+                # Auto-dispatch: the guards among them (people linked to a tracked router or phone) aren't all texted;
+                # only the closest one is sent (app/services/dispatch.py), even when that guard is the one who
+                # confirmed it (the user, 2026-10-13: guards may confirm alarms themselves). Nobody with a usable
+                # position: all get the confirmed text, as before. The confirmed text never goes to whoever confirmed.
+                if dispatch.auto_on(await db.get(Tenant, tenant_id)):
+                    linked = set((await db.scalars(select(Tracker.user_id).where(
+                        Tracker.tenant_id == tenant_id, Tracker.enabled.is_(True), Tracker.user_id.is_not(None)))).all())
+                    newest = max(group, key=lambda a: a.id)
+                    guards = {u.id for u in users if u.id in linked and (u.sms_sites is None or newest.site_id in u.sms_sites)}
+                    if guards:
+                        pick = None if await dispatch.already(db, newest.id) else await dispatch.pick_closest(db, newest, guards)
+                        if pick is not None or await dispatch.already(db, newest.id):
+                            users = [u for u in users if u.id not in guards]
+                        if pick is not None:
+                            auto.append((newest.id, pick["tracker_id"]))
                 for u in users:
+                    if u.id == by_id:
+                        continue
                     mine = [a for a in group if u.sms_sites is None or a.site_id in u.sms_sites]
                     if not mine:
                         continue
@@ -768,6 +871,8 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
                     plan.append((u, confirmed_text(newest, alarm_links.url(token), by.label if by else "", len(mine) - 1),
                                  token, newest))
             await db.commit()
+        for alarm_id, tracker_id in auto:
+            _spawn(_auto_dispatch(alarm_id, tracker_id, by))
         pictures = {}
         if plan and cfg.pictures:
             for a in {a.id: a for *_, a in plan}.values():
@@ -776,6 +881,14 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
             _spawn(_send(cfg, u, body, "confirmed", a, arrived, alarm_links.picture_url(token) if pictures.get(a.id) else ""))
     except Exception:  # noqa: BLE001
         log.exception("sms: confirmed alarms %s could not be texted", alarm_ids)
+
+
+async def _auto_dispatch(alarm_id: int, tracker_id: int, by: User | None) -> None:
+    from app.services import dispatch
+    try:
+        await dispatch.dispatch(alarm_id, tracker_id, by, auto=True)
+    except dispatch.DispatchError as e:
+        log.error("sms: auto-dispatch for alarm %s failed: %s", alarm_id, e)
 
 
 async def _handle_withdrawn(changes: list[tuple[int, str]], by_id: int) -> None:

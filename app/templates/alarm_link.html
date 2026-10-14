@@ -7,12 +7,28 @@
     <span class="brand-title">Alarm Portal</span>
   </div>
   {% if state == "ok" %}
+  {% if sent_to %}<div class="card link-card link-share" id="link-share">
+    <div class="mdt" role="group" aria-label="Your status">
+      <button type="button" class="btn mdt-btn mdt-en_route" data-status="en_route">En route</button>
+      <button type="button" class="btn mdt-btn mdt-on_scene" data-status="on_scene">On scene</button>
+      <button type="button" class="btn mdt-btn mdt-clear" data-status="clear">Clear</button>
+    </div>
+    <div id="mdt-state" class="share-line muted" role="status" aria-live="polite"></div>
+    <div class="row share-actions" style="margin:10px 0 0">
+      <button class="btn btn-primary share-big" type="button" id="link-share-start">&#128205; Share my location now</button>
+      <button class="btn share-big" type="button" id="link-share-stop" hidden>Stop sharing</button>
+    </div>
+    <div id="link-share-state" class="share-line">Lets dispatch see where you are while this page is open.</div>
+    <div id="link-share-facts" class="muted small-print"></div>
+    {% include "_location_help.html" %}
+  </div>{% endif %}
   <div class="card link-card" id="link-alarm">
     <div class="link-title">
       <span class="chip p{{ alarm.priority }}">{{ {1: "Critical", 2: "Alarm", 3: "Warning"}[alarm.priority] }}</span>
       {% if alarm.verdict == "real" %}<span class="chip p1">Confirmed real{% if alarm.verdict_by %} by {{ alarm.verdict_by }}{% endif %}</span>
       {% elif alarm.verdict == "false" %}<span class="chip online">False alarm: stand down</span>
       {% elif alarm.state == "acknowledged" %}<span class="chip online">Acknowledged{% if alarm.acked_by %} by {{ alarm.acked_by }}{% endif %}</span>{% endif %}
+      {% if alarm.call_state == "active" %}<span class="chip p1">Active call</span>{% elif alarm.call_state == "ended" %}<span class="chip online">Call ended: you can clear</span>{% endif %}
       <h1>{{ alarm.caption or alarm.event_type }}</h1>
     </div>
     <dl class="link-facts">
@@ -60,5 +76,5 @@
 </div>
 {% endblock %}
 {% block scripts %}{% if state == "ok" %}
-<script>window.PORTAL = {{ {"clip": clip_config, "alarm": alarm, "token": token} | tojson }};</script>
+<script>window.PORTAL = {{ {"clip": clip_config, "alarm": alarm, "token": token, "canShare": sent_to != "", "status": guard_status} | tojson }};</script>
 <script type="module" src="{{ asset('js/alarm_link.js') }}"></script>{% endif %}{% endblock %}

@@ -223,3 +223,24 @@ def test_rule_delays_reports_the_effective_delay_per_event():
         "l1": ("LDAP sync issue", "system", 21600),
         "s1": ("Storage issue", "system", 30),
     }
+
+
+async def test_tagged_only_ingest_and_the_rules_list(session, admin):
+    from app.services.alarm_filter import Policy
+    from app.services.poller import describe_rules
+    tenant, _ = admin
+    site = await make_site(session, tenant)
+    p = Policy(tagged_only=True)
+    rows = [{**nx_row(5_000_000, action_id="a1"), "ruleId": "r-tag"}, {**nx_row(5_000_100, action_id="a2", caption="Gate"), "ruleId": "r-plain"}]
+    created = await ingest(session, site, rows, {}, policy=p, rule_levels={"r-tag": "warning"}, known_rules={"r-tag", "r-plain"})
+    assert [(a.rule_id, a.priority) for a in created] == [("r-tag", 3)]
+    rules = [{"id": "{r-tag}", "comment": "Front gate #warning #24h", "enabled": True, "event": {"type": "analytics"},
+              "action": {"type": "writeToLog", "intervalS": 30}},
+             {"id": "{r-plain}", "comment": "", "enabled": True, "event": {"type": "softTrigger", "triggerName": "Panic"},
+              "action": {"type": "writeToLog"}},
+             {"id": "{r-off}", "comment": "Old #critical", "enabled": False, "event": {"type": "analytics"}, "action": {}}]
+    out = {r["id"]: r for r in describe_rules(rules, p)}
+    assert (out["r-tag"]["level"], out["r-tag"]["always"], out["r-tag"]["delayed"]) == ("warning", True, True)
+    assert out["r-plain"]["level"] == "ignore" and "tagged rules only" in out["r-plain"]["why"]
+    assert out["r-off"]["level"] == "off"
+    assert {r["id"]: r["level"] for r in describe_rules(rules, Policy())}["r-plain"] == "critical"   # setting off: its default

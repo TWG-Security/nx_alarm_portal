@@ -1,8 +1,9 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
+import { openRuleEditor } from "./rule_editor.js";
 
 const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
@@ -29,10 +30,30 @@ function renderStats() {
   document.getElementById("stat-offline").textContent = offline;
 }
 
+// The Sites section folds away like Guards (remembered in this browser). Folded, its header still shows the count
+// and, in red, how many alarms are open across the sites.
+const SITES_KEY = "twg-sites-collapsed";
+let sitesCollapsed = (() => { try { return localStorage.getItem(SITES_KEY) === "1"; } catch { return false; } })();
+const CHEVRON = '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+function renderSitesHead(list) {
+  const open = list.reduce((n, { st }) => n + st.c[1] + st.c[2], 0);
+  document.getElementById("sites-head").innerHTML = `<button type="button" class="guard-toggle" id="sites-toggle" aria-expanded="${!sitesCollapsed}"
+      title="${sitesCollapsed ? "Show" : "Hide"} the sites list"><span class="guard-chev">${CHEVRON}</span><h3>Sites</h3>
+      <span class="guard-count">${list.length}</span>${open ? `<span class="badge" title="Open alarms">${open}</span>` : ""}</button>`;
+  document.getElementById("site-list").hidden = sitesCollapsed;
+}
+document.getElementById("sites-head").addEventListener("click", (e) => {
+  if (!e.target.closest("#sites-toggle")) return;
+  sitesCollapsed = !sitesCollapsed;
+  try { localStorage.setItem(SITES_KEY, sitesCollapsed ? "1" : "0"); } catch { /* applied, just not remembered */ }
+  renderSites();
+});
+
 function renderSites() {
   const ul = document.getElementById("site-list");
   const list = [...sites.values()].map((s) => ({ s, st: stateOf(s) }))
     .sort((a, b) => SEVERITY[a.st.marker] - SEVERITY[b.st.marker] || a.s.name.localeCompare(b.s.name));
+  renderSitesHead(list);
   if (!list.length) {
     ul.innerHTML = `<li class="empty">No sites yet.${CFG.isAdmin ? ' <a href="/sites/new">Add the first site</a>.' : ""}</li>`;
     return;
@@ -64,7 +85,7 @@ function renderDetail() {
       ${s.status_detail ? `<dt>Detail</dt><dd>${esc(s.status_detail)}</dd>` : ""}
       <dt>Last contact</dt><dd>${relTime(s.last_seen_at)}</dd>
       <dt>Alarm feed</dt><dd>${s.push ? '<span class="chip online">Live push</span>' : s.push === false ? '<span class="chip">Polling only (5 s)</span>' : "—"}</dd>
-      <dt>NX rules</dt><dd>${ruleHealthHtml(s)}</dd>
+      <dt>NX rules</dt><dd>${ruleHealthHtml(s)} <button type="button" class="btn btn-sm" data-rules title="Every NX rule the portal read for this site, and what it does here">View NX rules</button></dd>
       <dt>NX</dt><dd>${esc(s.nx_site_name || "—")} ${s.nx_version ? `<span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
       <dt>Cameras</dt><dd>${s.camera_count}</dd>
       ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
@@ -72,17 +93,158 @@ function renderDetail() {
     <div style="display:flex;gap:8px;flex-wrap:wrap">
       ${s.lat != null ? `<button class="btn btn-sm btn-primary" type="button" data-plan title="Aerial view from straight above, with this site's cameras">Top-down view</button>
         <button class="btn btn-sm" type="button" data-globe title="Fly into a 3D aerial view of this site">3D view</button>` : ""}
+      <button class="btn btn-sm" type="button" data-check title="Ask NX now: status, cameras, rules and new events (instead of waiting for the next refresh)">Check now</button>
       <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all">Alarm history</a>
       ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">Edit site</a>` : ""}
     </div>`;
 }
 
+// ---------------------------------------------------------------- site check + NX rules list
+const LEVEL_CHIP = { critical: '<span class="chip p1">Critical</span>', alarm: '<span class="chip p2">Alarm</span>',
+  warning: '<span class="chip p3">Warning</span>', ignore: '<span class="chip">Ignored</span>', off: '<span class="chip">Off in NX</span>' };
+const rulesDlg = document.createElement("dialog");
+rulesDlg.className = "rules-dialog";
+document.body.append(rulesDlg);
+// View filter (remembered in this browser) and, for administrators, the company switch and per-rule editing.
+const RULES_FILTER_KEY = "twg-rules-filter";
+let rulesFilter = (() => { try { return localStorage.getItem(RULES_FILTER_KEY) || "all"; } catch { return "all"; } })();
+let rulesState = null;          // { s, v } the list on screen
+let editingRule = null;         // rule id being edited
+const stripTags = (t) => (t || "").replace(/(^|\s)#(critical|alarm|warning|ignore|24h)\b/gi, " ").replace(/\s{2,}/g, " ").trim();
+function editorRow(r) {
+  return `<tr class="rule-editor"><td colspan="4"><div class="rule-edit-grid" data-rule-form="${esc(r.id)}">
+      <label>Level in the portal <select data-re="level">${[["none", "No tag (event type decides; ignored with tagged rules only)"], ["critical", "#critical"], ["alarm", "#alarm"], ["warning", "#warning"], ["ignore", "#ignore"]]
+        .map(([v, l]) => `<option value="${v}" ${(r.tag || "none") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
+      <label class="check"><input type="checkbox" data-re="always" ${r.always ? "checked" : ""}> <span><b>#24h</b>: raise even while the site is disarmed</span></label>
+      <label>Title / Comment (tags are added for you) <input type="text" data-re="comment" maxlength="400" value="${esc(stripTags(r.comment))}"></label>
+      <label class="check"><input type="checkbox" data-re="enabled" ${r.enabled ? "checked" : ""}> <span>Rule is on in NX</span></label>
+      <label>Interval of action (seconds; 0 = off, every event comes through at once)
+        <input type="number" min="0" max="86400" data-re="interval" value="${r.interval_s}" ${r.action_has_login ? "disabled" : ""}>
+        ${r.action_has_login ? '<small class="muted">This rule\'s action holds a login: change its interval in Nx Witness.</small>' : r.interval_s ? '<small class="text-warn">Over 0 holds repeat events back.</small>' : ""}</label>
+      <div class="rule-edit-actions"><button type="button" class="btn btn-sm" data-re-cancel>Cancel</button>
+        <button type="button" class="btn btn-sm btn-primary" data-re-save>Save in NX</button></div>
+    </div></td></tr>`;
+}
+function paintRules(s, v, error = "") {
+  rulesState = { s, v };
+  const raised = v.rules.filter((r) => !["ignore", "off"].includes(r.level)).length;
+  const shown = rulesFilter === "tagged" ? v.rules.filter((r) => r.tag) : v.rules;
+  const admin = CFG.isAdmin;
+  rulesDlg.innerHTML = `<div class="rules-head"><div><h2>NX rules · ${esc(s.name)}</h2>
+      <div class="muted small-print">${v.read_at ? `Read from NX ${esc(relTime(v.read_at * 1000))}` : "Not read yet"} · ${v.rules.length} rules, ${raised} raise alarms here
+      ${v.tagged_only ? " · <b>tagged rules only</b> (Settings → Alarm levels)" : ""}</div></div>
+      <div style="display:flex;gap:6px;flex:0 0 auto;align-items:center;flex-wrap:wrap;justify-content:flex-end">
+      <div class="seg" role="group" aria-label="Show"><button type="button" data-rules-filter="all" class="${rulesFilter === "all" ? "active" : ""}">All rules</button>
+        <button type="button" data-rules-filter="tagged" class="${rulesFilter === "tagged" ? "active" : ""}">Tagged only (${v.rules.filter((r) => r.tag).length})</button></div>
+      ${admin && v.readable !== false ? '<button type="button" class="btn btn-sm btn-primary" data-rule-new>+ New rule</button>' : ""}
+      <button type="button" class="btn btn-sm" data-rules-check>Check now</button>
+      <button type="button" class="btn btn-sm" data-rules-close aria-label="Close">✕</button></div></div>
+    ${error ? `<div class="alert alert-error">Check failed: ${esc(error)}</div>` : ""}
+    ${admin ? `<label class="check rules-switch"><input type="checkbox" data-rules-tagged-only ${v.tagged_only ? "checked" : ""}>
+      <span><b>Only NX rules tagged #critical, #alarm or #warning raise alarms</b> <span class="muted">(every site of this company; same as Settings → Alarm levels)</span></span></label>` : ""}
+    ${v.readable === false ? `<div class="alert alert-error"><b>This site's NX account can't read rules</b> (NX answered 403), so #tags can't be seen${v.tagged_only
+      ? " and <b>every event comes in</b>: tagged rules only can't be applied here" : ""}. Give the NX account rule-read rights (e.g. the Power Users group).</div>` : ""}
+    ${shown.length ? `<div class="table-wrap"><table class="rules-table"><thead><tr><th>In the portal</th><th>NX rule (Title / Comment)</th><th>Event</th><th>Notes</th></tr></thead><tbody>
+      ${shown.map((r) => `<tr class="${["ignore", "off"].includes(r.level) ? "rule-off" : ""}" data-rule-row="${esc(r.id)}">
+        <td>${LEVEL_CHIP[r.level] || esc(r.level)}<div class="muted small-print">${esc(r.why)}</div></td>
+        <td><b>${esc(r.name)}</b>${r.tag || r.always ? `<div class="small-print">${r.tag ? `<code>#${esc(r.tag)}</code> ` : ""}${r.always ? "<code>#24h</code>" : ""}</div>` : ""}</td>
+        <td>${esc(r.event_label)}<div class="muted small-print mono">${esc(r.event_type)} → ${esc(r.action)}</div></td>
+        <td class="small-print">${r.delayed ? `<span class="text-warn">Repeats held back up to ${r.interval_s} s (Interval of action)</span>` : ""}
+          ${r.always && v.tagged_only && !r.tag ? '<span class="text-warn">#24h but no level tag: ignored</span>' : ""}
+          ${admin && v.readable !== false ? `<div><button type="button" class="btn btn-sm" data-rule-edit="${esc(r.id)}">Edit</button></div>` : ""}</td></tr>
+        ${editingRule === r.id ? editorRow(r) : ""}`).join("")}
+      </tbody></table></div>` : `<p class="muted">${v.readable === false ? "" : rulesFilter === "tagged" && v.rules.length ? "No tagged rules on this site." : "No rules read yet. Press Check now."}</p>`}`;
+}
+async function openRules(siteId, check = false) {
+  const s = sites.get(siteId);
+  if (!s) return;
+  if (!rulesDlg.open) rulesDlg.showModal();
+  ruleEditor = null;
+  rulesDlg.dataset.site = siteId;
+  rulesDlg.innerHTML = `<p class="muted">${check ? "Checking with NX…" : "Loading…"}</p>`;
+  try {
+    if (check) {
+      const r = await api(`/api/sites/${siteId}/check`, { method: "POST" });
+      saveSiteData(r.site);
+      paintRules(sites.get(siteId), r.rules, r.error);
+    } else paintRules(s, await api(`/api/sites/${siteId}/rules`));
+  } catch (err) { rulesDlg.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div><button type="button" class="btn btn-sm" data-rules-close>Close</button>`; }
+}
+function saveSiteData(data) { if (data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); } }
+// The full rule editor (rule_editor.js) takes over the dialog; "Quick edit" (tags, on/off, interval) is the fallback
+// when the site's NX can't describe its rule engine.
+let ruleEditor = null;
+function openEditor(ruleId) {
+  const { s } = rulesState;
+  editingRule = null;
+  const back = (v) => { ruleEditor = null; paintRules(sites.get(s.id) || s, v || rulesState.v); };
+  ruleEditor = openRuleEditor(rulesDlg, { site: s, ruleId, onDone: (v) => back(v), onCancel: () => back(),
+    onQuickEdit: (id) => { ruleEditor = null; editingRule = id; paintRules(rulesState.s, rulesState.v); } });
+}
+const editorDirty = () => ruleEditor?.dirty() && !confirm("Close without saving your changes to this rule?");
+rulesDlg.addEventListener("cancel", (e) => { if (editorDirty()) e.preventDefault(); else ruleEditor = null; });
+rulesDlg.addEventListener("click", async (e) => {
+  if (e.target === rulesDlg && ruleEditor) { if (editorDirty()) return; ruleEditor = null; return rulesDlg.close(); }
+  if (ruleEditor) return;                                    // the editor handles its own clicks
+  if (e.target.closest("[data-rules-close]") || e.target === rulesDlg) { editingRule = null; return rulesDlg.close(); }
+  if (e.target.closest("[data-rules-check]")) return openRules(Number(rulesDlg.dataset.site), true);
+  const f = e.target.closest("[data-rules-filter]");
+  if (f && rulesState) {
+    rulesFilter = f.dataset.rulesFilter;
+    try { localStorage.setItem(RULES_FILTER_KEY, rulesFilter); } catch { /* applied, just not remembered */ }
+    return paintRules(rulesState.s, rulesState.v);
+  }
+  const ed = e.target.closest("[data-rule-edit]");
+  if (ed && rulesState) return openEditor(ed.dataset.ruleEdit);
+  if (e.target.closest("[data-rule-new]") && rulesState) return openEditor(null);
+  if (e.target.closest("[data-re-cancel]") && rulesState) { editingRule = null; return paintRules(rulesState.s, rulesState.v); }
+  const save = e.target.closest("[data-re-save]");
+  if (save && rulesState) {
+    const form = save.closest("[data-rule-form]"), id = form.dataset.ruleForm, r = rulesState.v.rules.find((x) => x.id === id);
+    const val = (k) => form.querySelector(`[data-re="${k}"]`);
+    const body = { level: val("level").value, always: val("always").checked, comment: val("comment").value.trim(), enabled: val("enabled").checked };
+    if (!val("interval").disabled) body.interval_s = Math.max(0, Math.min(86400, Number(val("interval").value) || 0));
+    if (!confirm(`Change this rule on ${rulesState.s.name}'s NX server?\n\n${r.name}`)) return;
+    save.disabled = true; save.textContent = "Saving…";
+    try {
+      const res = await api(`/api/sites/${rulesState.s.id}/rules/${encodeURIComponent(id)}`, { method: "PATCH", body });
+      editingRule = null;
+      paintRules(sites.get(rulesState.s.id) || rulesState.s, res.rules);
+      toast(res.changed.length ? `Saved in NX: ${esc(res.changed.join(", "))}` : "Nothing changed");
+    } catch (err) { toast(esc(err.message), { kind: "error" }); save.disabled = false; save.textContent = "Save in NX"; }
+  }
+});
+rulesDlg.addEventListener("change", async (e) => {
+  if (!e.target.matches("[data-rules-tagged-only]") || !rulesState) return;
+  const on = e.target.checked;
+  if (!confirm(on ? "Only NX rules tagged #critical, #alarm or #warning will raise alarms, on every site of this company. Events from other rules are ignored. Turn it on?"
+                  : "Every NX rule will raise alarms by its event type again. Turn tagged rules only off?")) { e.target.checked = !on; return; }
+  try {
+    await api("/api/settings/tagged-only", { method: "PUT", body: { on } });
+    paintRules(rulesState.s, await api(`/api/sites/${rulesState.s.id}/rules`));
+    toast(on ? "Tagged rules only: on" : "Tagged rules only: off");
+  } catch (err) { toast(esc(err.message), { kind: "error" }); e.target.checked = !on; }
+});
+document.getElementById("site-detail").addEventListener("click", async (e) => {
+  const s = sites.get(selectedId);
+  if (!s) return;
+  if (e.target.closest("[data-rules]")) return openRules(s.id);
+  const btn = e.target.closest("[data-check]");
+  if (!btn) return;
+  btn.disabled = true; btn.textContent = "Checking…";
+  try {
+    const r = await api(`/api/sites/${s.id}/check`, { method: "POST" });
+    saveSiteData(r.site);
+    toast(r.error ? `${esc(s.name)}: ${esc(r.error)}` : `${esc(s.name)} checked: ${esc(STATUS[r.site.status] || r.site.status)}, ${r.site.camera_count} cameras, ${r.rules.rules.length} NX rules`,
+          r.error ? { kind: "error" } : {});
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+  finally { btn.disabled = false; btn.textContent = "Check now"; }
+});
+
 // ---------------------------------------------------------------- right: live feed
 const FEED_MAX = 100;
 function feedRows() {
-  return [...openAlarms.values()]
-    .filter((a) => inView(a) && (!selectedId || a.site_id === selectedId))
-    .sort((a, b) => a.priority - b.priority || b.event_ts_ms - a.event_ts_ms);
+  return alarmQueue((a) => !selectedId || a.site_id === selectedId);       // critical first, then oldest first
 }
 
 function renderFeed() {
@@ -253,6 +415,7 @@ async function openGlobeView(site) {
 }
 
 function closeGlobeView() {
+  if (cv) { cv.dirty = false; closeCamView(); }
   closeCamPanel(); closePlacing(); models.hide();
   $id("globe-model").hidden = true; $id("globe-model-show").hidden = true;
   try { globe?.destroy(); } catch (err) { console.error(err); }
@@ -395,7 +558,10 @@ async function openCamPanel(siteId, deviceId) {
   camPanel.classList.toggle("cam-alarm", !!a);
   camPanel.innerHTML = `<div class="cam-head"><span><b>${esc(p.name || "Camera")}</b> <span class="muted">· ${esc(s.name)}</span></span>
       <span>${a ? `<button type="button" data-cam-alarm="${a.id}" title="Open this alarm">ALARM ▸</button>` : ""}<button type="button" data-cam-close aria-label="Close">✕</button></span></div>
-    <div class="cam-live"></div>`;
+    <div class="cam-live"></div>
+    ${globe && (p.fov || 60) < 180 ? `<div class="cam-actions"><button type="button" class="btn btn-sm" data-cam-view>View from camera</button>
+      ${CFG.isAdmin ? '<button type="button" class="btn btn-sm" data-cam-calibrate title="Line the camera\'s picture up with the 3D view">Calibrate</button>' : ""}</div>` : ""}`;
+  globe?.selectCamera(siteId, deviceId);
   camPanel.hidden = false;
   const { mountLive } = await import("./live.js");
   if (camOpen?.deviceId !== deviceId) return;
@@ -403,14 +569,154 @@ async function openCamPanel(siteId, deviceId) {
     { label: false, base: `/media/sites/${siteId}/cameras/${encodeURIComponent(deviceId)}` });
 }
 function closeCamPanel() {
+  globe?.selectCamera(null);
   try { camLive?.destroy(); } catch (err) { console.error(err); }
   camLive = null; camOpen = null; camPanel.hidden = true; camPanel.replaceChildren();
 }
 camPanel.addEventListener("click", (e) => {
   if (e.target.closest("[data-cam-close]")) return closeCamPanel();
+  if (e.target.closest("[data-cam-view]") && camOpen) return openCamView(camOpen.siteId, camOpen.deviceId, false);
+  if (e.target.closest("[data-cam-calibrate]") && camOpen) return openCamView(camOpen.siteId, camOpen.deviceId, true);
   const id = e.target.closest("[data-cam-alarm]")?.dataset.camAlarm;
   if (id) { const a = openAlarms.get(Number(id)); if (a) focusAlarm(a); }
 });
+
+// ---- View from camera + Calibrate (3D view). The 3D view jumps to the camera's pose (globe.viewFromCamera) and the
+// camera's live picture lies over it at the same width, half see-through. Calibrate (admins): drag on the picture
+// to turn / tilt, scroll to zoom (field of view), arrow keys for fine steps, numbers for height, roll and position,
+// until the picture and the 3D scene line up; Save stores the pose (height_m, tilt, roll, heading, fov, lat/lng).
+const camViewEl = $id("cam-view"), camViewImg = $id("cam-view-img"), camViewDrag = $id("cam-view-drag"), camCal = $id("cam-cal");
+let cv = null;      // { siteId, deviceId, ctl, start, timer, calibrating, dirty }
+const CAL_FIELDS = [["heading", "Turn", "°", 0.5], ["tilt", "Tilt down", "°", 0.25], ["fov", "Width (field of view)", "°", 0.5],
+                    ["roll", "Roll", "°", 0.25], ["height_m", "Height above ground", "m", 0.1]];
+function fitPicture() {
+  if (!cv) return;
+  const box = camViewEl.getBoundingClientRect(), aspect = camViewImg.naturalWidth ? camViewImg.naturalWidth / camViewImg.naturalHeight : 16 / 9;
+  const h = box.width / aspect;              // the 3D view's field of view spans its full width: so does the picture
+  Object.assign(camViewImg.style, { width: `${box.width}px`, height: `${h}px`, top: `${(box.height - h) / 2}px` });
+  if (cv.ctl.pose.aspect !== aspect) cv.ctl.setPose({ aspect });
+}
+function refreshPicture() {
+  if (!cv) return;
+  const url = `/media/sites/${cv.siteId}/cameras/${encodeURIComponent(cv.deviceId)}/live.jpg?t=${Date.now()}`;
+  const img = new Image();
+  img.onload = () => { if (cv) { camViewImg.src = img.src; fitPicture(); } };
+  img.src = url;
+}
+function openCamView(siteId, deviceId, calibrate) {
+  const s = sites.get(siteId), p = s?.camera_places?.[deviceId];
+  if (!globe || !p) return;
+  closeCamView();
+  const ctl = globe.viewFromCamera({ siteId, deviceId, ...p });
+  cv = { siteId, deviceId, ctl, start: ctl.pose, calibrating: false, dirty: false, saved: "" };
+  $id("cam-view-name").textContent = p.name || "Camera";
+  $id("cam-view-cal").hidden = !CFG.isAdmin;
+  camViewImg.style.opacity = String($id("cam-view-opacity").value / 100);
+  camViewEl.hidden = false;
+  camPanel.hidden = true; globeBar.hidden = true; hud.hidden = true;      // just the camera's view
+  refreshPicture();
+  cv.timer = setInterval(() => { if (!document.hidden) refreshPicture(); }, 1500);
+  if (calibrate && CFG.isAdmin) startCalibrate();
+}
+function closeCamView() {
+  if (!cv) return;
+  if (cv.dirty && !confirm("Leave without saving the calibration?")) return false;
+  clearInterval(cv.timer);
+  cv.ctl.exit();
+  cv = null;
+  camViewEl.hidden = true; camCal.hidden = true; camViewDrag.hidden = true;
+  camViewImg.removeAttribute("src");
+  if (globe) { globeBar.hidden = false; hud.hidden = false; }
+  if (camOpen) camPanel.hidden = false;
+  return true;
+}
+function startCalibrate() {
+  cv.calibrating = true;
+  camViewDrag.hidden = false;
+  $id("cam-view-cal").hidden = true;
+  if (Number($id("cam-view-opacity").value) > 70 || Number($id("cam-view-opacity").value) < 30) { $id("cam-view-opacity").value = 55; camViewImg.style.opacity = "0.55"; }
+  paintCal();
+}
+function paintCal() {
+  if (!cv?.calibrating) return;
+  const pz = cv.ctl.pose;
+  camCal.hidden = false;
+  camCal.innerHTML = `<div class="cam-cal-head"><b>Calibrate</b> <span class="muted">Drag the picture to turn / tilt · scroll to zoom · arrow keys for fine steps</span></div>
+    <div class="cam-cal-grid">${CAL_FIELDS.map(([k, label, unit, step]) => `<label>${label}
+      <span class="cam-cal-num"><button type="button" data-cal-step="${k}" data-by="${-step}" aria-label="Less">−</button>
+      <input type="number" data-cal="${k}" step="${step}" value="${(+pz[k]).toFixed(k === "height_m" ? 2 : 2)}">${unit}
+      <button type="button" data-cal-step="${k}" data-by="${step}" aria-label="More">+</button></span></label>`).join("")}
+      <label>Move the camera <span class="cam-cal-nudge">${[["N", 0, 0.25], ["S", 0, -0.25], ["W", -0.25, 0], ["E", 0.25, 0]].map(([d, e, n]) =>
+        `<button type="button" data-cal-move="${e},${n}" title="Move 25 cm ${d}">${d}</button>`).join("")}</span></label></div>
+    <div class="cam-cal-foot"><span class="muted" id="cam-cal-say">${esc(cv.saved || (cv.dirty ? "Not saved yet" : "Line up edges, corners and posts in both."))}</span>
+      <button type="button" class="btn btn-sm" data-cal-reset>Reset</button>
+      <button type="button" class="btn btn-sm btn-primary" data-cal-save>Save</button></div>`;
+}
+const clampDeg = (k, v) => (k === "heading" ? ((v % 360) + 360) % 360 : k === "tilt" ? Math.max(-90, Math.min(90, v))
+  : k === "roll" ? Math.max(-45, Math.min(45, v)) : k === "fov" ? Math.max(5, Math.min(170, v)) : Math.max(0, Math.min(300, v)));
+function nudge(values) {
+  if (!cv?.calibrating) return;
+  const pz = cv.ctl.pose, next = {};
+  for (const [k, v] of Object.entries(values)) next[k] = k === "lat" || k === "lng" ? v : clampDeg(k, v);
+  cv.ctl.setPose(next);
+  cv.dirty = true; cv.saved = "";
+  for (const [k] of CAL_FIELDS) {
+    const el = camCal.querySelector(`[data-cal="${k}"]`);
+    if (el && document.activeElement !== el) el.value = (+cv.ctl.pose[k]).toFixed(2);
+  }
+  const say = $id("cam-cal-say"); if (say) say.textContent = "Not saved yet";
+  void pz;
+}
+async function saveCalibration() {
+  const pz = cv.ctl.pose, s = sites.get(cv.siteId), p = s?.camera_places?.[cv.deviceId] || {};
+  const body = { lat: pz.lat, lng: pz.lng, heading: pz.heading, fov: Math.round(pz.fov * 100) / 100, range_m: p.range_m || pz.range,
+                 height_m: Math.round(pz.height_m * 100) / 100, tilt: Math.round(pz.tilt * 100) / 100, roll: Math.round(pz.roll * 100) / 100 };
+  try {
+    await saveSite(await api(`/api/sites/${cv.siteId}/cameras/${encodeURIComponent(cv.deviceId)}`, { method: "PUT", body }));
+    cv.dirty = false; cv.saved = "Saved ✓"; cv.start = cv.ctl.pose;
+    paintCal();
+    toast("Calibration saved");
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+}
+$id("cam-view-exit").addEventListener("click", () => closeCamView());
+$id("cam-view-cal").addEventListener("click", () => cv && startCalibrate());
+$id("cam-view-opacity").addEventListener("input", (e) => { camViewImg.style.opacity = String(e.target.value / 100); });
+camCal.addEventListener("click", (e) => {
+  const b = e.target.closest("button");
+  if (!b || !cv) return;
+  if (b.dataset.calStep) { const k = b.dataset.calStep; nudge({ [k]: cv.ctl.pose[k] + Number(b.dataset.by) }); return; }
+  if (b.dataset.calMove) {
+    const [de, dn] = b.dataset.calMove.split(",").map(Number), pz = cv.ctl.pose;
+    nudge({ lat: pz.lat + dn / 111320, lng: pz.lng + de / (111320 * Math.cos(pz.lat * Math.PI / 180)) });
+    return;
+  }
+  if (b.matches("[data-cal-reset]")) { cv.ctl.setPose(cv.start); cv.dirty = false; paintCal(); return; }
+  if (b.matches("[data-cal-save]")) saveCalibration();
+});
+camCal.addEventListener("change", (e) => {
+  const k = e.target.dataset.cal, v = Number(e.target.value);
+  if (k && Number.isFinite(v)) nudge({ [k]: v });
+});
+// Drag the picture: left/right turns, up/down tilts (the scene follows the picture). Scroll zooms.
+let calDrag = null;
+camViewDrag.addEventListener("pointerdown", (e) => { if (!cv) return; calDrag = { x: e.clientX, y: e.clientY, pose: cv.ctl.pose }; camViewDrag.setPointerCapture(e.pointerId); });
+camViewDrag.addEventListener("pointermove", (e) => {
+  if (!calDrag || !cv) return;
+  const perPx = calDrag.pose.fov / camViewEl.getBoundingClientRect().width;      // degrees per screen pixel
+  nudge({ heading: calDrag.pose.heading - (e.clientX - calDrag.x) * perPx, tilt: calDrag.pose.tilt - (e.clientY - calDrag.y) * perPx });
+});
+camViewDrag.addEventListener("pointerup", () => { calDrag = null; });
+camViewDrag.addEventListener("wheel", (e) => { if (!cv) return; e.preventDefault(); nudge({ fov: cv.ctl.pose.fov * (e.deltaY > 0 ? 1.02 : 1 / 1.02) }); }, { passive: false });
+document.addEventListener("keydown", (e) => {
+  if (!cv) return;
+  if (e.key === "Escape") { if (!document.querySelector("dialog[open]")) closeCamView(); return; }   // Esc on an alarm pop-up only closes it
+  if (!cv.calibrating || e.target.matches("input, textarea")) return;
+  const fine = e.shiftKey ? 0.05 : 0.25, pz = cv.ctl.pose;
+  const k = { ArrowLeft: ["heading", -fine], ArrowRight: ["heading", fine], ArrowUp: ["tilt", -fine], ArrowDown: ["tilt", fine],
+              "+": ["fov", -fine * 2], "=": ["fov", -fine * 2], "-": ["fov", fine * 2] }[e.key];
+  if (k) { e.preventDefault(); nudge({ [k[0]]: pz[k[0]] + k[1] }); }
+});
+window.addEventListener("resize", fitPicture);
 
 // ---- place and edit cameras (admins). The editor in globe.js / plan.js does the mouse work; this panel
 // lists the site's cameras and shows/edits the numbers. Every finished change is saved at once.
@@ -593,6 +899,45 @@ feed.addEventListener("keydown", (e) => {
   const li = e.target.closest(".feed-item");
   if (li && e.key === "Enter") focusAlarm(openAlarms.get(Number(li.dataset.id)));
 });
+
+// ---------------------------------------------------------------- active calls (a guard was sent; open until End call)
+const calls = new Map();
+let callsSoon = null;
+async function loadCalls() {
+  try {
+    const rows = await api("/api/alarms?state=active&limit=100");
+    calls.clear();
+    rows.filter(inView).forEach((a) => calls.set(a.id, a));
+  } catch { return; }
+  renderCalls();
+}
+function renderCalls() {
+  const box = document.getElementById("calls");
+  // Acknowledged calls only: one still waiting for an operator is in the live feed below (no duplicates).
+  const rows = [...calls.values()].filter((a) => a.state !== "new").sort((a, b) => a.event_ts_ms - b.event_ts_ms);
+  box.hidden = !rows.length;
+  document.getElementById("calls-count").textContent = rows.length || "";
+  const html = rows.map((a) => `
+    <li class="feed-item call-item" data-call="${a.id}" tabindex="0">
+      <div class="feed-top"><span class="chip call-chip">Call</span>${a.verdict === "real" ? '<span class="chip p1">Real event</span>' : ""}${timerHtml(a.event_ts_ms)}</div>
+      <div class="title">${esc(a.caption)}</div>
+      <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b></div>
+      <div class="feed-actions"><button class="btn btn-sm btn-primary" data-call-open="${a.id}">Open call</button></div>
+    </li>`).join("");
+  const list = document.getElementById("calls-list");
+  if (list.dataset.html !== html) { list.innerHTML = html; list.dataset.html = html; }      // only redraw on a change
+}
+const reloadCalls = () => { clearTimeout(callsSoon); callsSoon = setTimeout(loadCalls, 300); };
+["alarm.timeline", "alarm.updated", "alarm.acked", "reconnect", "store"].forEach((ev) => on(ev, reloadCalls));
+document.getElementById("calls-list").addEventListener("click", (e) => {
+  const li = e.target.closest("[data-call]");
+  if (li) focusAlarm(calls.get(Number(li.dataset.call)));
+});
+document.getElementById("calls-list").addEventListener("keydown", (e) => {
+  const li = e.target.closest("[data-call]");
+  if (li && e.key === "Enter") focusAlarm(calls.get(Number(li.dataset.call)));
+});
+loadCalls();
 
 // ---------------------------------------------------------------- data + live updates
 async function loadSites() {

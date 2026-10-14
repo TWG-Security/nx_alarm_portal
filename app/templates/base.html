@@ -37,6 +37,7 @@
       <option value="{{ 'own' if scope.mode == 'own' else (scope.tenant_id if scope.tenant else 'all') }}" selected>
         {{ 'All companies' if scope.mode == 'all' else scope.tenant.label }}</option>
     </select>{% endif %}
+    <span id="sys-clock" class="sys-clock" title="Server time (NTP)">--:--:--</span>
     <span id="live-status" class="live-status" role="status" title="Connecting to live updates…">Connecting…</span>
     <button id="silence-btn" class="btn btn-sm btn-silence" type="button" hidden title="Stop repeating alarm sounds for 2 minutes">Silence 2 min</button>
     <button id="mute-toggle" class="btn icon-btn" type="button" title="Mute alarm sound" aria-label="Mute alarm sound">

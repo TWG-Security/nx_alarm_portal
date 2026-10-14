@@ -143,7 +143,8 @@ async def test_follow_up_notes_after_acknowledging(client, session, admin):
 
     assert r.status_code == 200, r.text
     assert (r.json()["text"], r.json()["by"]) == ("Police on scene 11:45", user.display_name)
-    assert sub.queue.get_nowait()[0] == "alarm.note"
+    got = [sub.queue.get_nowait() for _ in range(sub.queue.qsize())]
+    assert [e for e, _ in got] == ["alarm.timeline", "alarm.note"]               # the timeline grew, and the note itself
     await client.post(f"/api/alarms/{a.id}/notes", json={"text": "Keyholder called back, all clear"})
     notes = (await client.get(f"/api/alarms/{a.id}/notes")).json()
     assert [n["text"] for n in notes] == ["Police on scene 11:45", "Keyholder called back, all clear"]

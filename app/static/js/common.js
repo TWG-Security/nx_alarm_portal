@@ -34,9 +34,16 @@ export function fmtTime(v) {
   return new Date(v).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+// The server's clock (NTP-synced) as seen from this PC: clock.js measures the difference (GET /api/time). Times from
+// the server (alarms, positions) are compared with serverNow(), so a PC whose clock is off still shows the right
+// "active for" timers and "x min ago".
+let clockOffsetMs = 0;
+export const setClockOffset = (ms) => { clockOffsetMs = ms; };
+export const serverNow = () => Date.now() + clockOffsetMs;
+
 export function relTime(v) {
   if (!v) return "never";
-  const s = Math.round((Date.now() - (typeof v === "number" ? v : Date.parse(v))) / 1000);
+  const s = Math.round((serverNow() - (typeof v === "number" ? v : Date.parse(v))) / 1000);
   if (s < 60) return `${Math.max(s, 0)}s ago`;
   if (s < 3600) return `${Math.floor(s / 60)}m ago`;
   if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
@@ -52,9 +59,9 @@ export function fmtDuration(ms) {
   return h ? `${h}:${mmss}` : mmss;
 }
 // Any element with data-since="<epoch ms>" shows a live counter.
-export const timerHtml = (since) => `<span class="timer" data-since="${since}" title="Active since ${esc(fmtTime(since))}">${fmtDuration(Date.now() - since)}</span>`;
+export const timerHtml = (since) => `<span class="timer" data-since="${since}" title="Active since ${esc(fmtTime(since))}">${fmtDuration(serverNow() - since)}</span>`;
 setInterval(() => {
-  const now = Date.now();
+  const now = serverNow();
   document.querySelectorAll("[data-since]").forEach((el) => { el.textContent = fmtDuration(now - Number(el.dataset.since)); });
 }, 1000);
 
@@ -105,11 +112,18 @@ export async function loadOpenAlarms() {
   emit("store", { reason: "load" });
   // Anything that arrived while the live stream was down: sound it / pop it up now.
   if (storeLoaded) {
-    rows.filter((a) => !known.has(a.id) && Date.now() - a.event_ts_ms < CATCH_UP_MS)
+    rows.filter((a) => !known.has(a.id) && serverNow() - a.event_ts_ms < CATCH_UP_MS)
         .sort((a, b) => a.event_ts_ms - b.event_ts_ms)
         .forEach((a) => emit("alarm.arrived", a));
   }
   storeLoaded = true;
+}
+// Open alarms in working order: the most urgent level first, then the OLDEST first (the user, 2026-10-13: "the
+// oldest alarm should be up top first, so if there are multiple alarms at multiple sites the oldest is first").
+// The map's live feed and the alarm details' Next button both follow it.
+export function alarmQueue(keep = () => true) {
+  return [...openAlarms.values()].filter((a) => inView(a) && keep(a))
+    .sort((a, b) => a.priority - b.priority || a.event_ts_ms - b.event_ts_ms || a.id - b.id);
 }
 // Open alarms in view (optionally for one site).
 export function openCounts(siteId) {
@@ -409,7 +423,7 @@ function scheduleReconnect() {
 }
 
 const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarm.note", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push",
-  "tracker.moved", "tracker.removed"];
+  "tracker.moved", "tracker.removed", "alarm.timeline"];
 function connect() {
   es = new EventSource("/api/events");
   lastBeat = Date.now();

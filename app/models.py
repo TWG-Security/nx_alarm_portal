@@ -330,6 +330,13 @@ class Alarm(Base):
     site: Mapped[Site] = relationship(lazy="joined")
     acked_by: Mapped[User | None] = relationship(foreign_keys=[acked_by_id], lazy="joined")
     verdict_by: Mapped[User | None] = relationship(foreign_keys=[verdict_by_id], lazy="joined")
+    # A call: once a guard is dispatched the alarm is a call, and a Real event stays on screen (Active calls) until
+    # someone presses End call. "" = no call, "active", "ended". False alarm / Dismissed end it (app/services/calls.py).
+    call_state: Mapped[str] = mapped_column(String(10), default="", index=True)
+    call_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    call_ended_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    call_end_note: Mapped[str] = mapped_column(Text, default="")
+    call_ended_by: Mapped[User | None] = relationship(foreign_keys=[call_ended_by_id], lazy="joined")
 
 
 class AlarmNote(Base):
@@ -542,6 +549,17 @@ class Tracker(Base):
     checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     error: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    # The person carrying it: dispatch texts go to their phone (app/services/dispatch.py).
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    # Router online in InControl2 / phone page sharing. None = not known yet. The last position is kept when offline.
+    online: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    offline_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # source "phone": the guard's browser shares its location from /g/<token> (app/routers/share.py). The token's
+    # SHA-256 finds the tracker; the token itself is kept encrypted so the same link can be texted again.
+    share_hash: Mapped[str] = mapped_column(String(64), default="", index=True)
+    share_enc: Mapped[str] = mapped_column(Text, default="")
+    share_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    share_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class TrackerPoint(Base):

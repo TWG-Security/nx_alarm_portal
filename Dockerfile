@@ -1,4 +1,10 @@
 # syntax=docker/dockerfile:1
+# meshoptimizer (site 3D model simplification) ships as source only: build its wheel here, so the app image
+# needs no compiler.
+FROM python:3.12-slim AS wheels
+RUN apt-get update && apt-get install -y --no-install-recommends g++ && rm -rf /var/lib/apt/lists/*
+RUN pip wheel --no-cache-dir --no-deps -w /wheels meshoptimizer==0.2.30a0
+
 FROM python:3.12-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -10,7 +16,8 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY --from=wheels /wheels /wheels
+RUN pip install --no-cache-dir --find-links /wheels -r requirements.txt && rm -rf /wheels
 
 COPY alembic.ini ./
 COPY migrations ./migrations

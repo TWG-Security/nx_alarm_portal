@@ -69,6 +69,7 @@ export function modelPanel({ panel, button, site, globe, onSite }) {
       </div>
     </div>
     <div class="mp-sec mp-row">
+      ${r.kind === "mesh" && r.textured !== false && !r.lod ? `<button type="button" class="go" data-mp="rebuild" data-up="${r.up || "auto"}" title="Convert it again with levels of detail: far views load a light copy, close-ups load only what's near">Rebuild for smoother 3D</button>` : ""}
       ${r.kind === "mesh" ? `<button type="button" data-mp="rebuild" data-up="${r.up === "y" ? "z" : "y"}" title="Convert it again with the other axis pointing up">Lying on its side? Rebuild ${r.up === "y" ? "Z" : "Y"}-up</button>` : ""}
       <button type="button" data-mp="replace">Replace…</button>
       <button type="button" class="danger" data-mp="delete">Delete model</button>

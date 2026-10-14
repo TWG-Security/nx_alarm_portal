@@ -15,7 +15,7 @@ from app import platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, guards, links, pages, platform, site_models, sso, stream, tenants, tiles
+from app.routers import account, api, auth, guards, links, pages, platform, share, site_models, sso, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -28,7 +28,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # Sign-in pages a banned IP may not use. Signed-in sessions are never cut off by a ban.
-BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/")   # /a/: texted alarm links
+BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/", "/g/")   # /a/, /g/: texted links
 
 
 class BanGate:
@@ -64,6 +64,8 @@ async def lifespan(app: FastAPI):
         await site_models.resume()
         from app.services import trackers
         tasks.append(asyncio.create_task(trackers.run(), name="guard-trackers"))
+        from app.services import clock
+        tasks.append(asyncio.create_task(clock.run(), name="clock-check"))
     yield
     await site_models.shutdown()
     for t in tasks:
@@ -126,6 +128,13 @@ def create_app() -> FastAPI:
     async def healthz():
         return PlainTextResponse("ok")
 
+    @app.get("/api/time", include_in_schema=False)
+    async def server_time():
+        """The server's clock (pages correct their own with it) and whether it's NTP-synced (app/services/clock.py)."""
+        from fastapi.responses import JSONResponse
+        from app.services import clock
+        return JSONResponse(clock.public(), headers={"Cache-Control": "no-store"})
+
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
     app.add_middleware(VersionedStatic)     # outermost: /static/v/<hash>/... -> /static/..., cached for good
     app.include_router(auth.router)
@@ -140,6 +149,7 @@ def create_app() -> FastAPI:
     app.include_router(links.router)
     app.include_router(site_models.router)
     app.include_router(guards.router)
+    app.include_router(share.router)
     return app
 
 

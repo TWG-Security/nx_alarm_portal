@@ -399,6 +399,9 @@ def build_meshes(job: Path, src: Path, out: Path, up: str) -> dict:
     if up not in _TO_ENU:
         raise BuildError("Up axis must be auto, y or z")
     to_enu, to_gltf = np.array(_TO_ENU[up], float), np.array(_ENU_TO_GLTF, float)
+    lod = build_lod(job, files, out, up, meta)
+    if lod is not None:
+        return lod
     out.mkdir(parents=True, exist_ok=True)
     pieces, samples, faces, textured_any = [], [], 0, False
     rng = np.random.default_rng(0)
@@ -457,6 +460,39 @@ def build_meshes(job: Path, src: Path, out: Path, up: str) -> dict:
     result = {"kind": "mesh", "pieces": len(pieces), "faces": faces, "up": up, "textured": textured_any,
               "size_m": [round(float(v), 1) for v in hi - lo], "bytes": sum(p["bytes"] for p in pieces),
               "tileset": f"{out.name}/tileset.json", "georef": None}
+    if meta is not None:
+        g = terra_georef(meta, tuple(centre.tolist()))
+        result["georef"] = {"lat": g["lat"], "lng": g["lng"], "heading": g["heading"], "scale": g["scale"], "label": g["label"]}
+    return result
+
+
+def build_lod(job: Path, files: list[Path], out: Path, up: str, meta: Path | None) -> dict | None:
+    """Textured meshes (photogrammetry): tiles with levels of detail (app/services/model_lod.py). None if some
+    mesh has no texture or repeats its texture: those are converted one GLB per file, as before."""
+    import numpy as np
+    from app.services import model_lod
+    m, tex_dir = model_lod.Textured(), job / "lodtex"
+    try:
+        for n, path in enumerate(files, 1):
+            _status(job, f"Reading {path.name} ({n} of {len(files)})", 5 + int(33 * (n - 1) / len(files)))
+            enu = np.array(_TO_ENU["y" if path.suffix.lower() in (".glb", ".gltf") and up != "z" else up], float)
+            for mesh in _meshes(path):
+                mesh.apply_transform(enu)
+                if not m.add(mesh, tex_dir, MAX_TEXTURE):
+                    return None
+        m.join()
+        lo, hi = m.V.min(axis=0), m.V.max(axis=0)
+        z = m.V[np.random.default_rng(0).choice(len(m.V), min(len(m.V), 200_000), replace=False), 2]
+        centre = np.array([(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, float(np.percentile(z, 2))])
+        m.V -= centre                    # the tileset's frame: metres east/north/up around the model's floor
+        faces = len(m.F)
+        info = model_lod.build(job, m, out, lambda step, pct: _status(job, step, pct))
+    finally:
+        shutil.rmtree(tex_dir, ignore_errors=True)
+    result = {"kind": "mesh", "pieces": info["tiles"], "faces": faces, "up": up, "textured": True,
+              "size_m": [round(float(v), 1) for v in hi - lo], "bytes": info["bytes"],
+              "tileset": f"{out.name}/tileset.json", "georef": None,
+              "lod": {k: info[k] for k in ("tiles", "levels", "root_faces", "texel_cm")}}
     if meta is not None:
         g = terra_georef(meta, tuple(centre.tolist()))
         result["georef"] = {"lat": g["lat"], "lng": g["lng"], "heading": g["heading"], "scale": g["scale"], "label": g["label"]}

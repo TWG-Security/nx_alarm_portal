@@ -55,6 +55,10 @@ def alarm_dict(a: Alarm) -> dict:
         "verdict_by": a.verdict_by.label if a.verdict_by else None,
         "verdict_at": _iso(a.verdict_at),
         "nx_ack_result": a.nx_ack_result,
+        "call_state": a.call_state or "",
+        "call_ended_at": _iso(a.call_ended_at),
+        "call_ended_by": a.call_ended_by.label if a.call_ended_by else None,
+        "call_end_note": a.call_end_note or "",
     }
 
 

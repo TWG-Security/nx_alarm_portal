@@ -13,7 +13,7 @@ from PIL import Image
 
 from app.config import get_settings
 from app.routers import site_models
-from app.services import model_build
+from app.services import model_build, model_lod
 from tests.conftest import login, make_site, make_tenant_user
 from tools.sample_model import make as sample_zip
 
@@ -59,7 +59,8 @@ async def test_terra_obj_upload_is_converted_placed_and_served(client, session):
     data = sample_zip(40.2665, -76.8838)
     m = await _upload(client, site.id, data, chunk=len(data) // 3 + 1)
     ready = m["ready"]
-    assert m["job"] is None and ready["kind"] == "mesh" and ready["pieces"] == 2 and ready["faces"] == 12
+    assert m["job"] is None and ready["kind"] == "mesh" and ready["pieces"] == 1 and ready["faces"] == 12
+    assert ready["lod"]["tiles"] == 1 and ready["textured"] is True          # small: one tile, levels of detail format
     assert ready["georef"].startswith("Terra metadata.xml (EPSG:32618)")
     p = ready["placement"]
     assert abs(p["lat"] - 40.2665) < 1e-5 and abs(p["lng"] + 76.8838) < 1e-5
@@ -70,19 +71,19 @@ async def test_terra_obj_upload_is_converted_placed_and_served(client, session):
     ts = await client.get(ready["url"])
     assert ts.status_code == 200 and "immutable" in ts.headers["cache-control"]
     tileset = ts.json()
-    assert tileset["asset"]["version"] == "1.1" and len(tileset["root"]["children"]) == 2
-    glb = await client.get(ready["url"].replace("tileset.json", "p0001.glb"))
+    assert tileset["asset"]["version"] == "1.1" and tileset["root"]["content"]["uri"] == "t0000.glb"
+    glb = await client.get(ready["url"].replace("tileset.json", "t0000.glb"))
     doc = _glb_json(glb.content)
     assert glb.headers["content-type"] == "model/gltf-binary"
     assert "KHR_materials_unlit" in doc["extensionsUsed"] and doc["images"][0]["mimeType"] == "image/jpeg"
-    # Stored Y-up (glTF): the 6 m tall building's height is on Y, its 20 m length on X, 12 m depth on Z.
+    # Stored Y-up (glTF): the 40 x 40 m ground slab spans X and Z, the 6 m building + 0.5 m slab are on Y.
     pos = doc["accessors"][doc["meshes"][0]["primitives"][0]["attributes"]["POSITION"]]
     ext = [round(hi - lo, 1) for lo, hi in zip(pos["min"], pos["max"])]
-    assert ext == [20.0, 6.0, 12.0]
+    assert ext == [40.0, 6.0, 40.0]
 
     # Every textured piece carries texture coordinates (a texture without them is an invalid glTF that
     # breaks Cesium's shaders): Terra's OBJ uses separate position / texture indices.
-    for piece in ("p0001.glb", "p0002.glb"):
+    for piece in ("t0000.glb",):
         d = _glb_json((await client.get(ready["url"].replace("tileset.json", piece))).content)
         assert all("TEXCOORD_0" in prim["attributes"] for m in d["meshes"] for prim in m["primitives"]), piece
 
@@ -229,12 +230,12 @@ def test_huge_textures_are_scaled_down_to_jpeg(tmp_path):
         z.writestr("m.glb", trimesh.Scene(mesh).export(file_type="glb"))
     job, r = _job(tmp_path, "m.zip", buf.getvalue())
     assert r["ok"]
-    data = (job / "tiles" / "p0001.glb").read_bytes()
+    data = (job / "tiles" / "t0000.glb").read_bytes()
     doc = _glb_json(data)
     view = doc["bufferViews"][doc["images"][0]["bufferView"]]
     blob_at = 20 + struct.unpack_from("<I", data, 12)[0] + 8
     img = Image.open(io.BytesIO(data[blob_at + view.get("byteOffset", 0): blob_at + view.get("byteOffset", 0) + view["byteLength"]]))
-    assert img.format == "JPEG" and img.size == (4096, 11)
+    assert img.format == "JPEG" and max(img.size) <= model_lod.LEAF_ATLAS
 
 
 def test_point_clouds_are_explained(tmp_path):
@@ -251,7 +252,8 @@ def test_big_obj_is_cut_into_pieces_with_textures_kept(tmp_path, monkeypatch):
     job.mkdir()
     (job / "upload.zip").write_bytes(sample_zip())
     r = model_build.build(job)
-    assert r["faces"] == 12 and r["pieces"] == 4 and r["georef"]["label"].startswith("Terra")   # 10 + 2 faces, max 4 per piece
+    assert r["faces"] == 12 and r["georef"]["label"].startswith("Terra")                       # 10 + 2 faces, max 4 per piece
+    assert len(list((job / "src").rglob("*__piece*.obj"))) == 4
     for glb in (job / "tiles").glob("*.glb"):
         d = _glb_json(glb.read_bytes())
         assert all("TEXCOORD_0" in p["attributes"] for m in d["meshes"] for p in m["primitives"]), glb.name

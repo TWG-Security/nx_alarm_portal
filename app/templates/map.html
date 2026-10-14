@@ -13,7 +13,7 @@
     </div>
     <div class="map-side-section" id="site-detail" hidden></div>
     <div class="map-side-section" id="guard-list" hidden></div>
-    <div class="map-side-section" style="padding-bottom:6px"><h3>Sites</h3></div>
+    <div class="map-side-section" style="padding-bottom:6px" id="sites-head"><h3>Sites</h3></div>
     <ul class="site-list" id="site-list"><li class="empty">Loading…</li></ul>
   </aside>
   <section class="map-canvas">
@@ -28,6 +28,17 @@
       </div>
       <div class="hud-tr"><div id="hud-clock"></div><div class="hud-sub" id="hud-counts"></div></div>
       <div class="hud-bl" id="hud-coords"></div>
+    </div>
+    <div class="cam-view" id="cam-view" hidden>
+      <img class="cam-view-img" id="cam-view-img" alt="" draggable="false">
+      <div class="cam-view-drag" id="cam-view-drag" hidden title="Drag to turn and tilt, scroll to zoom"></div>
+      <div class="cam-view-bar">
+        <span><b id="cam-view-name"></b> <span class="muted">· view from the camera</span></span>
+        <label class="cam-view-op">Picture <input type="range" id="cam-view-opacity" min="0" max="100" value="55" aria-label="Picture opacity"></label>
+        <button type="button" class="btn btn-sm" id="cam-view-cal" hidden>Calibrate</button>
+        <button type="button" class="btn btn-sm btn-primary" id="cam-view-exit">Exit view</button>
+      </div>
+      <div class="cam-cal" id="cam-cal" hidden></div>
     </div>
     <div class="cam-panel" id="cam-panel" hidden></div>
     <div class="cam-panel cam-hover" id="cam-hover" hidden aria-hidden="true"></div>
@@ -48,6 +59,10 @@
     <div class="globe-msg" id="globe-msg" hidden></div>
   </section>
   <aside class="feed" aria-label="Live alarms">
+    <section class="calls" id="calls" hidden aria-label="Active calls">
+      <h2>Active calls <span class="chip call-chip" id="calls-count"></span></h2>
+      <ul class="feed-list calls-list" id="calls-list"></ul>
+    </section>
     <div class="feed-head">
       <h2>Live alarms</h2>
       <div class="seg feed-tabs" id="feed-tabs" role="group" aria-label="Filter by level">

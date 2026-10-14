@@ -1,6 +1,7 @@
 // Loaded on every signed-in page: live connection, alarm store, sound, critical pop-up, nav badge.
 import { startLive, loadOpenAlarms, on, openCounts, toast, esc, isMine } from "./common.js";
 import "./sound.js";
+import "./clock.js";
 import "./critical.js";
 import "./drawer.js";
 
