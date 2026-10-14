@@ -353,7 +353,7 @@ async def test_dispatch_several_guards_mdt_status_and_a_live_timeline(session, c
 
     rows = (await client.get(f"/api/alarms/{alarm.id}/timeline")).json()
     whats = [(e["what"], e["who"]) for e in rows]
-    for want in [("Event occurred in NX", "Front Door Cam"), ("Dispatched Guard 1", "mike"), ("Dispatch text", "guard"),
+    for want in [("Event occurred in NX", "Front Door Cam"), ("Dispatched Guard 1", "mike"), ("Dispatch text sent", "guard"),
                  ("Opened the alarm link", "guard"), ("En route", "guard"), ("On scene", "guard")]:
         assert want in whats, want
     on_scene = next(e for e in rows if e["what"] == "On scene")
@@ -408,7 +408,7 @@ async def test_a_dispatched_real_alarm_stays_open_as_a_call_until_ended(session,
     rows = (await client.get(f"/api/alarms/{a.id}/timeline")).json()
     ended = next(e for e in rows if e["what"] == "Call ended")
     assert ended["who"] == "admin" and "Police took over" in ended["detail"]
-    assert any(e["what"] == "Call-ended text" for e in rows)
+    assert any(e["what"] == "Call-ended text sent" for e in rows)
 
     # A guard who already tapped Clear isn't texted; another company can't end it.
     b = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
@@ -528,3 +528,22 @@ async def test_request_location_reports_what_the_phone_answered(session, client)
     rows = (await session.scalars(select(AuditLog).where(AuditLog.action == "location.test").order_by(AuditLog.id))).all()
     assert [(r.detail["page"], r.detail["code"], r.detail["ms"], r.user_id) for r in rows] == [("location", 1, 9, p["all"].id), ("alarm", 1, 12, p["all"].id)]
     assert rows[1].alarm_id is None and rows[1].detail["alarm"] == alarm.id                   # not on the alarm's timeline
+
+
+@respx.mock
+async def test_opening_the_alarm_is_on_its_timeline_once_per_person_per_5_min(session, client):
+    """The user, 2026-10-14: "add when it was viewed confirmed or false alarmed or dismissed"."""
+    t, site, p = await world(session)
+    a = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    await login(client, "admin@twgsecurity.com")
+    assert (await client.post(f"/api/alarms/{a.id}/viewed")).json() == {"logged": True}
+    assert (await client.post(f"/api/alarms/{a.id}/viewed")).json() == {"logged": False}       # re-open: once
+    nx_ok()
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "false", "note": "Wind"})
+    rows = (await client.get(f"/api/alarms/{a.id}/timeline")).json()
+    viewed = [e for e in rows if e["what"] == "Viewed the alarm"]
+    assert len(viewed) == 1 and viewed[0]["who"] == "admin" and viewed[0]["detail"].startswith("first look, ")
+    ack = next(e for e in rows if e["what"] == "Marked false alarm")
+    assert ack["who"] == "admin" and "Wind" in ack["detail"] and rows.index(viewed[0]) < rows.index(ack)
+    await login(client, p["acme"].email)
+    assert (await client.post(f"/api/alarms/{a.id}/viewed")).status_code == 404               # another company

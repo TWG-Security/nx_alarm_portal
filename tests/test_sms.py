@@ -633,6 +633,52 @@ async def test_carrier_refusal_is_recorded(session, monkeypatch):
     assert len(respx.calls) == 2                                   # no resend: there was no picture to blame
 
 
+async def _watched():
+    await sms.drain()
+    for _ in range(100):
+        if not sms._watchers:
+            break
+        await asyncio.sleep(0.05)
+
+
+@respx.mock
+async def test_timeline_shows_when_each_text_was_sent_and_when_it_was_delivered(session, client, monkeypatch):
+    """The user, 2026-10-14: "log when the message is sent and delivered" (SMS has no read receipts; opening the
+    alarm link is logged instead). Delivered time is Twilio's date_updated; NOT delivered says why."""
+    from datetime import datetime, timezone
+    from email.utils import format_datetime
+    from app.services import report
+    _, site, _ = await world(session)
+    await texts_on(session)
+    monkeypatch.setattr(sms, "WATCH", True)
+    monkeypatch.setattr(sms, "WATCH_AT_S", (0.05,))
+    respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMd"}))
+    status = respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMd.json")
+    when = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=1)
+    status.mock(return_value=httpx.Response(200, json={"status": "delivered", "date_updated": format_datetime(when)}))
+    alarm = await make_alarm(session, site)
+    sms.notify([alarm])
+    await _watched()
+    rows = await report.timeline(session, await session.get(Alarm, alarm.id))
+    sent = next(r for r in rows if r["what"] == "Alarm text sent")
+    got = next(r for r in rows if r["what"] == "Alarm text delivered")
+    assert sent["who"] == got["who"] == "all" and sent["kind"] == got["kind"] == "text"
+    assert "to …1111" in sent["detail"] and "accepted by Twilio" in sent["detail"] and "ms after the alarm arrived" in sent["detail"]
+    assert got["ts"] == int(when.timestamp() * 1000) and "after it was sent" in got["detail"]
+    assert rows.index(sent) < rows.index(got)
+    row = await session.scalar(select(AuditLog).where(AuditLog.action == "sms.delivery"))
+    assert row.alarm_id == alarm.id and row.detail["outcome"] == "delivered"
+
+    # The carrier refuses: NOT delivered, with the reason. A wild Twilio time falls back to now.
+    status.mock(return_value=httpx.Response(200, json={"status": "undelivered", "error_code": 30007, "date_updated": "garbage"}))
+    b = await make_alarm(session, site)
+    sms.notify([b])
+    await _watched()
+    rows = await report.timeline(session, await session.get(Alarm, b.id))
+    bad = next(r for r in rows if r["what"] == "Alarm text NOT delivered")
+    assert "spam" in bad["detail"] and bad["ts"] >= next(r for r in rows if r["what"] == "Alarm text sent")["ts"]
+
+
 # ---------------------------------------------------------------- confirmed by an operator (mobile guards)
 async def guards(session, t, site):
     """guard: only confirmed texts; both: both kinds; mike: confirmed texts too, but he's the one confirming."""

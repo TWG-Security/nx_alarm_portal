@@ -1,6 +1,7 @@
 // Alarm detail drawer: the recorded clip and live video side by side, details, acknowledge with a
-// verdict (real event / false alarm / dismissed), the closest guards with Dispatch, and Next (the next open
-// alarm in the feed's order: most urgent first, oldest first). Used on every page.
+// verdict (Real event / False alarm right under the title; Dismiss small, further down), the closest guards with Dispatch once
+// it's verified (Real event), and Next (the next open alarm in the feed's order: most urgent first, oldest
+// first). Used on every page.
 
 import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
 import { freshness } from "./guards.js";
@@ -38,10 +39,18 @@ on("store", () => { if (current && !drawer.hidden) paintNext(); });
 
 // ---------------------------------------------------------------- guards: closest first, Dispatch
 function stopGuards() { clearInterval(guardsTimer); guardsTimer = null; guardsFor = null; }
-// The two closest guards that can be texted, as big Dispatch buttons right under the title (phones see them first).
+// Dispatch is offered only once the alarm is verified (the user, 2026-10-14: "only have the dispatch option
+// appear when its verified, i want to do less scrolling"). The API still accepts a dispatch either way.
+const verified = (a) => a.verdict === "real";
+// The two closest guards that can be texted, as big Dispatch buttons right under the verdict buttons (phones see
+// them first). Before Real event: only a line saying Real event texts the closest guard by itself.
 function quickHtml(a) {
   const g = lastGuards?.alarmId === a.id ? lastGuards.r : null;
   if (!g || !g.texts_ready || !(isMine(a) || can("platform.support"))) return "";
+  if (!verified(a)) {
+    return g.auto && a.state === "new" && g.guards.some((c) => c.can_text)
+      ? '<p class="muted small-print ack-auto-hint"><b>Real event</b> texts the closest guard automatically; Dispatch buttons appear once it\'s marked real.</p>' : "";
+  }
   const pick = g.guards.filter((c) => c.can_text).slice(0, 2);
   if (!pick.length) return "";
   const sent = new Set(g.dispatched.map((d) => d.to));
@@ -80,6 +89,11 @@ async function loadGuards(a) {
   lastGuards = { alarmId: a.id, r };
   paintQuick();
   if (!r.guards.length && !r.dispatched.length) { box.hidden = true; return; }
+  if (!verified(a)) {                 // not verified: no guard list / Dispatch; still show anyone already sent
+    box.hidden = !r.dispatched.length;
+    box.innerHTML = r.dispatched.length ? `<div class="media-label">Dispatched <span class="muted">live status from their phones</span></div>${boardHtml(r.dispatched)}` : "";
+    return;
+  }
   if (chosenFor !== a.id) { chosen = new Set(); chosenFor = a.id; }
   box.hidden = false;
   const write = isMine(a) || can("platform.support");
@@ -100,8 +114,7 @@ async function loadGuards(a) {
           <span class="muted small-print">${esc(where)}${f === "offline" ? " · OFFLINE" : f === "stale" ? ` · last seen ${esc(relTime(c.fix_at))}` : ""}${c.person && c.person !== c.name ? ` · ${esc(c.person)}` : ""}</span>
           ${block ? `<span class="muted small-print">${esc(block)}</span>` : ""}</span>
         ${write ? `<button type="button" class="btn btn-sm ${c.closest ? "btn-primary" : ""}" data-dispatch="${c.tracker_id}" data-name="${esc(c.name)}" ${block ? "disabled" : ""}>Dispatch</button>` : ""}</li>`;
-    }).join("")}</ul>
-    ${r.auto && a.state === "new" && r.texts_ready ? '<p class="muted small-print">Marking it <b>Real event</b> texts the closest guard automatically.</p>' : ""}`;
+    }).join("")}</ul>`;
 }
 
 // ---------------------------------------------------------------- timeline: everything, live (also in the report)
@@ -125,7 +138,7 @@ on("alarm.timeline", ({ alarm_id }) => {
     loadTimeline(current); loadGuards(current);
     try {
       const a = await api(`/api/alarms/${alarm_id}`);
-      if (current?.id === alarm_id && (a.call_state !== current.call_state || a.state !== current.state)) {
+      if (current?.id === alarm_id && (a.call_state !== current.call_state || a.state !== current.state || a.verdict !== current.verdict)) {
         const keep = drawer.querySelector("#call-note")?.value || "";
         current = a; render(a);
         if (keep && drawer.querySelector("#call-note")) drawer.querySelector("#call-note").value = keep;
@@ -205,6 +218,7 @@ function render(a) {
   drawer.querySelector(".drawer-top").innerHTML = `
     <div class="drawer-head">
       <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
+        ${acked || disarmed ? ` ${verdictChip(a)}` : ""}
         ${a.call_state === "active" ? ' <span class="chip call-chip">Call in progress</span>' : a.call_state === "ended" ? ' <span class="chip">Call ended</span>' : ""}
         <h1 style="margin-top:8px">${esc(a.caption)}</h1>
         ${isMine(a) ? "" : `<div><span class="chip tenant-chip">${esc(a.tenant_name || "Another company")}</span></div>`}
@@ -213,6 +227,12 @@ function render(a) {
       <div class="drawer-head-actions"><span class="drawer-next-slot">${nextHtml(a)}</span>
         <button class="btn btn-sm drawer-back" id="drawer-close" aria-label="Close">← ${location.pathname === "/" ? "Back to map" : "Back"}</button></div>
     </div>
+    ${acked || disarmed ? "" : `<div class="ack-top">
+      <div class="verdict-buttons"><span class="muted ack-as">Acknowledge as</span>
+        <button class="btn btn-verdict-real" data-ack="real">Real event</button>
+        <button class="btn btn-verdict-false" data-ack="false">False alarm</button></div>
+      <textarea id="drawer-note" maxlength="4000" rows="1" aria-label="Disposition note" placeholder="Disposition note (optional, saved when you acknowledge): what did you see / do?"></textarea>
+    </div>`}
     <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
     <dl class="kv">
@@ -237,13 +257,7 @@ function render(a) {
           ${verdictRow}
           <dt>Disposition</dt><dd style="white-space:pre-wrap">${esc(a.ack_note || "—")}</dd>
           <dt>NX write-back</dt><dd>${nx ? (nx.ok ? `<span class="chip acked">${esc(nx.method)}</span>` : `<span class="chip offline">failed</span> ${esc(nx.error || "")}`) : "—"}</dd>
-        </dl>` : `
-        <div class="field"><label for="drawer-note">Disposition note <span class="muted">(saved when you acknowledge)</span></label>
-          <textarea id="drawer-note" maxlength="4000" placeholder="What did you see / do?"></textarea></div>
-        <div class="verdict-buttons"><span class="muted ack-as">Acknowledge as</span>
-          <button class="btn btn-verdict-real" data-ack="real">Real event</button>
-          <button class="btn btn-verdict-false" data-ack="false">False alarm</button>
-          <button class="btn btn-verdict-dismissed" data-ack="dismissed" title="Close it without a verdict or an NX bookmark">Dismiss</button></div>`}
+        </dl>` : ""}
       <div class="notes-box">
         <h3>Notes</h3>
         <ul class="notes-list"></ul>
@@ -252,6 +266,8 @@ function render(a) {
           <button class="btn" id="note-add" type="button">Add note</button>
         </div>
       </div>
+      ${acked || disarmed ? "" : `<button class="btn btn-sm btn-verdict-dismissed" data-ack="dismissed"
+        title="Close it without a verdict or an NX bookmark (use Real event or False alarm when you can)">Dismiss (no verdict)</button>`}
       <a class="btn btn-sm" href="/audit?alarm_id=${a.id}">Audit trail</a>
       <button class="btn btn-sm" id="drawer-export" title="Incident report PDF, or PDF + video clip + stills">Export report / clip…</button>
     </div>`;
@@ -345,6 +361,7 @@ export async function openDrawer(id, fallback) {
   api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
   startGuards(a);
   loadTimeline(a);
+  api(`/api/alarms/${a.id}/viewed`, { method: "POST" }).catch(() => {});     // "Viewed the alarm" on the timeline
   drawer.hidden = false;
   backdrop.hidden = false;
   drawer.querySelector("#drawer-close").focus();
@@ -378,7 +395,7 @@ drawer.addEventListener("click", async (e) => {
     try {
       await api("/api/alarms/bulk", { method: "POST", body: { ids: [current.id], verdict: override, note: why } });
       const updated = await api(`/api/alarms/${current.id}`);
-      current = updated; applyAlarm(updated); render(updated);
+      current = updated; applyAlarm(updated); render(updated); loadGuards(updated);
       toast(`Verdict changed to ${VERDICT[override].toLowerCase()}`);
     } catch (err) { toast(esc(err.message), { kind: "error" }); e.target.disabled = false; }
   }

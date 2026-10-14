@@ -255,23 +255,26 @@ async def state(): return {"acks": ACKS, "bookmarks": BOOKMARKS, "events": len(E
 @app.post("/_inject/{kind}")
 async def inject(kind: str, rule_id: str = ""):
     """rule_id: log the event as fired by that rule (e.g. one made in the portal's rule editor)."""
-    ts = int(time.time()*1000); aid = str(uuid.uuid4()); FRAMES["last_inject"] = time.time()
+    # Real NX stamps events in µs; ms * 1000 made fast injections share a timestamp, and the portal (rightly) took
+    # same-camera same-µs events as one (dismiss e2e: 600 injected, ~490 stored). Unique µs per injection.
+    us = max(time.time_ns() // 1000, FRAMES.get("last_us", 0) + 1); FRAMES["last_us"] = us
+    ts = us // 1000; aid = str(uuid.uuid4()); FRAMES["last_inject"] = time.time()
     rid = rule_id or RULES.get(kind, RULES["line" if kind == "axis" else "panic"])["id"]
     base = {"timestampMs": ts, "ruleId": rid, "flags": "noFlags", "aggregatedInfo": {"total": 1}}
     dev = DEV[0]["id"] if kind != "dock" else DEV[1]["id"]
     if kind in ("panic", "panic24"):
-        ev = {"type": "softTrigger", "state": "instant", "deviceId": dev, "userId": "{u-1}", "triggerName": "", "timestamp": str(ts*1000)}
+        ev = {"type": "softTrigger", "state": "instant", "deviceId": dev, "userId": "{u-1}", "triggerName": "", "timestamp": str(us)}
         act = {"id": aid, "type": "desktopNotification", "acknowledge": False, "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     elif kind == "axis":                                    # AXIS Object Analytics scenario ("zone") event, as NX 6.1 logs it
         ev = {"type": "analytics", "state": "started", "deviceId": dev, "caption": "", "description": "Front Lot started",
-              "engineId": AXIS_ENGINE, "eventTypeId": AXIS_SCENARIO, "timestamp": str(ts*1000),
+              "engineId": AXIS_ENGINE, "eventTypeId": AXIS_SCENARIO, "timestamp": str(us),
               "key": "tnsaxis:CameraApplicationPlatform/ObjectAnalytics/Device1Scenario1"}
         act = {"id": aid, "type": "desktopNotification", "caption": "AXIS Object Analytics", "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     elif kind == "line":
-        ev = {"type": "analytics", "state": "instant", "deviceId": dev, "caption": "Rule Engine: Line Detector - Crossed", "eventTypeId": "nx.onvif.RuleEngine.LineDetector.Crossed", "timestamp": str(ts*1000)}
+        ev = {"type": "analytics", "state": "instant", "deviceId": dev, "caption": "Rule Engine: Line Detector - Crossed", "eventTypeId": "nx.onvif.RuleEngine.LineDetector.Crossed", "timestamp": str(us)}
         act = {"id": aid, "type": "bookmark", "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     else:
-        ev = {"type": "deviceDisconnected", "state": "instant", "deviceId": DEV[1]["id"], "timestamp": str(ts*1000)}
+        ev = {"type": "deviceDisconnected", "state": "instant", "deviceId": DEV[1]["id"], "timestamp": str(us)}
         act = {"id": aid, "type": "desktopNotification", "serverId": "{srv-1}", "sourceName": "Loading Dock", "deviceIds": [DEV[1]["id"]]}
     TRACKS.append({"id": str(uuid.uuid4()), "deviceId": dev.strip("{}"), "objectTypeId": "nx.base.Person",
                    "startTimeMs": ts - 2000, "endTimeMs": ts + 4000, "attributes": [{"name": "Clothing", "value": "Dark jacket"}]})

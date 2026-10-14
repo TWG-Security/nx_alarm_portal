@@ -73,7 +73,7 @@ async def test_pdf_report_has_summary_times_stills_timeline_and_notes(client, se
     for expected in ("INCIDENT REPORT", "Person in restricted area", "Test Site", "4251 Chestnut St", "Front Door Cam",
                      "Event-time frame", "Sequence from the clip", "Detected by analytics", "Dark jacket",
                      "Timeline", "Acknowledged", "Operator notes", "contractor, no action needed",
-                     "Police case 26-4411", "Clip SHA-256", "UTC", "Page 1 of", "FALSE ALARM", "False alarm.", "Follow-up, by", "office confirmed the visit", "Note added"):
+                     "Police case 26-4411", "Clip SHA-256", "UTC", "Page 1 of", "FALSE ALARM", "Marked false alarm", "Follow-up, by", "office confirmed the visit", "Note added"):
         assert expected in text, expected
     assert "EDT" in text or "EST" in text                                # site time zone
     images = sum(len(p.images) for p in pdf.pages)

@@ -836,6 +836,27 @@ async def add_note(alarm_id: int, body: NoteIn, request: Request, scope: Scope =
     return data
 
 
+VIEW_AGAIN_S = 300      # the same person re-opening the same alarm within 5 min isn't logged again
+
+
+@router.post("/alarms/{alarm_id}/viewed")
+async def alarm_viewed(alarm_id: int, request: Request, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """The alarm details were opened: on the timeline and in the incident report (the user, 2026-10-14: "add when
+    it was viewed"). Read access is enough; re-opens within VIEW_AGAIN_S are skipped."""
+    user = scope.user
+    alarm = await _get_alarm(db, scope, alarm_id)
+    now = datetime.now(timezone.utc)
+    seen = select(AuditLog.id).where(AuditLog.alarm_id == alarm.id, AuditLog.action == "alarm.viewed").limit(1)
+    if await db.scalar(seen.where(AuditLog.user_id == user.id, AuditLog.ts >= now - timedelta(seconds=VIEW_AGAIN_S))):
+        return {"logged": False}
+    first = await db.scalar(seen) is None
+    received = alarm.received_at.replace(tzinfo=alarm.received_at.tzinfo or timezone.utc)
+    audit(db, alarm.tenant_id, "alarm.viewed", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), first=first, state=alarm.state, after_s=max(0, round((now - received).total_seconds())))
+    await db.commit()
+    return {"logged": True}
+
+
 @router.get("/summary")
 async def summary(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     counts = await _open_counts(db, scope)

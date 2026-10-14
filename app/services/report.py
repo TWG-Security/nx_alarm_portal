@@ -210,17 +210,33 @@ async def timeline(db: AsyncSession, alarm: Alarm) -> list[dict]:
     if arm:
         rows.append(_audit_row(arm))
     rows[0]["kind"] = rows[1]["kind"] = "event"
+    reported = set()          # texts whose delivery has its own row ("sms.delivery", since 2026-10-14)
     for a in (await db.scalars(select(AuditLog).where(AuditLog.alarm_id == alarm.id).order_by(AuditLog.id))).all():
         if a.action != "alarm.received":
             rows.append(_audit_row(a))
+        if a.action == "sms.delivery":
+            reported.add((a.detail or {}).get("sms_id"))
     texts = (await db.execute(select(SmsLog, User).join(User, User.id == SmsLog.user_id, isouter=True)
                               .where(SmsLog.alarm_id == alarm.id).order_by(SmsLog.id))).all()
     for t, u in texts:
-        outcome = {"sent": "sent", "delivered": "delivered", "read": "delivered", "failed": "FAILED",
-                   "undelivered": "NOT DELIVERED", "disabled": "not sent (texts off)"}.get(t.outcome, t.outcome)
-        rows.append({"ts": _ms(t.ts), "what": TEXT_PURPOSE.get(t.purpose, f"Text ({t.purpose})"),
-                     "who": u.label if u else f"…{t.to[-4:]}", "kind": "text",
-                     "detail": outcome + (f": {t.error}" if t.error and t.outcome not in ("sent", "delivered") else "")})
+        label = TEXT_PURPOSE.get(t.purpose, f"Text ({t.purpose})")
+        to = f"to …{t.to[-4:]}" if t.to else ""
+        if t.twilio_sid:              # Twilio took it; delivered / not delivered is its own row (sms.delivery)
+            detail = ", ".join(x for x in (to, "accepted by Twilio") if x)
+            if t.delay_ms is not None and t.purpose == "alarm":
+                detail += f" {t.delay_ms:,} ms after the alarm arrived"
+            if t.id not in reported:      # still waiting, or sent before delivery rows existed
+                detail += {"sent": " · waiting for the delivery report", "delivered": " · delivered", "read": " · delivered",
+                           "failed": " · NOT delivered", "undelivered": " · NOT delivered"}.get(t.outcome, f" · {t.outcome}")
+                if t.error and t.outcome in ("failed", "undelivered"):
+                    detail += f": {t.error}"
+            if t.error and "without the picture" in t.error:
+                detail += " · sent without the picture"
+            what = f"{label} sent"
+        else:
+            what = f"{label} not sent" + (" (texts off)" if t.outcome == "disabled" else "")
+            detail = ", ".join(x for x in (to, t.error) if x)
+        rows.append({"ts": _ms(t.ts), "what": what, "who": u.label if u else f"…{t.to[-4:]}", "kind": "text", "detail": detail})
     for r in rows:
         r.setdefault("kind", "system")
     return sorted(rows, key=lambda r: r["ts"])
@@ -253,9 +269,25 @@ def _audit_row(a: AuditLog) -> dict:
     if a.action == "alarm.acknowledged":
         nx = d.get("nx") or {}
         detail = f"NX write-back: {nx.get('method') or '-'}{' (failed: ' + str(nx.get('error')) + ')' if nx.get('ok') is False else ''}"
-        verdict = {"real": "Real event. ", "false": "False alarm. ", "dismissed": "Dismissed. "}.get(d.get("verdict", ""), "")
-        return {"ts": ts, "what": "Acknowledged" + (" (bulk)" if d.get("bulk") else ""), "who": who, "kind": "operator",
-                "detail": verdict + (f"“{d['note']}” · " if d.get("note") else "") + detail}
+        what = {"real": "Confirmed: real event", "false": "Marked false alarm", "dismissed": "Dismissed (no verdict)"}.get(
+            d.get("verdict", ""), "Acknowledged")
+        return {"ts": ts, "what": what + (" (bulk)" if d.get("bulk") else ""), "who": who, "kind": "operator",
+                "detail": (f"“{d['note']}” · " if d.get("note") else "") + detail}
+    if a.action == "sms.delivery":
+        label = TEXT_PURPOSE.get(d.get("purpose"), "Text")
+        took = max(0, (d.get("at_ms") or ts) - (d.get("sent_ms") or ts)) / 1000
+        after = f"{took:.0f} s after it was sent" if took < 120 else f"{took / 60:.0f} min after it was sent"
+        word, detail = {"delivered": ("delivered", f"to their phone, {after}"),
+                        "failed": ("NOT delivered", d.get("error", "")), "undelivered": ("NOT delivered", d.get("error", "")),
+                        "no_report": ("no delivery report", "the carrier didn't confirm within 4 min; it may still have arrived")
+                        }.get(d.get("outcome"), (d.get("outcome", ""), d.get("error", "")))
+        return {"ts": d.get("at_ms") or ts, "what": f"{label} {word}", "who": who, "kind": "text", "detail": detail}
+    if a.action == "alarm.viewed":
+        state = {"acknowledged": " (already acknowledged)", "disarmed": " (site was disarmed)"}.get(d.get("state", ""), "")
+        after = d.get("after_s")
+        when = "" if after is None else f"{after} s" if after < 120 else f"{after // 60} min" if after < 7200 else f"{after // 3600} h"
+        return {"ts": ts, "what": "Viewed the alarm", "who": who, "kind": "operator",
+                "detail": ("first look, " if d.get("first") else "") + (f"{when} after it arrived" if when else "") + state}
     if a.action == "alarm.note":
         text = d.get("text", "")
         return {"ts": ts, "what": "Note added", "who": who, "kind": "operator", "detail": text if len(text) <= 90 else text[:88] + "…"}

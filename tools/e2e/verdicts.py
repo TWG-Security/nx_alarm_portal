@@ -97,6 +97,7 @@ with sync_playwright() as p:
     # --- 6. groups: an operator gets bulk edit only through a group
     r = call(pg, "POST", "/api/users", {"email": "op@twgsecurity.com", "display_name": "Night Operator",
                                         "password": "Operator-pass-1234!", "role": "operator"})
+    assert "id" in r["body"], r
     op_id = r["body"]["id"]
     for kind in ("line", "line", "line"):
         inject(kind)

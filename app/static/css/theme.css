@@ -1012,3 +1012,21 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .rx-sources ul { margin: 6px 0 0; padding-left: 18px; }
 .linkish { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
 @media (max-width: 700px) { .rx-grid { grid-template-columns: minmax(0, 1fr); } .rx-cam-list { grid-template-columns: minmax(0, 1fr); } }
+/* Alarm details: Real event / False alarm / Dismiss right under the title, Dispatch only once it's real
+   (the user, 2026-10-14: "add the real event false alarm on the top ... i want to do less scrolling") */
+.ack-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -4px 0 12px; }
+.ack-top .verdict-buttons { margin: 0; }
+#drawer .ack-top .verdict-buttons .btn { height: 48px; font-size: 16px; font-weight: 600; padding: 0 20px; }
+.ack-top textarea { flex: 1 1 260px; min-width: 0; height: 48px; min-height: 48px; resize: vertical; }
+.ack-auto-hint { margin: -6px 0 12px; }
+@media (max-width: 600px) {
+  .ack-top .verdict-buttons { width: 100%; }
+  .ack-top .ack-as { width: 100%; }
+  #drawer .ack-top .verdict-buttons .btn { flex: 1 1 0; padding: 0 6px; font-size: 15px; }
+  .ack-top textarea { flex-basis: 100%; }
+}
+@media (max-width: 600px) {            /* phones: Next + Back to map wrap under the title instead of widening the page */
+  #drawer .drawer-head { flex-wrap: wrap; }
+  #drawer .drawer-head > div:first-child { min-width: 0; flex: 1 1 100%; }
+  #drawer .drawer-head-actions { flex: 1 1 100%; flex-wrap: wrap; justify-content: space-between; }
+}

@@ -475,7 +475,19 @@ async def _status(cfg: Twilio, message_sid: str) -> dict:
     return r.json() if r.status_code == 200 else {}
 
 
-async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str) -> None:
+def _twilio_time(value) -> int | None:
+    """Twilio's date_updated ("Wed, 14 Oct 2026 03:21:00 +0000") in ms, or None."""
+    from email.utils import parsedate_to_datetime
+    try:
+        return int(parsedate_to_datetime(str(value)).timestamp() * 1000) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str, at_ms: int | None = None) -> None:
+    """The text's final status. A text about an alarm also gets an audit row "sms.delivery", so its timeline and the
+    incident report show when it was sent AND when it was delivered (the user, 2026-10-14: "log when the message is
+    sent and delivered"). at_ms: when Twilio says the status changed (else now; never before it was sent)."""
     if log_id is None:
         return
     _, db_slots = _slots()
@@ -485,8 +497,12 @@ async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str) ->
             entry.outcome = outcome
             entry.error = (f"{entry.error}; {error}" if entry.error and error else error or entry.error)[:500]
             if entry.alarm_id is not None and entry.tenant_id is not None:
-                from app.audit import timeline_changed
-                timeline_changed(db, entry.tenant_id, entry.alarm_id)          # "delivered" shows on the timeline
+                sent_ms = int(entry.ts.replace(tzinfo=entry.ts.tzinfo or timezone.utc).timestamp() * 1000)
+                now = int(time.time() * 1000)
+                at = at_ms if at_ms is not None and sent_ms - 2000 <= at_ms <= now + 5000 else now
+                audit(db, entry.tenant_id, "sms.delivery", user_id=entry.user_id, alarm_id=entry.alarm_id, sms_id=entry.id,
+                      purpose=entry.purpose, outcome=outcome if outcome != "sent" else "no_report", error=error,
+                      to=masked(to), sent_ms=sent_ms, at_ms=max(at, sent_ms))
         if outcome in ("failed", "undelivered"):
             row = await db.get(PlatformSettings, 1)
             if row is not None:
@@ -508,11 +524,12 @@ async def _watch(cfg: Twilio, log_id: int | None, message_sid: str, user: User, 
         if status not in FINAL:
             continue
         if status in ("delivered", "read"):
-            await _set_outcome(log_id, "delivered", "", user.phone)
+            await _set_outcome(log_id, "delivered", "", user.phone, _twilio_time(m.get("date_updated")))
             return
         why = explain(m.get("error_code"))
         log.error("sms %s for alarm %s to %s: %s (%s)", purpose, alarm.id if alarm else "-", masked(user.phone), status, why)
-        await _set_outcome(log_id, status if status in ("failed", "undelivered") else "failed", why, user.phone)
+        await _set_outcome(log_id, status if status in ("failed", "undelivered") else "failed", why, user.phone,
+                           _twilio_time(m.get("date_updated")))
         if str(m.get("error_code")) == "21610":
             await _mark_stopped(user.phone)
         elif media_url:
