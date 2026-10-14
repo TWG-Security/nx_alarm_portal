@@ -31,7 +31,9 @@ export function freshness(t, now = Date.now()) {
   const age = (now - Date.parse(t.fix_at)) / 1000;
   return age < FRESH_S ? "live" : age < STALE_S ? "late" : "stale";
 }
-export const speedText = (t) => (t.speed != null && t.speed * MPH >= 1 ? `${Math.round(t.speed * MPH)} mph` : "stopped");
+// Fleetio gives positions without a speed: say how old the position is instead of "stopped" (it may be driving).
+export const speedText = (t) => (t.speed != null && t.speed * MPH >= 1 ? `${Math.round(t.speed * MPH)} mph`
+  : t.source === "fleetio" && t.speed == null ? `seen ${relTime(t.fix_at)}` : "stopped");
 const offlineWord = (t) => (t.source === "phone" ? "stopped sharing" : "router offline");
 /** One line about where it is / how fresh, or null when it's live (then speed is shown). */
 function statusText(t, f = freshness(t)) {
@@ -221,9 +223,9 @@ export function mountGuards(lmap, listEl, { onChange } = {}) {
       return `<li data-guard="${t.id}" class="${follow === t.id ? "following" : ""}${off ? " is-hidden" : ""}" tabindex="0" title="${esc(t.error || t.device_name || "")}">
         <span class="guard-pip guard--${f}"></span>
         <span class="guard-main"><span class="guard-name">${esc(t.name)}${follow === t.id ? ' <span class="guard-following">following</span>' : ""}${t.error ? ` <span class="chip offline" title="${esc(t.error)}">!</span>` : ""}</span>
-          <span class="guard-sub${f === "offline" && !off ? " guard-offline-text" : ""}">${off ? "hidden on the map · " : ""}${esc(statusText(t, f) ?? `${speedText(t)} · ${relTime(t.fix_at)}`)}</span></span>
+          <span class="guard-sub${f === "offline" && !off ? " guard-offline-text" : ""}">${off ? "hidden on the map · " : ""}${esc(statusText(t, f) ?? (t.source === "fleetio" && t.speed == null ? speedText(t) : `${speedText(t)} · ${relTime(t.fix_at)}`))}</span></span>
         <span class="guard-actions">
-          <button type="button" class="guard-btn" data-locate="${t.id}" title="${t.source === "phone" ? `Locate: text ${esc(t.name)} asking them to share their location now` : `Locate: get ${esc(t.name)}'s position from InControl2 now`}" aria-label="Locate ${esc(t.name)}">${ICON.locate}</button>
+          <button type="button" class="guard-btn" data-locate="${t.id}" title="${t.source === "phone" ? `Locate: text ${esc(t.name)} asking them to share their location now` : `Locate: get ${esc(t.name)}'s position from ${t.source === "fleetio" ? "Fleetio" : "InControl2"} now`}" aria-label="Locate ${esc(t.name)}">${ICON.locate}</button>
           <button type="button" class="guard-btn" data-history="${t.id}" title="History: where ${esc(t.name)} was, any time range" aria-label="${esc(t.name)}'s history">${ICON.history}</button>
           <button type="button" class="guard-btn" data-guard-eye="${t.id}" aria-pressed="${!off}" title="${off ? `Show ${esc(t.name)} on the map` : `Hide ${esc(t.name)} on the map`}" aria-label="${off ? "Show" : "Hide"} ${esc(t.name)}">${off ? ICON.eyeOff : ICON.eye}</button>
         </span></li>`;

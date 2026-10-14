@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     media_cache_max_mb: int = 4096       # oldest clips are evicted beyond this
     # Guard tracking: Peplink InControl2 API (dev points it at tools/fake_nx.py's fake IC2)
     peplink_api_base: str = "https://api.ic.peplink.com"
+    # Fleet vehicles from Fleetio (app/fleetio.py; dev points it at tools/fake_nx.py's fake Fleetio)
+    fleetio_api_base: str = "https://secure.fleetio.com/api"
     # Site 3D models (app/routers/site_models.py): uploads and their converted 3D Tiles
     model_dir: str = "./site-models"
     model_max_mb: int = 3072             # largest upload

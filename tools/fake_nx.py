@@ -454,3 +454,69 @@ async def ic2_group_loc(org: str, group: int, request: Request):
     rows = [{**d, "group_time": _ic2_local(time.time()), "is_gps_tracking_disabled": False}
             for d in _ic2_devices(org_wide=False) if d["group_id"] == group]
     return await _ic2_gate(request) or _ok(rows)
+
+# ---------------------------------------------------------------- fake Fleetio (app/fleetio.py)
+# dev_up.sh points FLEETIO_API_BASE at /_fleetio. Account Token "dev-account", API key "dev-key". Shapes from Fleetio's
+# OpenAPI spec 2025-05-05 (VehicleSummary + current_location_entry). Three vans around Harrisburg (one moves each read,
+# one has no position yet, one 2 h old) and a sample-data vehicle (left out); pages of 2 to exercise next_cursor.
+# POST /_fleetio/mode/{ok|unauthorized|ratelimit|fail}; POST /_fleetio/archive/{id} drops a vehicle from the list.
+from datetime import timedelta as _td
+FLEET = {"mode": "ok", "reads": 0, "archived": set()}
+
+def _fleet_iso(ts: float) -> str:
+    return _dt.fromtimestamp(ts, _tz.utc).astimezone(_tz(_td(hours=-4))).isoformat()
+
+def _fleet_vehicles() -> list[dict]:
+    now, step = time.time(), FLEET["reads"]
+    loc = lambda lat, lng, ts: {"id": 900 + int(ts) % 97, "date": _fleet_iso(ts), "address": "Harrisburg, PA", "is_current": True,
+                                "item_type": "Vehicle", "geolocation": {"latitude": lat, "longitude": lng},
+                                "location": f"POINT ({lng} {lat})"}
+    rows = [
+        {"id": 501, "name": "Van 12", "year": 2022, "make": "Ford", "model": "Transit 250", "license_plate": "ZKT-4412", "is_sample": False,
+         "current_location_entry": loc(40.2700 + step * 0.0004, -76.8800 + step * 0.0003, now - 40)},
+        {"id": 502, "name": "Van 7", "year": 2019, "make": "Ram", "model": "ProMaster", "license_plate": "LMN-2207", "is_sample": False,
+         "current_location_entry": loc(40.2590, -76.8925, now - 7200)},
+        {"id": 503, "name": "Service Truck 3", "year": 2021, "make": "Chevrolet", "model": "Silverado", "license_plate": "", "is_sample": False,
+         "current_location_entry": None},
+        {"id": 599, "name": "Sample Vehicle", "is_sample": True, "current_location_entry": loc(33.5, -86.8, now)},
+    ]
+    return [r for r in rows if r["id"] not in FLEET["archived"]]
+
+def _fleet_gate(request: Request):
+    if request.headers.get("authorization") != "Token dev-key" or request.headers.get("account-token") != "dev-account" \
+            or FLEET["mode"] == "unauthorized":
+        return JSONResponse({"errors": ["Unauthorized"]}, status_code=401)
+    if FLEET["mode"] == "ratelimit":
+        return JSONResponse({"error": "Too many requests detected from your account token. Please try again later..."},
+                            status_code=429, headers={"Retry-After": "40"})
+    if FLEET["mode"] == "fail":
+        return JSONResponse({"error": "boom"}, status_code=500)
+    return None
+
+@app.get("/_fleetio/vehicles")
+async def fleet_list(request: Request, per_page: int = 50, start_cursor: str = ""):
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["reads"] += 1 if not start_cursor else 0
+    rows, page = _fleet_vehicles(), min(per_page, 2)
+    start = int(start_cursor or 0)
+    nxt = str(start + page) if start + page < len(rows) else None
+    return {"start_cursor": start_cursor or None, "next_cursor": nxt, "per_page": page, "records": rows[start:start + page]}
+
+@app.get("/_fleetio/vehicles/{vid}")
+async def fleet_one(vid: int, request: Request):
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["reads"] += 1                       # Van 12 moves on every read, a single-vehicle one too
+    found = next((r for r in _fleet_vehicles() if r["id"] == vid), None)
+    return found or JSONResponse({"error": "not found"}, status_code=404)
+
+@app.post("/_fleetio/mode/{mode}")
+async def fleet_mode(mode: str):
+    FLEET["mode"] = mode
+    return {"mode": mode}
+
+@app.post("/_fleetio/archive/{vid}")
+async def fleet_archive(vid: int):
+    FLEET["archived"].add(vid)
+    return {"ok": True}

@@ -505,7 +505,8 @@ class IpAllow(Base):
 
 
 class TrackerSource(Base):
-    """A company's InControl2 API client (its admins enter it on the Sites page). Its trackers are read with it."""
+    """A company's GPS account (its admins enter it on the Sites page), one per kind: "peplink" = an InControl2 API
+    client (client_id + secret), "fleetio" = a Fleetio account (client_id = Account Token, secret = API key)."""
 
     __tablename__ = "tracker_sources"
     __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_tracker_sources_tenant_kind"),)
@@ -539,7 +540,8 @@ class Tracker(Base):
     ic2_group: Mapped[int] = mapped_column(Integer, default=0)
     ic2_device: Mapped[int] = mapped_column(Integer, default=0)
     serial: Mapped[str] = mapped_column(String(40), default="")
-    device_name: Mapped[str] = mapped_column(String(200), default="")         # the router's name in InControl2
+    ext_id: Mapped[str] = mapped_column(String(64), default="")               # source "fleetio": the Fleetio vehicle id
+    device_name: Mapped[str] = mapped_column(String(200), default="")         # the router's name in InControl2 (Fleetio: year make model)
     tz: Mapped[str] = mapped_column(String(64), default="")                   # the IC2 group's time zone (its timestamps are local)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)
