@@ -1107,3 +1107,23 @@ body:has(.drawer--docked) .map-canvas .globe-bar { visibility: hidden; }
   background: rgba(0, 0, 0, .6); color: #fff; font: 700 17px/30px var(--font); cursor: pointer; }
 .vid-big:hover, .vid-big:focus-visible { background: rgba(0, 0, 0, .85); outline: 2px solid #E08A30; }
 .player-stage:fullscreen, .live-stage:fullscreen { border-radius: 0; aspect-ratio: auto; }
+
+/* Guard's alarm page: notes to dispatch (the user, 2026-10-14) */
+.link-notes h2 { margin: 0 0 8px; font-size: 17px; }
+.link-notes textarea { width: 100%; font-size: 16px; }          /* 16 px: iPhones don't zoom in on focus */
+.link-notes #link-note-send { min-height: 44px; padding: 0 18px; font-size: 16px; }
+.link-notes .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.link-notes-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.link-notes-list:empty { display: none; }
+.link-notes-list li { border-left: 3px solid #E08A30; padding: 4px 0 4px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Guard updates on an active call (call_updates.js): a toast and the latest update on the Active calls card */
+.toast.call { border-left-color: #1f6feb; cursor: pointer; }
+.call-toast-head { margin-bottom: 2px; }
+.call-latest { margin-top: 4px; font-size: 13px; }
+.call-latest .muted { font-size: 12px; }
+.call-item.call-flash { animation: call-flash 2.4s ease-out 2; }
+@keyframes call-flash { 0% { background: rgba(31, 111, 235, .35); border-color: #1f6feb; } }
+@media (prefers-reduced-motion: reduce) { .call-item.call-flash { animation: none; outline: 2px solid #1f6feb; } }
+.call-latest-more { margin-top: 2px; font-size: 12px; }
+.call-latest-more b { font-weight: 600; }

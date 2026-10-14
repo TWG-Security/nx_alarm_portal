@@ -2,6 +2,7 @@
 //   critical: siren every 4 s while any critical alarm is open
 //   alarm:    3-beep chime on arrival, repeated every 30 s while alarms are open
 //   warning:  one soft tone on arrival
+//   update:   two rising bell notes when a guard updates an active call (call_updates.js), unlike any alarm sound
 // "Silence 2 min" pauses the repeats (a NEW critical breaks the silence). Mute turns everything off.
 // Browsers block audio until the user interacts with the page; a banner asks for that click.
 // With several portal tabs open, only one "leader" tab plays, so sounds don't stack.
@@ -48,6 +49,9 @@ export function play(level, { force = false } = {}) {   // true if it played
     for (let i = 0; i < 4; i++) tone(i % 2 ? 1250 : 650, t + i * 0.36, 0.34, { type: "square", gain: 0.16, freqEnd: i % 2 ? 650 : 1250 });
   } else if (level === "alarm") {
     [0, 0.2, 0.4].forEach((d) => tone(988, t + d, 0.13, { gain: 0.28 }));
+  } else if (level === "update") {
+    tone(1319, t, 0.45, { type: "triangle", gain: 0.2 });
+    tone(1760, t + 0.18, 0.7, { type: "triangle", gain: 0.18 });
   } else if (level === "connection") {
     [0, 0.3, 0.6].forEach((d, i) => tone(784 - i * 150, t + d, 0.25, { type: "triangle", gain: 0.2 }));
   } else {

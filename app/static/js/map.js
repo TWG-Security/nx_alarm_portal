@@ -4,6 +4,7 @@ import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
 import { openRuleEditor } from "./rule_editor.js";
+import { guardUpdates } from "./call_updates.js";
 
 const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
@@ -978,6 +979,8 @@ feed.addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- active calls (a guard was sent; open until End call)
 const calls = new Map();
+const callLatest = new Map();        // alarm id -> the guards' status and newest update (call_updates.js), shown on the card
+const callFlash = new Set();         // cards to flash once (a new guard update)
 let callsSoon = null;
 async function loadCalls() {
   try {
@@ -986,7 +989,13 @@ async function loadCalls() {
     rows.filter(inView).forEach((a) => calls.set(a.id, a));
   } catch { return; }
   renderCalls();
+  const missing = [...calls.keys()].filter((id) => !callLatest.has(id));     // first look: what each guard said last
+  if (missing.length) {
+    await Promise.all(missing.map((id) => guardUpdates(id).then((u) => callLatest.set(id, u)).catch(() => {})));
+    renderCalls();
+  }
 }
+on("call.update", ({ alarm, updates }) => { callLatest.set(alarm.id, updates); callFlash.add(alarm.id); reloadCalls(); });
 function renderCalls() {
   const box = document.getElementById("calls");
   // Acknowledged calls only: one still waiting for an operator is in the live feed below (no duplicates).
@@ -998,10 +1007,26 @@ function renderCalls() {
       <div class="feed-top"><span class="chip call-chip">Call</span>${a.verdict === "real" ? '<span class="chip p1">Real event</span>' : ""}${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
       <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b></div>
+      ${callLatestHtml(callLatest.get(a.id))}
       <div class="feed-actions"><button class="btn btn-sm btn-primary" data-call-open="${a.id}">Open call</button></div>
     </li>`).join("");
   const list = document.getElementById("calls-list");
   if (list.dataset.html !== html) { list.innerHTML = html; list.dataset.html = html; }      // only redraw on a change
+  for (const id of callFlash) {
+    const li = list.querySelector(`[data-call="${id}"]`);
+    callFlash.delete(id);
+    if (!li) continue;                                    // not acknowledged yet: it's in the live feed (the toast says it)
+    li.classList.remove("call-flash"); void li.offsetWidth; li.classList.add("call-flash");
+  }
+}
+// The guard's status (En route / On scene / Clear) stays on top; their newest other update (a note, opened the
+// link, sharing location) under it.
+function callLatestHtml(u) {
+  if (!u?.last) return "";
+  const at = (r) => new Date(r.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const line = (r) => `<b>${esc(r.who)}: ${esc(r.what)}</b> <span class="muted">· ${esc(at(r))}</span>${r.detail && r.what === "Guard note" ? `<div class="muted small-print">“${esc(r.detail)}”</div>` : ""}`;
+  const top = u.status || u.last;
+  return `<div class="call-latest">&#128222; ${line(top)}${u.last !== top ? `<div class="call-latest-more">${line(u.last)}</div>` : ""}</div>`;
 }
 const reloadCalls = () => { clearTimeout(callsSoon); callsSoon = setTimeout(loadCalls, 300); };
 ["alarm.timeline", "alarm.updated", "alarm.acked", "reconnect", "store"].forEach((ev) => on(ev, reloadCalls));

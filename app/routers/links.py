@@ -9,6 +9,7 @@
 - POST /api/a/{token}/share                   "Share my location now": the texted person's location-link token
 - POST /api/a/{token}/diag                    "Request location": what the phone's browser answered (troubleshooting)
 - POST /api/a/{token}/status                  En route / On scene / Clear (an MDT's status buttons), logged on the timeline
+- POST /api/a/{token}/note                    a note from the guard (the alarm's notes + timeline; dispatch hears a chime)
 
 Everything is limited to the link's one alarm and the live view of its site's cameras. An unknown token is recorded as a failed sign-in
 (kind "alarm_link"), so an address that guesses gets banned (BanGate guards these paths). Opening the
@@ -79,7 +80,8 @@ async def alarm_page(token: str, request: Request, db: AsyncSession = Depends(ge
     response = render(request, "alarm_link.html", state="ok", alarm=data, token=token,
                       sent_to=who.label if who else "", expires_at=link.expires_at.isoformat(),
                       directions=sms.directions_url(alarm.site),
-                      guard_status=await _guard_status(db, alarm.id, link.user_id) if who else "")
+                      guard_status=await _guard_status(db, alarm.id, link.user_id) if who else "",
+                      guard_notes=await _guard_notes(db, alarm.id, link.user_id) if who else [])
     response.headers.update(PRIVATE)
     return response
 
@@ -377,6 +379,56 @@ async def link_guard_status(token: str, body: StatusIn, request: Request, db: As
     await db.commit()
     return {"ok": True, "status": body.status, "position": bool(where)}
 
+
+
+GUARD_NOTES_MAX = 50        # per person per alarm: plenty for a call, and a cap on a leaked link
+
+
+async def _guard_notes(db: AsyncSession, alarm_id: int, user_id: int) -> list[dict]:
+    """The notes this person wrote from their link (not the operators' internal notes)."""
+    from sqlalchemy import select
+    from app.models import AlarmNote
+    from app.services.serialize import note_dict
+    rows = (await db.scalars(select(AlarmNote).where(AlarmNote.alarm_id == alarm_id, AlarmNote.user_id == user_id)
+                             .order_by(AlarmNote.id))).all()
+    return [note_dict(n) for n in rows]
+
+
+class GuardNoteIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/api/a/{token}/note")
+async def link_guard_note(token: str, body: GuardNoteIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """A note from the guard's alarm page (the user, 2026-10-14: "on the dispatch URL for it to have a note section for
+    the guard to put notes in"): one of the alarm's notes under their name, on its timeline as a guard update (so an
+    active call's dispatcher hears the update chime) and in the incident report."""
+    from sqlalchemy import func, select
+    from app.models import AlarmNote
+    from app.services.bus import bus
+    from app.services.serialize import note_dict
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(404 if status == "invalid" else 410)
+    if link.user_id is None:
+        raise HTTPException(400, "This link wasn't sent to a person")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(422, "Write a note first")
+    count = await db.scalar(select(func.count()).select_from(AlarmNote).where(AlarmNote.alarm_id == alarm.id,
+                                                                               AlarmNote.user_id == link.user_id))
+    if count >= GUARD_NOTES_MAX:
+        raise HTTPException(429, f"That's {GUARD_NOTES_MAX} notes on this alarm already. Call dispatch instead.")
+    note = AlarmNote(tenant_id=alarm.tenant_id, alarm_id=alarm.id, user_id=link.user_id, text=text)
+    note.user = await db.get(User, link.user_id)
+    db.add(note)
+    await db.flush()
+    audit(db, alarm.tenant_id, "alarm.note", user_id=link.user_id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), note_id=note.id, text=text, guard=True)
+    await db.commit()
+    data = note_dict(note)
+    bus.publish(alarm.tenant_id, "alarm.note", data)
+    return data
 
 
 @router.post("/api/a/{token}/diag")

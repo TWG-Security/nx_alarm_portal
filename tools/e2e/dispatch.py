@@ -80,8 +80,14 @@ API = """async ([url, method, body]) => { const t = document.querySelector('meta
     return [r.status, await r.json()]; }"""
 
 with sync_playwright() as p:
-    b = getattr(p, os.environ.get("E2E_BROWSER", "chromium")).launch()      # E2E_BROWSER=webkit: Safari's engine
+    engine = os.environ.get("E2E_BROWSER", "chromium")
+    b = getattr(p, engine).launch(**({"args": ["--autoplay-policy=no-user-gesture-required"]} if engine == "chromium" else {}))   # E2E_BROWSER=webkit: Safari's engine
     ctx = b.new_context(viewport={"width": 1500, "height": 950})
+    # every tone the operator's page plays (sound.js), by frequency: the guard-update chime is 1319 then 1760 Hz
+    ctx.add_init_script("""(() => { window.__tones = []; const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+      const make = AC.prototype.createOscillator; AC.prototype.createOscillator = function () { const o = make.call(this);
+        const set = o.frequency.setValueAtTime.bind(o.frequency); o.frequency.setValueAtTime = (v, t) => { window.__tones.push(Math.round(v)); return set(v, t); };
+        return o; }; })();""")
     pg = ctx.new_page()
     errors = []
     pg.on("pageerror", lambda e: errors.append(f"operator: {e}"))
@@ -217,12 +223,42 @@ with sync_playwright() as p:
     check(True, "dispatcher sees Ana opened the link (live)")
 
     # MDT: En route (also starts sharing), then On scene; the dispatcher's board and timeline follow live.
+    chimes = lambda: pg.evaluate("(() => { const t = window.__tones; let n = 0; for (let i = 0; i + 1 < t.length; i++) if (t[i] === 1319 && t[i + 1] === 1760) n++; return n; })()")
     for st, word in (("en_route", "En route"), ("on_scene", "On scene")):
+        c0 = chimes()
         t0 = time.time()
         alarm_page.click(f".mdt-btn[data-status='{st}']")
         pg.wait_for_selector(f".mdt-board .mdt-chip--{st}", timeout=8000)
         ms_live = (time.time() - t0) * 1000
         check(ms_live < 3000, f"Ana taps {word}: on the dispatcher's board in {ms_live:.0f} ms")
+        # an active call: the update chime (not an alarm sound), a toast at the bottom right, the Active calls card
+        pg.wait_for_function(f"document.querySelector('#calls-list .call-latest')?.innerText.includes('{word}')", timeout=8000)
+        ms_card = (time.time() - t0) * 1000
+        pg.wait_for_function(f"(() => {{ const t = window.__tones; let n = 0; for (let i = 0; i + 1 < t.length; i++) if (t[i] === 1319 && t[i + 1] === 1760) n++; return n; }})() > {c0}", timeout=5000)
+        ms_chime = (time.time() - t0) * 1000
+        toast_txt = pg.inner_text(".toast.call >> nth=-1")
+        check(word in toast_txt and "Ana Near" in toast_txt, f"{word}: update chime {ms_chime:.0f} ms, Active calls card {ms_card:.0f} ms, toast {toast_txt.splitlines()[0]!r}")
+    pg.screenshot(path=f"{out}/dispatch7-call-update.png")
+    # The operator's own note: on the timeline, but no chime (only guards' updates chime).
+    c0 = chimes()
+    pg.fill("#note-text", "Keyholder called")
+    pg.click("#note-add")
+    pg.wait_for_function("document.querySelector('.drawer-timeline').innerText.includes('Keyholder called')", timeout=8000)
+    pg.wait_for_timeout(1200)
+    check(chimes() == c0, "the operator's own note: no chime")
+    # Ana writes a note from her alarm page: chime, toast, card and the alarm's notes + timeline.
+    alarm_page.fill("#link-note-text", "Gate chained, nobody on site")
+    t0 = time.time()
+    alarm_page.click("#link-note-send")
+    pg.wait_for_function("document.querySelector('#calls-list .call-latest')?.innerText.includes('Gate chained')", timeout=8000)
+    ms_card = (time.time() - t0) * 1000
+    pg.wait_for_function(f"(() => {{ const t = window.__tones; let n = 0; for (let i = 0; i + 1 < t.length; i++) if (t[i] === 1319 && t[i + 1] === 1760) n++; return n; }})() > {c0}", timeout=5000)
+    pg.wait_for_function("document.querySelector('.drawer .notes-list').innerText.includes('Gate chained')", timeout=5000)
+    alarm_page.wait_for_function("document.getElementById('link-notes-list').innerText.includes('Gate chained')", timeout=5000)
+    check("Guard note" in pg.inner_text(".toast.call >> nth=-1") and "Guard note" in pg.inner_text(".drawer-timeline")
+          and alarm_page.input_value("#link-note-text") == "",
+          f"Ana's note: on the dispatcher's card in {ms_card:.0f} ms with the chime; in the alarm's notes and timeline; listed on her page")
+    alarm_page.screenshot(path=f"{out}/dispatch7-phone-note.png", full_page=True)
     alarm_page.wait_for_function("document.getElementById('link-share-state').textContent.includes('Sharing your location')", timeout=10000)
     check(True, "En route started sharing her location")
     alarm_page.screenshot(path=f"{out}/dispatch6-phone-alarm-share.png")       # left open: it shares too

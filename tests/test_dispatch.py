@@ -332,7 +332,7 @@ async def test_dispatch_several_guards_mdt_status_and_a_live_timeline(session, c
     events = []
     while not sub.queue.empty():
         events.append(sub.queue.get_nowait())
-    assert ("alarm.timeline", {"alarm_id": alarm.id}) in events                  # dispatchers' screens refresh
+    assert ("alarm.timeline", {"alarm_id": alarm.id, "guard": False}) in events  # dispatchers' screens refresh (no chime)
 
     # Guard 1 opens the link from the text and taps En route, then On scene (their router places them).
     to_guard1 = twilio.calls[sent_to(twilio).index("+15705558001")]
@@ -344,6 +344,11 @@ async def test_dispatch_several_guards_mdt_status_and_a_live_timeline(session, c
     assert (await client.post(f"/api/a/{link}/status", json={"status": "on_scene"})).status_code == 200
     assert (await client.post(f"/api/a/{link}/status", json={"status": "lunch"})).status_code == 422
     assert '"status": "on_scene"' in (await client.get(f"/a/{link}/")).text
+    events = []
+    while not sub.queue.empty():
+        events.append(sub.queue.get_nowait())
+    timeline_events = [d for name, d in events if name == "alarm.timeline"]
+    assert timeline_events and all(d == {"alarm_id": alarm.id, "guard": True} for d in timeline_events)   # the update chime
 
     await login(client, "mike@twgsecurity.com")
     board = (await client.get(f"/api/alarms/{alarm.id}/guards")).json()["dispatched"]
@@ -547,3 +552,58 @@ async def test_opening_the_alarm_is_on_its_timeline_once_per_person_per_5_min(se
     assert ack["who"] == "admin" and "Wind" in ack["detail"] and rows.index(viewed[0]) < rows.index(ack)
     await login(client, p["acme"].email)
     assert (await client.post(f"/api/alarms/{a.id}/viewed")).status_code == 404               # another company
+
+
+@respx.mock
+async def test_a_guard_writes_notes_from_their_alarm_link(session, client):
+    """The user, 2026-10-14: "on the dispatch URL ... a note section for the guard to put notes in". The note is one of
+    the alarm's notes under the guard's name, a guard row on the timeline (with the update chime flag), pushed to
+    open screens, shown back on their page; operators' own notes stay off the guard's page."""
+    from app.routers import links
+    from app.services.bus import bus
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMn"}))
+    t1 = await track(session, t.id, "Guard 1", 300, g["guard"])
+    await login(client, "mike@twgsecurity.com")
+    alarm = await make_alarm(session, site, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{alarm.id}/dispatch", json={"tracker_ids": [t1.id]})
+    await client.post(f"/api/alarms/{alarm.id}/notes", json={"text": "Internal: keyholder is slow"})
+    await sms.drain()
+    link = re.search(r"/a/([^/ \n]+)/", body_of(twilio.calls[-1])).group(1)
+    sub = bus.subscribe({t.id})
+
+    client.cookies.clear()
+    page = (await client.get(f"/a/{link}/")).text
+    assert "Notes to dispatch" in page and "keyholder" not in page
+    while not sub.queue.empty():
+        sub.queue.get_nowait()
+    r = await client.post(f"/api/a/{link}/note", json={"text": "  Gate chained, no one on site  "})
+    assert r.status_code == 200 and r.json()["text"] == "Gate chained, no one on site" and r.json()["by"] == "guard"
+    events = []
+    while not sub.queue.empty():
+        events.append(sub.queue.get_nowait())
+    assert ("alarm.timeline", {"alarm_id": alarm.id, "guard": True}) in events
+    assert any(name == "alarm.note" and d["text"] == "Gate chained, no one on site" for name, d in events)
+    assert "Gate chained, no one on site" in (await client.get(f"/a/{link}/")).text      # back on their page after a reload
+    assert (await client.post(f"/api/a/{link}/note", json={"text": "   "})).status_code == 422
+    assert (await client.post(f"/api/a/{link}/note", json={"text": "x" * 2001})).status_code == 422
+    assert (await client.post("/api/a/not-a-token/note", json={"text": "hi"})).status_code == 404
+
+    await login(client, "mike@twgsecurity.com")
+    notes = (await client.get(f"/api/alarms/{alarm.id}/notes")).json()
+    assert [n["text"] for n in notes][-2:] == ["Internal: keyholder is slow", "Gate chained, no one on site"]
+    row = next(e for e in (await client.get(f"/api/alarms/{alarm.id}/timeline")).json() if e["what"] == "Guard note")
+    assert row["kind"] == "guard" and row["detail"] == "Gate chained, no one on site"
+    assert next(e for e in (await client.get(f"/api/alarms/{alarm.id}/timeline")).json() if e["what"] == "Note added")["kind"] == "operator"
+
+    # A cap per person per alarm, so a leaked link can't flood the alarm.
+    client.cookies.clear()
+    links.GUARD_NOTES_MAX, keep = 2, links.GUARD_NOTES_MAX
+    try:
+        assert (await client.post(f"/api/a/{link}/note", json={"text": "second"})).status_code == 200
+        r = await client.post(f"/api/a/{link}/note", json={"text": "third"})
+        assert r.status_code == 429 and "Call dispatch" in r.json()["detail"]
+    finally:
+        links.GUARD_NOTES_MAX = keep

@@ -257,7 +257,7 @@ def _audit_row(a: AuditLog) -> dict:
         where = f"at {d['lat']:.5f}, {d['lng']:.5f}" if d.get("lat") is not None else "position not shared"
         away = f" ({d['distance']} from the alarm)" if d.get("distance") else ""
         return {"ts": ts, "what": GUARD_STATUS.get(d.get("status"), d.get("status", "")), "who": who, "kind": "guard",
-                "detail": where + away}
+                "detail": where + away, "status": d.get("status", "")}
     if a.action == "alarm.dispatched":
         away = f", {d['distance']} away" if d.get("distance") else (", position unknown" if "distance" in d else "")
         return {"ts": ts, "what": f"Dispatched {d.get('guard', '')}" + (" (automatic, on confirm)" if d.get("auto") else ""),
@@ -290,7 +290,8 @@ def _audit_row(a: AuditLog) -> dict:
                 "detail": ("first look, " if d.get("first") else "") + (f"{when} after it arrived" if when else "") + state}
     if a.action == "alarm.note":
         text = d.get("text", "")
-        return {"ts": ts, "what": "Note added", "who": who, "kind": "operator", "detail": text if len(text) <= 90 else text[:88] + "…"}
+        return {"ts": ts, "what": "Guard note" if d.get("guard") else "Note added", "who": who,
+                "kind": "guard" if d.get("guard") else "operator", "detail": text if len(text) <= 90 else text[:88] + "…"}
     if a.action == "alarm.verdict":
         name = {"real": "real event", "false": "false alarm", "": "not marked"}
         return {"ts": ts, "what": "Verdict changed" + (" (bulk)" if d.get("bulk") else ""), "who": who,
