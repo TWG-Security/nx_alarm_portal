@@ -382,6 +382,7 @@ function renderAll() {
 function select(id, pan = true) {
   selectedId = id;
   renderAll();
+  paintBar();
   models.siteChanged();
   const s = sites.get(id);
   if (!pan || s?.lat == null) return;
@@ -389,12 +390,16 @@ function select(id, pan = true) {
   else openPlanView(s);
 }
 
-// Back to all sites: leave the top-down view for the street-map overview.
+// Back to all sites = God's eye (the user, 2026-10-14: "default to top down but have a god's eye option as well for all
+// sites not just one site"): every site from above, in whichever view is showing (top-down, 3D or the street map).
 function deselect() {
   selectedId = null;
-  if (plan) { closePlanView(); fitToSites(); }
   renderAll();
+  if (globe) globe.flyToAll([...sites.values()]);
+  else fitToSites();
+  paintBar();
 }
+const godsEye = deselect;
 
 // ---------------------------------------------------------------- 3D view (over the map pane)
 const $id = (x) => document.getElementById(x);
@@ -438,12 +443,12 @@ function renderCoords({ lat, lng, alt, heading }) {
 const tickClock = () => { $id("hud-clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC"; };
 
 async function openGlobeView(site) {
-  if (globe) { globe.flyTo(site); return; }
+  if (globe) { if (site) globe.flyTo(site); else globe.flyToAll([...sites.values()]); return; }
   if (globeOpening) return;
   closePlanView();
   globeOpening = true;
   renderDetail();
-  globeEl.hidden = false; globeBar.hidden = false;
+  globeEl.hidden = false;
   globeMsg.textContent = "Loading 3D view…"; globeMsg.hidden = false;
   try {
     const { openGlobe } = await import("./globe.js");
@@ -463,12 +468,13 @@ async function openGlobeView(site) {
     hud.hidden = false; camsBtn.hidden = !CFG.isAdmin;
     $id("globe-model").hidden = !CFG.isAdmin;
     globe.showModels(modelsOn); paintModelBtn();
-    $id("globe-close").textContent = "2D map";
     $id("imagery-3d").textContent = globe.hasBuildings ? "3D" : "Satellite";
     showImagery("sat");
     tickClock(); hudClock = setInterval(tickClock, 1000);
     renderHud();
-    globe.flyTo(sites.get(selectedId) || site, { fromSpace: true });
+    const target = sites.get(selectedId) || site;
+    if (target) globe.flyTo(target, { fromSpace: true });
+    else globe.flyToAll([...sites.values()], { fromSpace: true });
   } catch (err) {
     console.error("3D view failed", err);
     closeGlobeView();
@@ -476,6 +482,7 @@ async function openGlobeView(site) {
   } finally {
     globeOpening = false;
     renderDetail();
+    paintBar();
   }
 }
 
@@ -486,21 +493,23 @@ function closeGlobeView() {
   try { globe?.destroy(); } catch (err) { console.error(err); }
   globe = null; delete window.__globe; delete window.__globeStats;
   clearInterval(hudClock); hudClock = null;
-  globeEl.hidden = true; globeBar.hidden = true; globeMsg.hidden = true; hud.hidden = true;
+  globeEl.hidden = true; globeMsg.hidden = true; hud.hidden = true;
   globeEl.replaceChildren();
   renderDetail();
+  paintBar();
 }
 
 // ---- top-down view: the 2D map itself, on aerial imagery and zoomed into the site, with cameras
 // drawn flat (no WebGL, so no graphics check or watchdog needed; see plan.js)
 // deviceId: centre on that camera instead of the whole site (opening an alarm).
-async function openPlanView(site, deviceId = null) {
-  const go = () => (deviceId ? plan.focusCamera(site, deviceId) : plan.flyTo(site));
+async function openPlanView(site = null, deviceId = null) {
+  const go = () => (!site ? fitToSites() : deviceId ? plan.focusCamera(site, deviceId) : plan.flyTo(site));
   if (plan) { go(); return; }
   if (globe) closeGlobeView();
   try {
     const { openPlan } = await import("./plan.js");
-    if (plan || globe || globeOpening) return;     // 3D was picked while this loaded: it wins
+    if (globe || globeOpening) return;             // 3D was picked while this loaded: it wins
+    if (plan) { go(); return; }                    // opened meanwhile (start-up + an alarm link): still go where asked
     plan = openPlan(lmap, { cameras: globeCams, onPickCamera: pickCamera, onHoverCamera: hoverCamera });
     plan.setCones(conesOn());
     window.__plan = plan;   // for tools/e2e/topdown.py
@@ -510,13 +519,13 @@ async function openPlanView(site, deviceId = null) {
     return;
   }
   mapCanvas.classList.add("plan-open");
-  globeBar.hidden = false; camsBtn.hidden = !CFG.isAdmin;
-  $id("globe-close").textContent = "Exit top-down";
+  camsBtn.hidden = !CFG.isAdmin;
   paintConesBtn(); $id("plan-cones").hidden = false;
   $id("imagery-3d").textContent = "Satellite";
   showImagery("sat");
   go();
   renderDetail();
+  paintBar();
 }
 
 // "Map" in the site panel: leave top-down / 3D for the street map, still on this site.
@@ -532,8 +541,20 @@ function closePlanView() {
   try { plan.destroy(); } catch (err) { console.error(err); }
   plan = null; delete window.__plan;
   mapCanvas.classList.remove("plan-open");
-  globeBar.hidden = true; $id("plan-cones").hidden = true;
+  $id("plan-cones").hidden = true; camsBtn.hidden = true;
   renderDetail();
+  paintBar();
+}
+
+// The bar over the map: Map / Top-down / 3D (always there, so top-down is one click from the street map), God's eye,
+// and each view's own tools.
+function paintBar() {
+  const mode = globe || globeOpening ? "3d" : plan ? "plan" : "map";
+  globeBar.hidden = false;
+  globeBar.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === mode));
+  globeBar.querySelector("[data-imagery]").parentElement.hidden = mode === "map";
+  $id("globe-recenter").hidden = mode === "map" || selectedId == null;
+  if (placingSite == null) camsBtn.hidden = mode === "map" || !CFG.isAdmin || selectedId == null;   // a site's cameras: pick a site first
 }
 
 // ---- site 3D models (globe.js draws them; model_panel.js uploads and places them, admins)
@@ -923,7 +944,17 @@ document.addEventListener("keydown", (e) => {
 
 globeBar.addEventListener("click", (e) => {
   const t = e.target;
-  if (t.id === "globe-close") { if (plan) { closePlanView(); fitToSites(); } else closeGlobeView(); return; }
+  const v = t.closest("[data-view]")?.dataset.view;
+  if (v) {
+    const s = sites.get(selectedId) || null;
+    if (v === "plan") return openPlanView(s);
+    if (v === "3d") return openGlobeView(s);
+    if (globe) closeGlobeView();
+    closePlanView();
+    if (s?.lat != null) lmap.setView([s.lat, s.lng], Math.max(lmap.getZoom(), 16)); else fitToSites();
+    return;
+  }
+  if (t.closest("#globe-all")) return godsEye();
   if (t.id === "globe-recenter") return view()?.flyTo(sites.get(selectedId));
   if (t.id === "plan-cones") return toggleCones();
   if (t.id === "globe-cams") { models.hide(); return placingSite == null ? openPlacing() : closePlacing(); }
@@ -1066,9 +1097,13 @@ setInterval(() => { if (selectedId) renderDetail(); }, 30000);
 await loadSites().catch((e) => { siteList.innerHTML = `<li class="empty">${esc(e.message)}</li>`; });
 renderAll();
 fitToSites();
+paintBar();
+// Top-down by default with every site in view (God's eye). An alarm link (/?alarm=N) opens top-down at that alarm's
+// camera instead; only one of the two runs, so they can't race (the site-wide view landing after the camera's).
 const focusId = Number(new URLSearchParams(location.search).get("alarm"));
+const focusLink = (a) => { focusAlarm(a); if (sites.get(a.site_id)?.lat == null) openPlanView(null); };
 if (focusId) {
   history.replaceState(null, "", "/");
   const a = openAlarms.get(focusId);
-  if (a) focusAlarm(a); else api(`/api/alarms/${focusId}`).then(focusAlarm).catch(() => {});
-}
+  if (a) focusLink(a); else api(`/api/alarms/${focusId}`).then(focusLink).catch(() => openPlanView(null));
+} else openPlanView(null);

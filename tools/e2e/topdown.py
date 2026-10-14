@@ -176,18 +176,18 @@ with sync_playwright() as p:
     pg.click("#drawer-close"); pg.wait_for_timeout(300)
     print("details closed, their map removed:", pg.locator(".drawer-where").count() == 0 or pg.locator(".where-mount .leaflet-container").count() == 0)
 
-    # Exit: the street map comes back, cameras go away
+    # Map (the view switch): the street map comes back, cameras go away; the switch stays to get back to top-down
     pg.click("#globe-close"); pg.wait_for_timeout(1200)
-    print("after exit: plan-sat", pg.evaluate("!!document.querySelector('#map.plan-sat')"), "| cameras drawn", pg.locator(".plan-cam").count(),
-          "| bar hidden", pg.evaluate("document.getElementById('globe-bar').hidden"),
+    print("after Map: plan-sat", pg.evaluate("!!document.querySelector('#map.plan-sat')"), "| cameras drawn", pg.locator(".plan-cam").count(),
+          "| view switch shows", pg.inner_text("#view-seg .active"),
           "| street tiles", pg.eval_on_selector_all(".leaflet-tile-pane img", "els => els.filter(e => !e.src.includes('/tiles/sat/')).length"))
     # Clicking the site's pin on the street map: straight into top-down again
     pg.locator(".pin-icon .pin-head").first.click(); pg.wait_for_function("!!window.__plan", timeout=5000)
     pg.wait_for_timeout(1200)
     print("pin clicked -> top-down:", pg.evaluate("!!document.querySelector('#map.plan-sat')"), "| cameras drawn:", pg.locator(".plan-cam").count())
-    # ✕ on the site panel (back to all sites) leaves the top-down view
+    # ✕ on the site panel (back to all sites) = God's eye: still top-down, every site in view
     pg.click("#close-detail"); pg.wait_for_timeout(800)
-    print("site closed -> overview:", pg.evaluate("!window.__plan && !document.querySelector('#map.plan-sat')"))
+    print("site closed -> God's eye, still top-down:", pg.evaluate("!!window.__plan && !!document.querySelector('#map.plan-sat')"))
     # Clicking an alarm in the feed: details open, and behind them the map is top-down at the alarm's camera
     n = pg.locator(".feed-item").count(); inject("line")
     pg.wait_for_function(f"document.querySelectorAll('.feed-item').length > {n}", timeout=10000)

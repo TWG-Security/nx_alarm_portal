@@ -118,7 +118,11 @@ const silenceBtn = document.getElementById("silence-btn");
 function paint() {
   const c = mineCounts();   // the Silence button is for the alarms that sound
   const loud = c[1] + c[2] > 0;
-  if (banner) banner.hidden = muted || running() || !ctx;
+  if (banner) {
+    banner.hidden = muted || running() || !ctx;
+    // the map page's full-height layout leaves room for it (else the map's bottom toolbar is pushed off screen)
+    document.documentElement.style.setProperty("--banner-h", banner.hidden ? "0px" : `${banner.offsetHeight}px`);
+  }
   if (muteBtn) {
     muteBtn.querySelector(".sound-on")?.toggleAttribute("hidden", muted);
     muteBtn.querySelector(".sound-off")?.toggleAttribute("hidden", !muted);

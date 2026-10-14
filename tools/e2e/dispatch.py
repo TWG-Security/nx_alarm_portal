@@ -236,8 +236,8 @@ with sync_playwright() as p:
         ms_card = (time.time() - t0) * 1000
         pg.wait_for_function(f"(() => {{ const t = window.__tones; let n = 0; for (let i = 0; i + 1 < t.length; i++) if (t[i] === 1319 && t[i + 1] === 1760) n++; return n; }})() > {c0}", timeout=5000)
         ms_chime = (time.time() - t0) * 1000
-        toast_txt = pg.inner_text(".toast.call >> nth=-1")
-        check(word in toast_txt and "Ana Near" in toast_txt, f"{word}: update chime {ms_chime:.0f} ms, Active calls card {ms_card:.0f} ms, toast {toast_txt.splitlines()[0]!r}")
+        toast_txt = "\n".join(pg.eval_on_selector_all(".toast.call", "ts => ts.map(t => t.innerText)"))   # one toast may list several updates
+        check(f"Ana Near: {word}" in toast_txt, f"{word}: update chime {ms_chime:.0f} ms, Active calls card {ms_card:.0f} ms, in a toast")
     pg.screenshot(path=f"{out}/dispatch7-call-update.png")
     # The operator's own note: on the timeline, but no chime (only guards' updates chime).
     c0 = chimes()

@@ -546,6 +546,17 @@ export async function openGlobe(el, { pins, cameras = () => [], models = () => [
     return ground.get(key) ?? 0;
   }
   let flight = 0;
+  // God's eye: every site in view at once, looking almost straight down (the user, 2026-10-14).
+  function flyToAll(list, { fromSpace = false } = {}) {
+    const pts = list.filter((s) => s?.lat != null);
+    if (pts.length < 2) return flyTo(pts[0], { fromSpace });
+    ++flight;
+    const sphere = Cesium.BoundingSphere.fromPoints(pts.map((s) => Cesium.Cartesian3.fromDegrees(s.lng, s.lat, 0)));
+    sphere.radius = Math.max(sphere.radius, 400);
+    if (fromSpace) viewer.camera.setView({ destination: Cesium.Cartesian3.fromDegrees(pts[0].lng, pts[0].lat - 25, 14e6) });
+    viewer.camera.flyToBoundingSphere(sphere, { offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-80), sphere.radius * 3.2),
+                                               duration: fromSpace ? 3.5 : 1.5 });
+  }
   function flyTo(site, { fromSpace = false } = {}) {
     if (site?.lat == null) return;
     const id = ++flight;
@@ -720,7 +731,7 @@ export async function openGlobe(el, { pins, cameras = () => [], models = () => [
 
   update();
   return {
-    update, flyTo, setImagery, editCamera, editModel, stopEditing, showModels, flyToModel,
+    update, flyTo, flyToAll, setImagery, editCamera, editModel, stopEditing, showModels, flyToModel,
     selectCamera, viewFromCamera, exitCameraView, showCameraCones, cameraPose: camPose,
     get cameraView() { return camView; },
     modelState: (siteId) => { const e = modelsE.get(siteId); return e ? { loaded: !!e.tileset, failed: e.failed || "", tiles: e.tileset ? e.tileset.statistics.numberOfLoadedTilesTotal : 0 } : null; },
