@@ -302,8 +302,11 @@ with sync_playwright() as p:
           f"confirming texts only the closest guard, automatically ({took:.0f} ms after the click) {[(x['to'], x['body'][:20]) for x in new]}")
     # Real event + a dispatched guard: the alarm stays open as an active call until End call.
     pg.wait_for_selector("#drawer .call-box #call-end", timeout=8000)
-    w = pg.evaluate("[document.getElementById('drawer').getBoundingClientRect().width, innerWidth]")
-    check(abs(w[0] - w[1]) < 2 and "Back to map" in pg.inner_text("#drawer-close"), f"alarm details full screen with Back to map {w}")
+    # The details fill the map's middle pane: site panel (left) and live alarms (right) stay in view (2026-10-14).
+    w = pg.evaluate("""() => { const d = document.getElementById('drawer').getBoundingClientRect(), m = document.querySelector('.map-canvas').getBoundingClientRect();
+        return [Math.round(d.left - m.left), Math.round(d.right - m.right), getComputedStyle(document.querySelector('.feed')).visibility, document.getElementById('drawer-backdrop').hidden]; }""")
+    check(abs(w[0]) < 2 and abs(w[1]) < 2 and w[2] == "visible" and w[3] and "Back to map" in pg.inner_text("#drawer-close"),
+          f"alarm details in the map pane, live alarms and site panel still in view, Back to map {w}")
     crit_id = pg.evaluate("Number(document.querySelector('#drawer [data-dispatch]')?.closest('#drawer') && 0) || null")
     pg.click("#drawer-close")
     pg.wait_for_selector("#calls:not([hidden]) .call-item", timeout=8000)

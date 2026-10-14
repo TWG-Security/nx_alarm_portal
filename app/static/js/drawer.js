@@ -18,6 +18,27 @@ let current = null, player = null, live = null, notes = [];
 let where = null;    // { map, plan, site }: the top-down map of where the alarm's camera is
 let guardsTimer = null, guardsFor = null, lastGuards = null;     // lastGuards: { alarmId, r } from /guards
 
+// On the map page (wide screens) the details fill only the map's middle pane: the site panel (left) and the live
+// alarms (right) stay in view and clickable (the user, 2026-10-14: "keep the live alarms in view and the site info
+// on the left, i am not sure i like the full screen"). Narrow screens and the other pages keep the full screen.
+const mapPane = document.querySelector(".map-canvas");
+const DOCK_MIN_WIDTH = 1100;           // below this theme.css stacks the map page's columns
+function dock() {
+  const on = !!mapPane && !drawer.hidden && innerWidth > DOCK_MIN_WIDTH;
+  drawer.classList.toggle("drawer--docked", on);
+  backdrop.hidden = drawer.hidden || on;
+  if (!on) return;
+  const r = mapPane.getBoundingClientRect();
+  drawer.style.setProperty("--dock-left", `${Math.round(r.left)}px`);
+  drawer.style.setProperty("--dock-width", `${Math.round(r.width)}px`);
+  drawer.style.setProperty("--dock-top", `${Math.max(0, Math.round(r.top))}px`);
+}
+if (mapPane) {
+  new ResizeObserver(dock).observe(mapPane);
+  addEventListener("resize", dock);
+  addEventListener("scroll", dock, { passive: true });
+}
+
 // ---------------------------------------------------------------- Next: the next open alarm in working order
 function nextAlarm(a) {
   const q = alarmQueue();
@@ -363,7 +384,7 @@ export async function openDrawer(id, fallback) {
   loadTimeline(a);
   api(`/api/alarms/${a.id}/viewed`, { method: "POST" }).catch(() => {});     // "Viewed the alarm" on the timeline
   drawer.hidden = false;
-  backdrop.hidden = false;
+  dock();
   drawer.querySelector("#drawer-close").focus();
 }
 

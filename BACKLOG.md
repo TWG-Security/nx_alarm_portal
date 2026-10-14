@@ -1,18 +1,5 @@
 # Programming backlog
 
-## To do: clean up the map's site panel (left side, when a site is selected)
-Added 2026-10-14 at the user's request: "improve the UI when selecting a site, on the left it seems disorganized the
-alerts for delayed alarms seems cluttered when selecting 3d or top down is just tossed in there. Lets make that UI
-clean nice efficient and more professional". **Not started.**
-- [ ] Screenshot the current panel (desktop + 390 px phone) for each state: normal, NX rule-delay warnings, can't read
-      rules, disarmed / armed, open alarms, admin vs operator; list everything it shows today (`map.js` site panel)
-- [ ] Clear layout with fixed sections: header (name, address, armed state, open-alarm count), view switcher
-      (Map / Top-down / 3D as one segmented control, not loose buttons), actions (Arm/Disarm, Check now, NX rules)
-- [ ] Rule-delay / rule-read warnings: one compact status line ("2 NX rules delay alarms · Review") that expands
-      or opens the rules dialog, instead of the full list in the panel
-- [ ] Consistent spacing, icons (line icons like the Guards panel), TWG colours; phone width without horizontal scroll
-- [ ] Measure alarm latency with the panel open (must stay < 1 s); e2e screenshots before / after for the user
-
 ## To do: other VMSs (UniFi Protect, Avigilon Alta, Verkada, Avigilon Unity)
 Added 2026-10-14 at the user's request ("add to do to list" after the assessment in CLAUDE.md item 14j). **Not started.**
 Order: groundwork → Verkada → Alta → UniFi Protect → Unity (only once Avigilon grants access). Effort figures are
@@ -59,6 +46,12 @@ calling a source done.
 **5. Avigilon Unity (~4-5 days, blocked on partner access)**
 - [ ] WebEndpoint (port 8443) client with the issued nonce/key; alarm ingest, acknowledge, cameras, media (formats unknown until docs)
 - [ ] Alternative if access is refused: SureView Immix as the monitoring route
+
+---
+
+# Done: map site panel cleanup (2026-10-14)
+Built and tested 2026-10-14: fixed sections, Map / Top-down / 3D switcher, one-line NX rules status, compact arming,
+line-icon actions; alarm details now fill only the map's middle pane. Details: CLAUDE.md item 14n.
 
 ---
 

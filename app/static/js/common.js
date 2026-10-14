@@ -216,7 +216,8 @@ export function armLine(site) {
 const SHIELD = '<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6l-8-3z"/>';
 const ICON_ARMED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">${SHIELD}<path d="m8.5 12 2.5 2.5 4.5-5"/></svg>`;
 const ICON_DISARMED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">${SHIELD}<path d="M9 9l6 6m0-6-6 6"/></svg>`;
-// The site panel's arming card: state at a glance, why, what's next, and one clear button.
+// The site panel's arming card: state at a glance, why, what's next, and one clear button. Armed is the normal
+// state, so it is one row with a small Disarm button; disarmed stays prominent with a full-width Arm button.
 export function armCardHtml(site) {
   const a = site.arming;
   if (!a) return "";
@@ -224,10 +225,10 @@ export function armCardHtml(site) {
   return `<div class="arm-card ${a.armed ? "is-armed" : "is-disarmed"}">
     <div class="arm-card-head">${a.armed ? ICON_ARMED : ICON_DISARMED}
       <span class="arm-card-state">${a.armed ? "Armed" : "Disarmed"}</span>
-      ${a.armed ? "" : `<span class="arm-card-for" title="Disarmed for">${timerHtml(a.since_ms)}</span>`}</div>
+      ${a.armed ? '<button class="btn btn-sm arm-card-btn-sm" data-arm="disarm">Disarm…</button>'
+        : `<span class="arm-card-for" title="Disarmed for">${timerHtml(a.since_ms)}</span>`}</div>
     ${lines.map((l) => `<div class="arm-card-line">${l}</div>`).join("")}
-    ${a.armed ? "" : '<div class="arm-card-line">Security events are recorded, not raised.</div>'}
-    <button class="btn ${a.armed ? "" : "btn-primary"} arm-card-btn" data-arm="${a.armed ? "disarm" : "arm"}">${a.armed ? "Disarm site…" : "Arm site now"}</button>
+    ${a.armed ? "" : '<div class="arm-card-line">Security events are recorded, not raised.</div><button class="btn btn-primary arm-card-btn" data-arm="arm">Arm site now</button>'}
   </div>`;
 }
 

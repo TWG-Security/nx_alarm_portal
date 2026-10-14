@@ -120,6 +120,7 @@ with sync_playwright() as p:
     # --- 7. schedule editor round trip
     pg.goto(f"{PORTAL}/sites/{site['id']}/edit")
     check(count(pg, ".sched-row") == 1 and pg.input_value("#timezone") == "UTC", "site form shows the saved schedule")
+    pg.once("dialog", lambda d: d.accept())         # "Replace the times below with business hours?"
     pg.click("#sched-preset")
     pg.click("#save-btn")
     pg.wait_for_url(f"{PORTAL}/sites")

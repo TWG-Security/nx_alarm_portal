@@ -1,6 +1,6 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
-import { openDrawer } from "./drawer.js";
+import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
 import { openRuleEditor } from "./rule_editor.js";
@@ -69,35 +69,96 @@ function renderSites() {
     </li>`).join("");
 }
 
+// The site panel (the user, 2026-10-14: "clean nice efficient and more professional"): fixed sections in a fixed
+// order. Header (state dot, name, address, close), facts row, view switcher, arming, one NX-rules status line
+// (details fold out), a few facts, then the actions. Line icons like the Guards panel.
+const ico = (d) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON = {
+  close: ico('<path d="M6 6l12 12M18 6 6 18"/>'),
+  camera: ico('<path d="M3 7h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3z"/><path d="m16 10 5-3v10l-5-3"/>'),
+  pulse: ico('<path d="M3 12h4l3-7 4 14 3-7h4"/>'),
+  check: ico('<path d="M3 12a9 9 0 1 0 18 0 9 9 0 1 0-18 0"/><path d="m8.5 12 2.5 2.5 4.5-5"/>'),
+  warn: ico('<path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.01"/>'),
+  refresh: ico('<path d="M20 12a8 8 0 1 1-2.3-5.7L20 8.5"/><path d="M20 3.5v5h-5"/>'),
+  rules: ico('<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>'),
+  history: ico('<path d="M3 12a9 9 0 1 0 2.7-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7.5V12l3 2"/>'),
+  edit: ico('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>'),
+  chevron: ico('<path d="M9 6l6 6-6 6"/>'),
+};
+const MARKER_TXT = { ok: "Normal", warn: "Warnings open", alarm: "Alarms open", offline: "Offline" };
+const durTxt = (s) => (s >= 3600 ? `${+(s / 3600).toFixed(1)} h` : s >= 60 ? `${+(s / 60).toFixed(1)} min` : `${s} s`);
+let rulesLineOpen = false;     // the NX rules warning stays folded out across re-renders (they come with every alarm)
+
+// NX rules health in one line; the detail folds out (it used to fill half the panel).
+function rulesLineHtml(s) {
+  const d = s.rule_delays || [], sys = s.system_delays || { count: 0 };
+  const btn = '<button type="button" class="btn btn-sm" data-rules-open>Open NX rules</button>';
+  if (s.rules_readable === false) {
+    return `<details class="sp-status warn" ${rulesLineOpen ? "open" : ""}><summary>${ICON.warn}<span>Can't read NX rules</span>${ICON.chevron}</summary>
+      <p>The portal's NX account needs rule-read rights (e.g. Power Users) for #tags, #24h and the repeat-delay check to work.</p>${btn}</details>`;
+  }
+  if (s.rules_readable == null) return "";
+  const sysTxt = sys.count ? `System events (${sys.count} types): repeats held up to ${durTxt(sys.max_s)}${sys.worst ? ` (${sys.worst})` : ""} by NX's default notification rules. Usually fine.` : "";
+  if (!d.length) {
+    return `<div class="sp-status ok" title="${esc(sysTxt)}">${ICON.check}<span>Security alarms on time</span></div>`;
+  }
+  return `<details class="sp-status warn" ${rulesLineOpen ? "open" : ""}><summary>${ICON.warn}
+      <span>${d.length} NX rule${d.length === 1 ? "" : "s"} delay${d.length === 1 ? "s" : ""} repeat alarms</span><span class="sp-status-more">Review</span>${ICON.chevron}</summary>
+    <ul>${d.slice(0, 8).map((r) => `<li>${esc(r.name)}: repeats up to <b>${durTxt(r.interval_s)}</b> late</li>`).join("")}
+      ${d.length > 8 ? `<li>…and ${d.length - 8} more</li>` : ""}</ul>
+    <p><b>Fix:</b> in NX, add a rule for the same event with action <b>Write to log</b> and <b>Interval of action</b> off. Existing notification rules can keep their limits.</p>
+    ${sysTxt ? `<p class="muted">${esc(sysTxt)}</p>` : ""}${btn}</details>`;
+}
+
+// Which camera view the map pane shows: the switcher marks it.
+const currentView = () => (globe || globeOpening ? "3d" : plan ? "plan" : "map");
+
 function renderDetail() {
   const box = document.getElementById("site-detail");
   const s = sites.get(selectedId);
   if (!s) { box.hidden = true; return; }
   box.hidden = false;
+  const { c, marker } = stateOf(s);
+  const open = c[1] + c[2], warns = c[3], v = currentView();
+  const viewBtn = (key, attr, label, title) =>
+    `<button type="button" ${attr} class="${v === key ? "active" : ""}" aria-pressed="${v === key}" title="${title}">${label}</button>`;
   box.innerHTML = `
-    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
-      <div><h2 style="margin-bottom:2px">${esc(s.name)}</h2>${multiCompany ? `<div><b>${esc(s.tenant_name)}</b></div>` : ""}<div class="muted">${esc(s.address || "No address")}</div></div>
-      <button class="btn btn-sm" id="close-detail" aria-label="Close">✕</button>
+    <div class="sp-head">
+      <span class="dot dot--${marker}" title="${MARKER_TXT[marker]}"></span>
+      <div class="sp-title">
+        <h2>${esc(s.name)}</h2>
+        ${multiCompany ? `<div class="sp-company">${esc(s.tenant_name)}</div>` : ""}
+        <div class="muted">${esc(s.address || "No address")}</div>
+      </div>
+      <button type="button" class="sp-close" id="close-detail" aria-label="Close" title="Back to all sites">${ICON.close}</button>
     </div>
+    <div class="sp-facts">
+      <span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : '<span class="chip">Disabled</span>'}
+      ${open ? `<span class="chip p2">${open} open</span>` : ""}${warns ? `<span class="chip p3">${warns} warning${warns === 1 ? "" : "s"}</span>` : ""}
+      <span class="sp-fact" title="Cameras">${ICON.camera}${s.camera_count}</span>
+      <span class="sp-fact" title="Last contact with NX${s.push ? " · alarms arrive by live push" : s.push === false ? " · polling only (5 s)" : ""}">${ICON.pulse}${relTime(s.last_seen_at)}${s.push === false ? " · polling" : ""}</span>
+    </div>
+    ${s.status_detail ? `<div class="sp-detail ${s.status === "online" ? "" : "bad"}">${esc(s.status_detail)}</div>` : ""}
+    ${s.lat != null ? `<div class="seg sp-views" role="group" aria-label="View">
+      ${viewBtn("map", "data-view-map", "Map", "Street map around this site")}
+      ${viewBtn("plan", "data-plan", "Top-down", "Aerial view from straight above, with this site's cameras")}
+      ${viewBtn("3d", "data-globe", "3D", "Fly into a 3D aerial view of this site")}</div>` : ""}
     ${armCardHtml(s)}
-    <dl class="kv">
-      <dt>Status</dt><dd><span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : ' <span class="chip">disabled</span>'}</dd>
-      ${s.status_detail ? `<dt>Detail</dt><dd>${esc(s.status_detail)}</dd>` : ""}
-      <dt>Last contact</dt><dd>${relTime(s.last_seen_at)}</dd>
-      <dt>Alarm feed</dt><dd>${s.push ? '<span class="chip online">Live push</span>' : s.push === false ? '<span class="chip">Polling only (5 s)</span>' : "—"}</dd>
-      <dt>NX rules</dt><dd>${ruleHealthHtml(s)} <button type="button" class="btn btn-sm" data-rules title="Every NX rule the portal read for this site, and what it does here">View NX rules</button></dd>
-      <dt>NX</dt><dd>${esc(s.nx_site_name || "—")} ${s.nx_version ? `<span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
-      <dt>Cameras</dt><dd>${s.camera_count}</dd>
-      ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
+    ${rulesLineHtml(s)}
+    <dl class="sp-kv">
+      <dt>NX</dt><dd>${esc(s.nx_site_name || "—")}${s.nx_version ? ` <span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
+      ${s.notes ? `<dt>Notes</dt><dd class="sp-notes">${esc(s.notes)}</dd>` : ""}
     </dl>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${s.lat != null ? `<button class="btn btn-sm btn-primary" type="button" data-plan title="Aerial view from straight above, with this site's cameras">Top-down view</button>
-        <button class="btn btn-sm" type="button" data-globe title="Fly into a 3D aerial view of this site">3D view</button>` : ""}
-      <button class="btn btn-sm" type="button" data-check title="Ask NX now: status, cameras, rules and new events (instead of waiting for the next refresh)">Check now</button>
-      <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all">Alarm history</a>
-      ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">Edit site</a>` : ""}
+    <div class="sp-actions">
+      <button class="btn btn-sm" type="button" data-check title="Ask NX now: status, cameras, rules and new events (instead of waiting for the next refresh)">${ICON.refresh}<span>Check now</span></button>
+      <button class="btn btn-sm" type="button" data-rules title="Every NX rule the portal read for this site, and what it does here">${ICON.rules}<span>NX rules</span></button>
+      <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all" title="Every alarm from this site">${ICON.history}<span>History</span></a>
+      ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">${ICON.edit}<span>Edit site</span></a>` : ""}
     </div>`;
 }
+document.getElementById("site-detail").addEventListener("toggle", (e) => {
+  if (e.target.matches?.(".sp-status")) rulesLineOpen = e.target.open;
+}, true);
 
 // ---------------------------------------------------------------- site check + NX rules list
 const LEVEL_CHIP = { critical: '<span class="chip p1">Critical</span>', alarm: '<span class="chip p2">Alarm</span>',
@@ -228,17 +289,18 @@ rulesDlg.addEventListener("change", async (e) => {
 document.getElementById("site-detail").addEventListener("click", async (e) => {
   const s = sites.get(selectedId);
   if (!s) return;
-  if (e.target.closest("[data-rules]")) return openRules(s.id);
+  if (e.target.closest("[data-rules], [data-rules-open]")) return openRules(s.id);
   const btn = e.target.closest("[data-check]");
   if (!btn) return;
-  btn.disabled = true; btn.textContent = "Checking…";
+  const label = btn.querySelector("span") || btn;
+  btn.disabled = true; label.textContent = "Checking…";
   try {
     const r = await api(`/api/sites/${s.id}/check`, { method: "POST" });
     saveSiteData(r.site);
     toast(r.error ? `${esc(s.name)}: ${esc(r.error)}` : `${esc(s.name)} checked: ${esc(STATUS[r.site.status] || r.site.status)}, ${r.site.camera_count} cameras, ${r.rules.rules.length} NX rules`,
           r.error ? { kind: "error" } : {});
   } catch (err) { toast(esc(err.message), { kind: "error" }); }
-  finally { btn.disabled = false; btn.textContent = "Check now"; }
+  finally { btn.disabled = false; label.textContent = "Check now"; }
 });
 
 // ---------------------------------------------------------------- right: live feed
@@ -379,6 +441,7 @@ async function openGlobeView(site) {
   if (globeOpening) return;
   closePlanView();
   globeOpening = true;
+  renderDetail();
   globeEl.hidden = false; globeBar.hidden = false;
   globeMsg.textContent = "Loading 3D view…"; globeMsg.hidden = false;
   try {
@@ -411,6 +474,7 @@ async function openGlobeView(site) {
     toast(`3D view isn't available on this screen (${esc(err.message || String(err))}). The 2D map and alarms are unaffected.`, { kind: "error", timeout: 8000 });
   } finally {
     globeOpening = false;
+    renderDetail();
   }
 }
 
@@ -423,6 +487,7 @@ function closeGlobeView() {
   clearInterval(hudClock); hudClock = null;
   globeEl.hidden = true; globeBar.hidden = true; globeMsg.hidden = true; hud.hidden = true;
   globeEl.replaceChildren();
+  renderDetail();
 }
 
 // ---- top-down view: the 2D map itself, on aerial imagery and zoomed into the site, with cameras
@@ -450,6 +515,14 @@ async function openPlanView(site, deviceId = null) {
   $id("imagery-3d").textContent = "Satellite";
   showImagery("sat");
   go();
+  renderDetail();
+}
+
+// "Map" in the site panel: leave top-down / 3D for the street map, still on this site.
+function showMapView(site) {
+  if (globe) closeGlobeView();
+  closePlanView();
+  if (site.lat != null) lmap.setView([site.lat, site.lng], Math.max(lmap.getZoom(), 16));
 }
 
 function closePlanView() {
@@ -459,6 +532,7 @@ function closePlanView() {
   plan = null; delete window.__plan;
   mapCanvas.classList.remove("plan-open");
   globeBar.hidden = true; $id("plan-cones").hidden = true;
+  renderDetail();
 }
 
 // ---- site 3D models (globe.js draws them; model_panel.js uploads and places them, admins)
@@ -871,15 +945,17 @@ function focusAlarm(a) {
 
 // ---------------------------------------------------------------- interactions
 const siteList = document.getElementById("site-list");
-siteList.addEventListener("click", (e) => { const li = e.target.closest(".site-item"); if (li) select(Number(li.dataset.id)); });
+siteList.addEventListener("click", (e) => { const li = e.target.closest(".site-item"); if (li) { closeDrawer(); select(Number(li.dataset.id)); } });
 siteList.addEventListener("keydown", (e) => {
   const li = e.target.closest(".site-item");
-  if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(Number(li.dataset.id)); }
+  if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); closeDrawer(); select(Number(li.dataset.id)); }
 });
 document.getElementById("site-detail").addEventListener("click", async (e) => {
-  if (e.target.id === "close-detail") { deselect(); return; }
-  if (e.target.closest("[data-globe]") && sites.has(selectedId)) { openGlobeView(sites.get(selectedId)); return; }
-  if (e.target.closest("[data-plan]") && sites.has(selectedId)) { openPlanView(sites.get(selectedId)); return; }
+  if (e.target.closest("#close-detail")) { closeDrawer(); deselect(); return; }
+  const s = sites.get(selectedId);
+  if (e.target.closest("[data-view-map]") && s) { closeDrawer(); showMapView(s); return; }
+  if (e.target.closest("[data-globe]") && s) { closeDrawer(); openGlobeView(s); return; }
+  if (e.target.closest("[data-plan]") && s) { closeDrawer(); openPlanView(s); return; }
   const op = e.target.dataset.arm;
   if (op && sites.has(selectedId)) { e.target.disabled = true; await setArmed(sites.get(selectedId), op === "arm"); e.target.disabled = false; }
 });
