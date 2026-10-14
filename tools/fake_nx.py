@@ -479,10 +479,14 @@ def _fleet_vehicles() -> list[dict]:
         {"id": 503, "name": "Service Truck 3", "year": 2021, "make": "Chevrolet", "model": "Silverado", "license_plate": "", "is_sample": False,
          "current_location_entry": None},
         {"id": 599, "name": "Sample Vehicle", "is_sample": True, "current_location_entry": loc(33.5, -86.8, now)},
+        # only the id of its last location (read from /vehicles/504/location_entries/7001)
+        {"id": 504, "name": "Van 20", "year": 2025, "make": "Ford", "model": "Transit 150", "license_plate": "TWG-0020", "is_sample": False,
+         "current_location_entry_id": 7001},
     ]
     return [r for r in rows if r["id"] not in FLEET["archived"]]
 
 def _fleet_gate(request: Request):
+    FLEET["version"] = request.headers.get("x-api-version")
     if request.headers.get("authorization") != "Token dev-key" or request.headers.get("account-token") != "dev-account" \
             or FLEET["mode"] == "unauthorized":
         return JSONResponse({"errors": ["Unauthorized"]}, status_code=401)
@@ -510,6 +514,16 @@ async def fleet_one(vid: int, request: Request):
     FLEET["reads"] += 1                       # Van 12 moves on every read, a single-vehicle one too
     found = next((r for r in _fleet_vehicles() if r["id"] == vid), None)
     return found or JSONResponse({"error": "not found"}, status_code=404)
+
+@app.get("/_fleetio/vehicles/{vid}/location_entries/{eid}")
+async def fleet_entry(vid: int, eid: int, request: Request):
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["entry_reads"] = FLEET.get("entry_reads", 0) + 1
+    if (vid, eid) != (504, 7001):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"id": 7001, "vehicle_id": 504, "item_type": "Vehicle", "is_current": True, "date": _fleet_iso(time.time() - 300),
+            "address": "Camp Hill, PA", "location": "POINT (-76.9197 40.2398)", "geolocation": {"latitude": 40.2398, "longitude": -76.9197}}
 
 @app.post("/_fleetio/mode/{mode}")
 async def fleet_mode(mode: str):

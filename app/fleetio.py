@@ -11,6 +11,10 @@ not yet verified against a live account:
   - Positions come from whatever feeds Fleetio (a telematics integration, Fleetio Go on the driver's phone, fuel /
     inspection entries), so how fresh they are depends on that feed; `date` says when each was recorded.
   - Rate limits depend on the Fleetio plan; a 429 carries Retry-After (seconds).
+  - The version answered is the API key's locked one unless X-Api-Version says otherwise: always sent (API_VERSION).
+  - First live read (TWG, 2026-10-14 18:07 UTC): 19 vehicles listed, none with a position on the map. In case the
+    list carries only current_location_entry_id, that entry is read (GET /vehicles/{id}/location_entries/{entry},
+    once per entry id); `stats` says what each list held (Sites page → Test connection).
 """
 from __future__ import annotations
 
@@ -24,7 +28,9 @@ from app.config import get_settings
 
 TIMEOUT = httpx.Timeout(10.0, connect=5.0)
 REQUEST_MAX_S = 15.0
+API_VERSION = "2025-05-05"  # the spec this client was written from
 PAGE = 100                 # Fleetio's largest page
+ENTRY_LOOKUPS_MAX = 50     # location entries read by id per round (only new entry ids cost a call)
 MAX_PAGES = 20             # 2,000 vehicles: far beyond a security company's fleet, and a cap on a runaway loop
 
 
@@ -58,11 +64,12 @@ def _parse_time(s) -> datetime | None:
     return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
 
 
-def vehicle(rec: dict) -> Vehicle | None:
-    """One Fleetio vehicle record -> Vehicle (None for Fleetio's sample data or a record without an id)."""
+def vehicle(rec: dict, loc: dict | None = None) -> Vehicle | None:
+    """One Fleetio vehicle record -> Vehicle (None for Fleetio's sample data or a record without an id). loc: its
+    location entry when it was read separately."""
     if not isinstance(rec, dict) or rec.get("id") is None or rec.get("is_sample"):
         return None
-    loc = rec.get("current_location_entry") or {}
+    loc = loc or rec.get("current_location_entry") or {}
     geo = loc.get("geolocation") or {}
     lat, lng = geo.get("latitude"), geo.get("longitude")
     ok = isinstance(lat, (int, float)) and isinstance(lng, (int, float)) and -90 <= lat <= 90 and -180 <= lng <= 180 \
@@ -79,8 +86,10 @@ class Client:
     def __init__(self, account_token: str, api_key: str, base: str | None = None, transport=None):
         self._base = (base or get_settings().fleetio_api_base).rstrip("/")
         self._http = httpx.AsyncClient(timeout=TIMEOUT, transport=transport, headers={
-            "User-Agent": "TWG-Alarm-Portal", "Accept": "application/json",
+            "User-Agent": "TWG-Alarm-Portal", "Accept": "application/json", "X-Api-Version": API_VERSION,
             "Authorization": f"Token {api_key}", "Account-Token": account_token})
+        self._entries: dict[str, dict] = {}       # location entry id -> that entry (an id's position never changes)
+        self.stats: dict = {}                     # what the last vehicle list held (Test connection shows it)
 
     async def close(self) -> None:
         await self._http.aclose()
@@ -109,17 +118,51 @@ class Client:
 
     async def vehicles(self) -> list[Vehicle]:
         """Every (non-archived, non-sample) vehicle with its last known position."""
-        out, cursor = [], None
+        records, cursor = [], None
         for _ in range(MAX_PAGES):
             page = await self._get("/vehicles", {"per_page": PAGE, **({"start_cursor": cursor} if cursor else {})})
-            records = page.get("records") if isinstance(page, dict) else page
-            if not isinstance(records, list):
+            got = page.get("records") if isinstance(page, dict) else page
+            if not isinstance(got, list):
                 raise FleetioError("Fleetio's vehicle list wasn't in the expected format")
-            out += [v for v in map(vehicle, records) if v is not None]
+            records += [r for r in got if isinstance(r, dict) and r.get("id") is not None and not r.get("is_sample")]
             cursor = page.get("next_cursor") if isinstance(page, dict) else None
             if not cursor:
                 break
+        stats = {"vehicles": len(records), "entry_in_list": 0, "entry_id_only": 0, "no_entry": 0, "field_missing": 0,
+                 "looked_up": 0, "lookup_failed": 0}
+        out, lookups, used = [], 0, {}
+        for r in records:
+            loc = None
+            if r.get("current_location_entry"):
+                stats["entry_in_list"] += 1
+            elif r.get("current_location_entry_id"):
+                stats["entry_id_only"] += 1
+                eid = str(r["current_location_entry_id"])
+                loc = self._entries.get(eid)
+                if loc is None and lookups < ENTRY_LOOKUPS_MAX:
+                    lookups += 1
+                    try:
+                        loc = await self._get(f"/vehicles/{int(r['id'])}/location_entries/{int(eid)}")
+                        self._entries[eid] = loc if isinstance(loc, dict) else {}
+                        stats["looked_up"] += 1
+                    except FleetioError:
+                        stats["lookup_failed"] += 1
+                if eid in self._entries:
+                    used[eid] = self._entries[eid]
+            else:
+                stats["no_entry"] += 1
+            if "current_location_entry" not in r and "current_location_entry_id" not in r:
+                stats["field_missing"] += 1
+            v = vehicle(r, loc if isinstance(loc, dict) else None)
+            if v is not None:
+                out.append(v)
+        stats["with_position"] = sum(1 for v in out if v.at is not None)
+        self.stats, self._entries = stats, used              # keep only the vehicles' current entries
         return out
 
     async def vehicle(self, vehicle_id: str) -> Vehicle | None:
-        return vehicle(await self._get(f"/vehicles/{int(vehicle_id)}"))
+        rec = await self._get(f"/vehicles/{int(vehicle_id)}")
+        loc = None
+        if isinstance(rec, dict) and not rec.get("current_location_entry") and rec.get("current_location_entry_id"):
+            loc = await self._get(f"/vehicles/{int(vehicle_id)}/location_entries/{int(rec['current_location_entry_id'])}")
+        return vehicle(rec, loc if isinstance(loc, dict) else None)

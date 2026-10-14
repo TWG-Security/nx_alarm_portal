@@ -25,6 +25,7 @@
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -44,6 +45,7 @@ from app.services import trackers as svc
 from app.services.bus import bus
 
 router = APIRouter(dependencies=[Depends(csrf_protect)])
+log = logging.getLogger(__name__)
 TRAIL_DEFAULT_MIN = 30
 TRAIL_MAX_POINTS = 5000
 
@@ -355,9 +357,20 @@ async def test_fleetio(user: User = Depends(require_admin), scope: Scope = Depen
         return {"ok": False, "error": str(e)}
     placed = [v for v in vehicles if v.at is not None]
     newest = max((v.at for v in placed), default=None)
+    st = client.stats
+    log.info("Fleetio test for company %s: %s", scope.write_tenant(), st)     # counts only, never ids or keys
+    if placed:
+        why = ""
+    elif st.get("field_missing") == st.get("vehicles"):
+        why = "Fleetio's vehicle list has no location fields at all (an older API version or a key without access to locations)."
+    elif st.get("entry_id_only") and st.get("lookup_failed"):
+        why = "Fleetio lists a last location for some vehicles but wouldn't let this key read it (check the key's permissions)."
+    else:
+        why = "Fleetio has no location for any of these vehicles: is a GPS / telematics integration connected in Fleetio?"
     return {"ok": True, "vehicles": len(vehicles), "with_position": len(placed),
             "newest_position_at": newest.isoformat() if newest else None,
-            "oldest_position_at": min(v.at for v in placed).isoformat() if placed else None}
+            "oldest_position_at": min(v.at for v in placed).isoformat() if placed else None,
+            "detail": st, "why_none": why}
 
 
 ORG_ID = r"^[A-Za-z0-9_-]{1,32}$"            # goes into IC2 URLs

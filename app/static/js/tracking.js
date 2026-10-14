@@ -143,7 +143,9 @@ $("fl-test").addEventListener("click", async () => {
   out.textContent = "Testing…";
   try {
     const r = await api("/api/tracking/fleetio/test", { method: "POST" });
-    out.innerHTML = r.ok ? `<span style="color:var(--ok)">Connected ✓ ${r.vehicles} vehicle${r.vehicles === 1 ? "" : "s"}, ${r.with_position} with a position${r.newest_position_at ? ` (newest ${esc(relTime(r.newest_position_at))}, oldest ${esc(relTime(r.oldest_position_at))})` : ""}</span>`
+    out.innerHTML = r.ok ? `<span style="color:var(--ok)">Connected ✓ ${r.vehicles} vehicle${r.vehicles === 1 ? "" : "s"}, ${r.with_position} with a position${r.newest_position_at ? ` (newest ${esc(relTime(r.newest_position_at))}, oldest ${esc(relTime(r.oldest_position_at))})` : ""}</span>
+      ${r.why_none ? `<div class="text-failed small-print">${esc(r.why_none)}</div>` : ""}
+      ${r.detail ? `<div class="muted small-print">From Fleetio: ${r.detail.entry_in_list} with a location in the list, ${r.detail.entry_id_only} with a location id only (${r.detail.looked_up} read, ${r.detail.lookup_failed} refused), ${r.detail.no_entry} without a location${r.detail.field_missing ? `, ${r.detail.field_missing} without the location fields` : ""}.</div>` : ""}`
       : `<span class="text-failed">${esc(r.error)}</span>`;
   } catch (err) { out.innerHTML = `<span class="text-failed">${esc(err.message)}</span>`; }
 });
