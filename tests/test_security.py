@@ -36,13 +36,25 @@ async def test_site_password_encrypted_and_never_returned(client, session, admin
     respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[{"id": "d1", "name": "Cam"}]))
 
     r = await client.post("/api/sites", json={"name": "HQ", "host": NX, "nx_user": "portal", "nx_pass": "s3cret-nx",
-                                              "lat": 40.1, "lng": -75.2})
+                                              "lat": 40.1, "lng": -75.2, "address": "  "})
+    assert r.status_code == 400 and "address" in r.text                  # a site needs its address
+    assert await session.scalar(select(Site)) is None
+    r = await client.post("/api/sites", json={"name": "HQ", "host": NX, "nx_user": "portal", "nx_pass": "s3cret-nx",
+                                              "lat": 40.1, "lng": -75.2, "address": "100 Main St, Emmaus, PA"})
     assert r.status_code == 200, r.text
     assert "s3cret-nx" not in r.text and "nx_pass" not in r.json()
     listing = await client.get("/api/sites")
     assert "s3cret-nx" not in listing.text
     site = await session.scalar(select(Site))
     assert site.nx_pass_enc != "s3cret-nx" and decrypt(site.nx_pass_enc) == "s3cret-nx"
+    assert site.address == "100 Main St, Emmaus, PA"
+    # Editing: the address can't be cleared once set; a site that never had one can still be saved.
+    edit = {"name": "HQ", "host": NX, "nx_user": "portal", "address": "", "connect": False}
+    r = await client.put(f"/api/sites/{site.id}", json=edit)
+    assert r.status_code == 400 and "address" in r.text
+    site.address = ""
+    await session.commit()
+    assert (await client.put(f"/api/sites/{site.id}", json=edit)).status_code == 200
     assert (site.nx_site_name, site.camera_count, site.status) == ("HQ", 1, "online")
 
 

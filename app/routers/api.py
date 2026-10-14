@@ -46,10 +46,13 @@ class SiteIn(BaseModel):
     arm_schedule: list[dict] | None = None                   # [{action, time "HH:MM", days [...]}]; None = keep
     connect: bool = True                                     # False = save without testing
 
-    @field_validator("name", "host", "nx_user")
+    @field_validator("name", "host", "nx_user", "address")
     @classmethod
     def _strip(cls, v: str) -> str:
         return v.strip()
+
+
+ADDRESS_REQUIRED = "Enter the site's address (street, city, state): dispatch texts and the incident report use it"
 
 
 class ConnTest(BaseModel):
@@ -154,6 +157,8 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
         raise HTTPException(400, {"message": str(exc)}) from exc
     if not body.nx_pass:
         raise HTTPException(400, {"message": "NX password is required"})
+    if not body.address:
+        raise HTTPException(400, {"message": ADDRESS_REQUIRED})
     site = Site(tenant_id=tenant_id, name=body.name, host=host, cloud_id=cloud_id, nx_user=body.nx_user,
                 nx_pass_enc=encrypt(body.nx_pass), address=body.address, lat=body.lat, lng=body.lng,
                 notes=body.notes)
@@ -186,6 +191,8 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
 async def update_site(site_id: int, body: SiteIn, request: Request, user: User = Depends(require_admin),
                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     site = await _get_site(db, scope, site_id, write=True)
+    if not body.address and (site.address or "").strip():          # sites made before addresses were required may
+        raise HTTPException(400, {"message": ADDRESS_REQUIRED})      # still be blank; a set one can't be cleared
     try:
         host, cloud_id = resolve_host(body.host)
     except ValueError as exc:

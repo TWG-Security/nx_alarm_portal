@@ -10,6 +10,15 @@ if (site) {
   fields.forEach((f) => { if (site[f] !== null && site[f] !== undefined) $(f).value = site[f]; });
   $("host").value = site.cloud_id && site.host.includes(".relay.vmsproxy.com") ? site.cloud_id : site.host;
 }
+// The address is required for new sites. A site added before that may still be saved without one, but is asked for it.
+if (site && !(site.address || "").trim()) {
+  $("address").required = false;
+  const warn = document.createElement("div");
+  warn.className = "alert alert-warn small-print";
+  warn.style.marginTop = "6px";
+  warn.textContent = "This site has no address yet. Add it: dispatch texts, directions and incident reports use it.";
+  $("address").closest(".field").appendChild(warn);
+}
 
 function payload(connect = true) {
   const num = (v) => (v === "" ? null : Number(v));
