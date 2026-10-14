@@ -1148,3 +1148,124 @@ async def test_a_gif_mms_the_carrier_refuses_goes_again_with_the_still(session, 
     rows = (await session.scalars(select(SmsLog).order_by(SmsLog.id))).all()
     assert [(r.outcome, r.twilio_sid) for r in rows] == [("failed", "SMgif"), ("delivered", "SMstill")]
     assert "resent with the still picture" in rows[1].error and "30019" in rows[1].error
+
+
+# ---------------------------------------------------------------- GIF follow-up to the alarm text
+async def _gif_texts_done():
+    await sms.drain()
+    while sms._gif_tasks:
+        await asyncio.gather(*list(sms._gif_tasks), return_exceptions=True)
+        await asyncio.sleep(0)               # let the done-callbacks take them out of the set
+
+
+def fake_media(monkeypatch, alarm_gif, gif=b"GIF89a...", gif_delay=0.0):
+    async def fake_gif(alarm, budget_s=None):
+        await asyncio.sleep(gif_delay)
+        return gif
+
+    async def fake_still(alarm, budget_s=None):
+        return b"\xff\xd8jpeg"
+    monkeypatch.setattr(alarm_gif, "alarm_gif", fake_gif)
+    monkeypatch.setattr(sms, "alarm_picture", fake_still)
+
+
+@respx.mock
+async def test_the_alarm_text_goes_at_once_with_the_still_then_the_gif_follows(session, monkeypatch, no_gif_cache):
+    """The user, 2026-10-14: "send with a still image first once the gif is made send the gif"."""
+    from app.services import clips, report
+    alarm_gif = no_gif_cache
+    _, site, people = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(alarm_gif, "GIF_POST_MS", 300)        # the GIF waits for the seconds after the alarm...
+    monkeypatch.setattr(clips, "PARTIAL_LAG_MS", 200)         # ...plus NX's archive lag: 0.5 s here
+    fake_media(monkeypatch, alarm_gif, gif_delay=0.2)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMx"}))
+    alarm = await make_alarm(session, site, event_ts_ms=now_ms())
+    t0 = time.monotonic()
+    sms.notify([alarm])
+    await sms.drain()
+    took_alarm = time.monotonic() - t0
+    assert took_alarm < 0.4 and len(twilio.calls) == 1, took_alarm          # the alarm text never waits for the GIF
+    first = parse_qs(twilio.calls[0].request.content.decode())
+    assert first["Body"][0].startswith("TWG ALARM: Panic button") and first["MediaUrl"][0].endswith("/alarm.jpg")
+    await _gif_texts_done()
+    took_gif = time.monotonic() - t0
+    assert len(twilio.calls) == 2 and took_gif >= 0.65, took_gif           # 0.5 s recording + 0.2 s build
+    second = parse_qs(twilio.calls[1].request.content.decode())
+    assert second["To"] == [people["all"].phone] and second["MediaUrl"][0].endswith("/alarm.gif")
+    assert second["Body"][0] == ("TWG ALARM VIDEO: Panic button\nTWG Security Office\nFront Door Cam, "
+                                 + sms._clock(alarm) + "\n\nReply STOP to opt out.")
+    assert first["MediaUrl"][0].rsplit("/", 2)[1] == second["MediaUrl"][0].rsplit("/", 2)[1]   # the same link token
+    rows = (await session.scalars(select(SmsLog).order_by(SmsLog.id))).all()
+    assert [(r.purpose, r.outcome) for r in rows] == [("alarm", "sent"), ("alarm_gif", "sent")]
+    assert len(sms._sent[people["all"].id]) == 1              # the follow-up doesn't count toward flood control
+    tl = await report.timeline(session, await session.get(Alarm, alarm.id))
+    assert [r["what"] for r in tl if r["kind"] == "text"] == ["Alarm text sent", "Alarm GIF text sent"]
+
+
+@respx.mock
+async def test_no_gif_text_without_a_gif_or_once_marked_false(session, monkeypatch, no_gif_cache):
+    alarm_gif = no_gif_cache
+    _, site, _ = await world(session)
+    await texts_on(session, sms_pictures=True)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMx"}))
+    # The GIF can't be made (NX refused the clip, ...): the still in the alarm text is all they get.
+    fake_media(monkeypatch, alarm_gif, gif=None)
+    sms.notify([await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)])
+    await _gif_texts_done()
+    assert len(twilio.calls) == 1
+    # Marked False alarm before the GIF was ready: nobody needs it any more.
+    fake_media(monkeypatch, alarm_gif, gif_delay=0.3)
+    a = await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)
+    sms.notify([a])
+    await sms.drain()
+    a.verdict, a.state = "false", "acknowledged"
+    await session.commit()
+    await _gif_texts_done()
+    assert len(twilio.calls) == 2 and all("alarm.jpg" in parse_qs(c.request.content.decode())["MediaUrl"][0] for c in twilio.calls)
+    # Pictures switched off on the Platform page: one plain text, no follow-up.
+    await texts_on(session, sms_pictures=False)
+    sms.notify([await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)])
+    await _gif_texts_done()
+    assert len(twilio.calls) == 3 and "MediaUrl" not in parse_qs(twilio.calls[2].request.content.decode())
+
+
+@respx.mock
+async def test_no_gif_text_when_the_alarm_text_failed_or_flood_control_holds_them(session, monkeypatch, no_gif_cache):
+    alarm_gif = no_gif_cache
+    _, site, people = await world(session)
+    await texts_on(session, sms_pictures=True, sms_max_per_10min=2)
+    fake_media(monkeypatch, alarm_gif, gif_delay=0.2)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(400, json={"code": 21211, "message": "Invalid 'To'"}))
+    sms.notify([await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)])
+    await _gif_texts_done()
+    assert all("alarm.gif" not in c.request.content.decode() for c in twilio.calls)
+    # Two alarms fill this person's window of 2 while the GIFs are made: no GIF texts on top of the flood.
+    sms.reset()
+    sms._sent.clear()
+    fake_media(monkeypatch, alarm_gif, gif_delay=0.2)
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMx"}))   # the same route: count on
+    n0 = len(twilio.calls)
+    sms.notify([await make_alarm(session, site, event_ts_ms=now_ms() - 10_000), await make_alarm(session, site, event_ts_ms=now_ms() - 10_000)])
+    await _gif_texts_done()
+    bodies = [parse_qs(c.request.content.decode())["Body"][0] for c in twilio.calls[n0:]]
+    assert len(bodies) == 2 and all(b.startswith("TWG ALARM: ") for b in bodies), bodies
+
+
+@respx.mock
+async def test_a_gif_text_the_carrier_refuses_is_not_sent_again(session, monkeypatch, no_gif_cache):
+    """They already have the alarm text with the still: a refused GIF follow-up is logged, not resent."""
+    _, site, people = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(sms, "WATCH", True)
+    monkeypatch.setattr(sms, "WATCH_AT_S", (0.05, 0.1))
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMgif"}))
+    respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMgif.json").mock(
+        return_value=httpx.Response(200, json={"status": "failed", "error_code": 30019}))
+    alarm = await make_alarm(session, site)
+    cfg = await sms.config()
+    await sms._send(cfg, people["all"], sms.gif_text(alarm), "alarm_gif", alarm, time.time(), "https://portal/media/a/TOK/alarm.gif")
+    await _watched()
+    assert len(twilio.calls) == 1
+    rows = (await session.scalars(select(SmsLog))).all()
+    assert [(r.purpose, r.outcome) for r in rows] == [("alarm_gif", "failed")]

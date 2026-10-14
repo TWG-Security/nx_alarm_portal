@@ -119,13 +119,15 @@ with sync_playwright() as p:
     t = wait_texts(n0 + 1)
     took = (time.time() - t0) * 1000
     check(len(t) == n0 + 1 and t[-1]["to"] == GUARD, f"CONFIRMED text reached Twilio {took:.0f} ms after the click")
-    check(took < 3000, f"confirmed text within 3 s of the click ({took:.0f} ms)")
+    # It carries the GIF (2026-10-14), made from the seconds around the alarm: confirmed this soon after the alarm, it
+    # waits for NX to record them; never past alarm_gif.GIF_BUDGET_S (6 s), then it goes with the still.
+    check(took < 7500, f"confirmed text within 7.5 s of the click ({took:.0f} ms)")
     body = t[-1]["body"]
     print(f"      text: {body!r}")
     lines = body.split("\n")
     check(lines[0].startswith("TWG CONFIRMED: ") and any(l.startswith("Confirmed real by ") for l in lines)
           and "Note: Person forcing the back door, police called" in lines, "text: CONFIRMED, who confirmed it, the note")
-    check(t[-1]["media"].endswith("/alarm.jpg"), "confirmed text carries the alarm picture")
+    check(t[-1]["media"].endswith("/alarm.gif"), f"confirmed text carries the GIF ({t[-1]['media'][-10:]})")
     link = lines[lines.index("VIDEO (alarm clip + live cameras):") + 1].strip()
     phone = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
     m = phone.new_page()

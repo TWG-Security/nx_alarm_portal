@@ -189,7 +189,7 @@ async def gather(alarm: Alarm, pre: int, post: int, quality: str, need_clip: boo
 
 
 GUARD_STATUS = {"en_route": "En route", "on_scene": "On scene", "clear": "Clear"}
-TEXT_PURPOSE = {"alarm": "Alarm text", "confirmed": "Confirmed text", "dispatch": "Dispatch text",
+TEXT_PURPOSE = {"alarm": "Alarm text", "alarm_gif": "Alarm GIF text", "confirmed": "Confirmed text", "dispatch": "Dispatch text",
                 "stand_down": "Stand-down text", "summary": "Summary text", "call_ended": "Call-ended text"}
 
 
