@@ -1,11 +1,62 @@
-# Backlog: account security and Platform settings (port from MCP-Control-Platform)
+# Programming backlog
+
+## To do: other VMSs (UniFi Protect, Avigilon Alta, Verkada, Avigilon Unity)
+Added 2026-10-14 at the user's request ("add to do to list" after the assessment in CLAUDE.md item 14j). **Not started.**
+Order: groundwork → Verkada → Alta → UniFi Protect → Unity (only once Avigilon grants access). Effort figures are
+estimates, not measured. Every step keeps the alarm rules: measure delivery latency and test failure paths before
+calling a source done.
+
+**Waiting on the user (needed before each VMS can start)**
+- [ ] A test site / account per VMS and who owns it
+- [ ] Verkada: an API key from Command (Camera read-only scope to start) and the org's region (api / api.eu / api.au)
+- [ ] Alta: a login (or API token) on a test org and its region/deployment
+- [ ] UniFi Protect: an API key from a test console (local), and how the portal reaches it (VPN / port / cloud connector)
+- [ ] Avigilon Unity: decide whether to apply to Avigilon's Technology Partner Program (integrations@avigilon.com) for the WebEndpoint user nonce + key
+
+**1. Groundwork (~2-3 days)**
+- [ ] `sites.vms_kind` (nx default) + generic encrypted credentials per kind (migration); site form picks the VMS type
+- [ ] A source interface: start/stop ingest, camera list, snapshot, clip (MP4 or HLS → our ffmpeg/cache), live (relay), optional acknowledge, optional rules
+- [ ] Move NX behind it: `manager.client_for` callers (clips, stream live/snapshot, ack write-back, report, api cameras/probe) go through the interface; no more reaching into `NXClient` private fields
+- [ ] Alarm model: rename/neutralise `nx_*` fields (or keep + add generic `source_ack` JSON); `event_type` mapping per VMS onto the portal's levels/categories
+- [ ] Public webhook receiver `/hooks/<site token>` (random token, SHA-256 stored like alarm links): answer 2xx immediately, ingest after; signature check where the VMS offers one; bans for bad tokens
+- [ ] UI wording: "NX" labels in site form, drawer, rules dialog only for NX sites; rule editor hidden for VMSs without a rules API
+- [ ] Re-run the full test suite + latency / player / dismiss e2e: NX alarm delay must be unchanged
+
+**2. Verkada (~2 days)**
+- [ ] Webhook ingest (camera alerts, AI/line/loitering, tamper, offline, access/intrusion events) with `image_url` as the snapshot
+- [ ] Polling backstop: Get Alerts / Events v2 while webhooks are quiet; dedupe by event id
+- [ ] Clips from the historical HLS stream (≤3600 s per request, request h264); live via HLS + streaming JWT (renew from `expiresAt`)
+- [ ] Camera list; region-aware base URL; 30-min auth token refresh; 429 back-off (1000 req/min/org)
+- [ ] Fake Verkada for tests + e2e with measured webhook → screen latency
+
+**3. Avigilon Alta (~2-3 days)**
+- [ ] Webhook ingest + `/api/v1/ongoingAlerts` lookup; polling backstop
+- [ ] Clips via MP4 export (`store/exportMultiParams` → download) or HLS playback; snapshot endpoint; live HLS (~6 s start)
+- [ ] Acknowledge back (201 valid / 202 false) and `/alerts/{id}/end` from the portal's verdicts
+- [ ] Optional: rules / alarm zones in the rule editor (Alta has a full API)
+- [ ] Login cookie + refresh; region/deployment hosts; fake Alta + e2e
+
+**4. UniFi Protect (~3 days)**
+- [ ] WebSocket ingest (`/proxy/protect/integration/v1/subscribe/events`) + devices stream for offline; API key auth; self-signed certs
+- [ ] Snapshot; live via RTSPS → relay (go2rtc / MediaMTX container) → browser
+- [ ] Clips: decide between the unofficial `video/export` (needs a console user login, may break on firmware updates) or recording our own short buffer from RTSPS
+- [ ] Verify the endpoint paths against Ubiquiti's own docs on a real console (current paths come from the community uiprotect library)
+- [ ] Fake Protect + e2e
+
+**5. Avigilon Unity (~4-5 days, blocked on partner access)**
+- [ ] WebEndpoint (port 8443) client with the issued nonce/key; alarm ingest, acknowledge, cameras, media (formats unknown until docs)
+- [ ] Alternative if access is refused: SureView Immix as the monitoring route
+
+---
+
+# Done: account security and Platform settings (port from MCP-Control-Platform)
 
 > **Status 2026-10-02: all 4 phases built and deployed (`857d825`).** What's left is in CLAUDE.md "Open items"
 > (office allowlist, the user's open questions; the 3D site view, item 14, is deployed).
 
 **Next session: read `CLAUDE.md` first, then this file. It's everything needed to build this without
 re-reading the other project.** The user decided the scope on 2026-10-01: build **everything** below, plus a
-**Platform settings** page for TWG to configure it all. Tick items off here as they ship; delete this file when done.
+**Platform settings** page for TWG to configure it all. Tick items off here as they ship.
 
 ## Source
 - Repo **`TWG-Security/MCP-Control-Platform`**, commit **`b17a07a`** (2026-08-25, the `master` head).
