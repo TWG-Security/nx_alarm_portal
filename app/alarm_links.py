@@ -35,6 +35,11 @@ def picture_url(token: str) -> str:
     return f"{platform_settings.current().portal_url}/media/a/{token}/alarm.jpg"
 
 
+def gif_url(token: str) -> str:
+    """The moving alarm picture for the Confirmed / Dispatch MMS (routers/links.py, services/alarm_gif.py)."""
+    return f"{platform_settings.current().portal_url}/media/a/{token}/alarm.gif"
+
+
 async def mint(db: AsyncSession, alarm: Alarm, user: User | None, hours: int) -> str:
     token = secrets.token_urlsafe(18)
     now = utcnow()

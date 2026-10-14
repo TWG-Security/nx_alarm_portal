@@ -165,6 +165,27 @@ with sync_playwright() as p:
     took = (time.time() - t0) * 1000
     body = t[-1]["body"]
     check(t[-1]["to"] == GUARDS["near"][0] and body.startswith("TWG DISPATCH:"), f"Real event: closest guard's dispatch text at Twilio {took:.0f} ms after the click")
+    # The dispatch MMS carries the moving picture (GIF with the analytics boxes), not the still.
+    media = t[-1]["media"]
+    check(media.endswith("/alarm.gif"), f"dispatch text is an MMS with the alarm GIF ({media[-30:]!r})")
+    if media.endswith("/alarm.gif"):
+        from PIL import Image
+        import io
+        t1 = time.time()
+        gif = urllib.request.urlopen(media).read()
+        g = Image.open(io.BytesIO(gif))
+        n_frames, size = getattr(g, "n_frames", 1), g.size
+        orange = 0
+        for i in range(n_frames):
+            g.seek(i)
+            px = g.convert("RGB").resize((160, round(160 * size[1] / size[0])))
+            orange += any(abs(r - 224) < 40 and abs(gg - 138) < 40 and b_ < 90 for r, gg, b_ in px.getdata())
+        check(gif[:6] == b"GIF89a" and len(gif) <= 600_000 and n_frames >= 8,
+              f"GIF: {n_frames} frames, {size[0]}x{size[1]}, {len(gif) // 1024} KB, fetched in {(time.time() - t1) * 1000:.0f} ms")
+        check(orange >= n_frames // 2, f"GIF: the orange analytics box is drawn ({orange} of {n_frames} frames)")
+        open(f"{out}/dispatch-alarm.gif", "wb").write(gif)
+    ms = alarm_on_screen(pg, "line")
+    check(ms < 1000, f"alarm on screen in {ms:.0f} ms right after a GIF was made")
     pg.wait_for_selector(".drawer-dispatch:not([hidden]) .dispatch-list li", timeout=8000)
     rows = pg.eval_on_selector_all(".dispatch-list li", "els => els.map(e => e.innerText)")
     check(rows[0].startswith("Ana Near") and "Closest" in rows[0] and "Ben Far" in rows[1], f"verified: guards closest first: {rows}")

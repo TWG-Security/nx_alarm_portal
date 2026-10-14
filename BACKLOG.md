@@ -1,5 +1,18 @@
 # Programming backlog
 
+## To do: clean up the map's site panel (left side, when a site is selected)
+Added 2026-10-14 at the user's request: "improve the UI when selecting a site, on the left it seems disorganized the
+alerts for delayed alarms seems cluttered when selecting 3d or top down is just tossed in there. Lets make that UI
+clean nice efficient and more professional". **Not started.**
+- [ ] Screenshot the current panel (desktop + 390 px phone) for each state: normal, NX rule-delay warnings, can't read
+      rules, disarmed / armed, open alarms, admin vs operator; list everything it shows today (`map.js` site panel)
+- [ ] Clear layout with fixed sections: header (name, address, armed state, open-alarm count), view switcher
+      (Map / Top-down / 3D as one segmented control, not loose buttons), actions (Arm/Disarm, Check now, NX rules)
+- [ ] Rule-delay / rule-read warnings: one compact status line ("2 NX rules delay alarms · Review") that expands
+      or opens the rules dialog, instead of the full list in the panel
+- [ ] Consistent spacing, icons (line icons like the Guards panel), TWG colours; phone width without horizontal scroll
+- [ ] Measure alarm latency with the panel open (must stay < 1 s); e2e screenshots before / after for the user
+
 ## To do: other VMSs (UniFi Protect, Avigilon Alta, Verkada, Avigilon Unity)
 Added 2026-10-14 at the user's request ("add to do to list" after the assessment in CLAUDE.md item 14j). **Not started.**
 Order: groundwork → Verkada → Alta → UniFi Protect → Unity (only once Avigilon grants access). Effort figures are

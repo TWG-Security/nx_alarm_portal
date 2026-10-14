@@ -169,9 +169,7 @@ async def dispatch(alarm_id: int, tracker_id: int, by: User | None, *, auto: boo
 
 
 async def _send(cfg, u: User, body: str, alarm: Alarm, arrived: float, token: str) -> None:
-    media = ""
-    if cfg.pictures and await sms.alarm_picture(alarm) is not None:
-        media = alarm_links.picture_url(token)
+    media = sms.media_url(await sms.verified_media(alarm), token) if cfg.pictures else ""     # GIF, else the still
     await sms._send(cfg, u, body, "dispatch", alarm, arrived, media)
 
 

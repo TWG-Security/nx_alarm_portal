@@ -1033,3 +1033,118 @@ async def test_the_alarm_page_opens_with_or_without_the_trailing_slash(session, 
     for path in (f"/a/{token}", f"/a/{token}/"):
         assert (await client.get(path)).status_code == 200, path
     assert (await client.get(f"/a/{token[:-1]}/")).status_code in (404, 410)   # a cut token doesn't open anything
+
+
+# ---------------------------------------------------------------- the moving picture (GIF) on verified texts
+@pytest.fixture
+def no_gif_cache():
+    from app.services import alarm_gif
+    alarm_gif._gifs.clear(); alarm_gif._failed.clear(); alarm_gif._inflight.clear()
+    sms._pictures.clear()
+    yield alarm_gif
+    alarm_gif._gifs.clear(); alarm_gif._failed.clear()
+
+
+async def test_verified_texts_carry_the_gif_else_the_still_else_nothing(session, monkeypatch, no_gif_cache):
+    """The user, 2026-10-14: GIF with boxes on Confirmed / Dispatch texts; the first alarm text keeps the still."""
+    alarm_gif = no_gif_cache
+    _, site, _ = await world(session)
+    a = await make_alarm(session, site)
+    gif, still = [b"GIF89a..."], [b"\xff\xd8jpeg"]
+
+    async def fake_gif(alarm, budget_s=None):
+        return gif[0]
+
+    async def fake_still(alarm, budget_s=None):
+        return still[0]
+    monkeypatch.setattr(alarm_gif, "alarm_gif", fake_gif)
+    monkeypatch.setattr(sms, "alarm_picture", fake_still)
+    assert await sms.verified_media(a) == "gif"
+    assert sms.media_url("gif", "TOK").endswith("/media/a/TOK/alarm.gif")
+    gif[0] = None
+    assert await sms.verified_media(a) == "jpg"
+    assert sms.media_url("jpg", "TOK").endswith("/media/a/TOK/alarm.jpg")
+    still[0] = None
+    assert await sms.verified_media(a) == "" and sms.media_url("", "TOK") == ""
+
+
+async def test_a_failing_gif_build_gives_none_fast_and_is_not_retried_for_a_minute(session, monkeypatch, no_gif_cache):
+    alarm_gif = no_gif_cache
+    _, site, _ = await world(session)
+    a = await make_alarm(session, site, event_ts_ms=now_ms() - 30_000)
+    calls = []
+
+    async def broken(alarm, *args):
+        calls.append(1)
+        raise alarm_gif.GifError("NX refused the clip")
+    monkeypatch.setattr(alarm_gif, "_frames", broken)
+    t0 = time.monotonic()
+    assert await alarm_gif.alarm_gif(a, budget_s=5) is None
+    assert time.monotonic() - t0 < 1
+    await asyncio.sleep(0)
+    assert await alarm_gif.alarm_gif(a, budget_s=5) is None and len(calls) == 1      # remembered for a minute
+
+
+async def test_a_slow_gif_build_never_holds_the_text_past_its_budget(session, monkeypatch, no_gif_cache):
+    alarm_gif = no_gif_cache
+    _, site, _ = await world(session)
+    a = await make_alarm(session, site, event_ts_ms=now_ms() - 30_000)
+
+    async def slow(alarm, *args):
+        await asyncio.sleep(3)
+    monkeypatch.setattr(alarm_gif, "_frames", slow)
+    t0 = time.monotonic()
+    assert await alarm_gif.alarm_gif(a, budget_s=0.3) is None
+    assert time.monotonic() - t0 < 0.6
+    for t in list(alarm_gif._inflight.values()):
+        t.cancel()
+
+
+def test_a_big_gif_is_shrunk_to_fit_the_carrier_limit():
+    """Busy pictures (noise) make big GIFs: smaller sizes / fewer frames until ≤ GIF_MAX_BYTES."""
+    import io
+    import os as _os
+    from PIL import Image
+    from app.services import alarm_gif
+    frames = []
+    for _ in range(20):
+        im = Image.frombytes("RGB", (640, 360), _os.urandom(640 * 360 * 3))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=90)
+        frames.append(buf.getvalue())
+    gif = alarm_gif._encode(frames)
+    g = Image.open(io.BytesIO(gif))
+    assert gif[:6] == b"GIF89a" and g.n_frames >= 6 and g.size[0] < 480
+    # A calm picture stays full size, every frame.
+    calm = []
+    for i in range(20):
+        im = Image.new("RGB", (640, 360), (40, 60, 80))
+        buf = io.BytesIO()
+        im.save(buf, "JPEG")
+        calm.append(buf.getvalue())
+    g = Image.open(io.BytesIO(alarm_gif._encode(calm)))
+    assert g.size == (480, 270) and g.n_frames >= 1
+
+
+@respx.mock
+async def test_a_gif_mms_the_carrier_refuses_goes_again_with_the_still(session, monkeypatch, no_gif_cache):
+    _, site, people = await world(session)
+    await texts_on(session, sms_pictures=True)
+    monkeypatch.setattr(sms, "WATCH", True)
+    monkeypatch.setattr(sms, "WATCH_AT_S", (0.05, 0.1))
+    nx_picture(1_760_282_602_000)
+    sids = iter(["SMgif", "SMstill"])
+    twilio = respx.post(TWILIO).mock(side_effect=lambda req: httpx.Response(201, json={"sid": next(sids)}))
+    respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMgif.json").mock(
+        return_value=httpx.Response(200, json={"status": "failed", "error_code": 30019}))
+    respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMstill.json").mock(
+        return_value=httpx.Response(200, json={"status": "delivered"}))
+    alarm = await make_alarm(session, site)
+    cfg = await sms.config()
+    await sms._send(cfg, people["all"], "TWG CONFIRMED: test", "confirmed", alarm, time.time(), "https://portal/media/a/TOK/alarm.gif")
+    await _watched()
+    first, second = (parse_qs(c.request.content.decode()) for c in twilio.calls)
+    assert first["MediaUrl"] == ["https://portal/media/a/TOK/alarm.gif"] and second["MediaUrl"] == ["https://portal/media/a/TOK/alarm.jpg"]
+    rows = (await session.scalars(select(SmsLog).order_by(SmsLog.id))).all()
+    assert [(r.outcome, r.twilio_sid) for r in rows] == [("failed", "SMgif"), ("delivered", "SMstill")]
+    assert "resent with the still picture" in rows[1].error and "30019" in rows[1].error

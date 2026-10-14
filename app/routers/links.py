@@ -2,7 +2,7 @@
 
 - GET /a/{token}                               the page: one alarm's details, clip and live video
 - GET /api/a/{token}/clip, /objects            clip status and analytics boxes (same as the signed-in ones)
-- GET /media/a/{token}/snapshot.jpg, alarm.jpg (frame + boxes: the MMS picture), live.jpg, live.webm, clips/{name}.mp4
+- GET /media/a/{token}/snapshot.jpg, alarm.jpg (frame + boxes: the MMS picture), alarm.gif (the moving one, Confirmed / Dispatch texts), live.jpg, live.webm, clips/{name}.mp4
 - GET /api/a/{token}/cameras, /media/a/{token}/cameras/{device}/live.jpg|live.webm   the site's other cameras, live
 - POST /twilio/sms                            replies to our number (YES / STOP / HELP), Twilio-signed
 - GET /sms-terms                              the public text-message terms (carriers and Twilio ask for it)
@@ -157,6 +157,25 @@ async def link_picture(token: str, request: Request, db: AsyncSession = Depends(
     log.info("alarm %s picture: %s from %s, %d bytes in %d ms (%s)", alarm.id, request.method, client_ip(request),
              len(pic), took, (request.headers.get("user-agent") or "")[:60])
     return Response(pic, media_type="image/jpeg", headers=PRIVATE)
+
+
+@router.api_route("/media/a/{token}/alarm.gif", methods=["GET", "HEAD"])
+async def link_gif(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """The seconds around the alarm with its boxes: the moving picture in the Confirmed / Dispatch MMS."""
+    from app.services import alarm_gif
+    t0 = time.monotonic()
+    alarm = await _alarm(request, db, token)
+    if not alarm.device_id:
+        raise HTTPException(404)
+    await db.commit()
+    gif = await alarm_gif.alarm_gif(alarm, budget_s=20)
+    took = int((time.monotonic() - t0) * 1000)
+    if gif is None:
+        log.warning("alarm %s gif: %s from %s got none after %d ms", alarm.id, request.method, client_ip(request), took)
+        raise HTTPException(502, "The alarm video isn't available")
+    log.info("alarm %s gif: %s from %s, %d bytes in %d ms (%s)", alarm.id, request.method, client_ip(request),
+             len(gif), took, (request.headers.get("user-agent") or "")[:60])
+    return Response(gif, media_type="image/gif", headers=PRIVATE)
 
 
 @router.get("/media/a/{token}/live.jpg")

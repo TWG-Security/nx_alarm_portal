@@ -32,6 +32,8 @@ opt-outs are audit-logged in the person's company. Public terms: /sms-terms.
 
 Picture (MMS, Platform switch, on by default): the alarm frame with its analytics boxes (the incident
 report's drawing), prepared once per alarm and cached, served to Twilio at /media/a/<token>/alarm.jpg.
+Confirmed and Dispatch texts (sent after someone verified it) carry a GIF of the seconds around the alarm with
+its boxes instead (services/alarm_gif.py, /media/a/<token>/alarm.gif), else the still.
 The text waits at most PICTURE_BUDGET_S for it; without a picture by then, or if Twilio refuses the
 picture, the text goes out without one. A picture never costs the text.
 
@@ -532,6 +534,11 @@ async def _watch(cfg: Twilio, log_id: int | None, message_sid: str, user: User, 
                            _twilio_time(m.get("date_updated")))
         if str(m.get("error_code")) == "21610":
             await _mark_stopped(user.phone)
+        elif media_url.endswith("/alarm.gif") and alarm is not None and await alarm_picture(alarm) is not None:
+            # The GIF sank it (too big for the carrier, ...): send it again with the still picture, now.
+            log.warning("sms: alarm %s to %s: sending again with the still picture", alarm.id, masked(user.phone))
+            await _send(cfg, user, body, purpose, alarm, time.time(), media_url[:-len("alarm.gif")] + "alarm.jpg",
+                        note=f"resent with the still picture ({why})")
         elif media_url:
             # The picture sank the whole message: send the words alone, now.
             log.warning("sms: alarm %s to %s: sending again without the picture", alarm.id if alarm else "-", masked(user.phone))
@@ -661,6 +668,19 @@ async def alarm_picture(alarm: Alarm, budget_s: float | None = None) -> bytes | 
     while len(_pictures) > _PICTURES_MAX:
         _pictures.pop(next(iter(_pictures)))
     return pic
+
+
+async def verified_media(alarm: Alarm) -> str:
+    """For a text sent after the alarm was verified (Confirmed, Dispatch): "gif" if the moving picture is ready
+    within its budget, else "jpg" if the still is, else "". Both are made at once, so the wait is the longer
+    budget (alarm_gif.GIF_BUDGET_S), not the sum."""
+    from app.services import alarm_gif
+    gif, still = await asyncio.gather(alarm_gif.alarm_gif(alarm), alarm_picture(alarm))
+    return "gif" if gif is not None else "jpg" if still is not None else ""
+
+
+def media_url(kind: str, token: str) -> str:
+    return alarm_links.gif_url(token) if kind == "gif" else alarm_links.picture_url(token) if kind == "jpg" else ""
 
 
 # ---------------------------------------------------------------- flood control
@@ -890,12 +910,13 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
             await db.commit()
         for alarm_id, tracker_id in auto:
             _spawn(_auto_dispatch(alarm_id, tracker_id, by))
-        pictures = {}
+        kinds = {}
         if plan and cfg.pictures:
-            for a in {a.id: a for *_, a in plan}.values():
-                pictures[a.id] = await alarm_picture(a) is not None
+            alarms_ = list({a.id: a for *_, a in plan}.values())
+            for a, kind in zip(alarms_, await asyncio.gather(*(verified_media(a) for a in alarms_))):
+                kinds[a.id] = kind
         for u, body, token, a in plan:
-            _spawn(_send(cfg, u, body, "confirmed", a, arrived, alarm_links.picture_url(token) if pictures.get(a.id) else ""))
+            _spawn(_send(cfg, u, body, "confirmed", a, arrived, media_url(kinds.get(a.id, ""), token)))
     except Exception:  # noqa: BLE001
         log.exception("sms: confirmed alarms %s could not be texted", alarm_ids)
 
