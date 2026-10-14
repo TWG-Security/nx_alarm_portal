@@ -520,7 +520,12 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 .toast.warn { border-left-color: var(--warn); cursor: pointer; }
 
 /* ---------- critical pop-up ---------- */
-.critical-dialog { width: min(640px, calc(100vw - 24px)); padding: 0; border: 2px solid var(--red); overflow: hidden; }
+/* The buttons sit in a footer that never scrolls away: the body (picture, video, note) scrolls between the red bar and
+   the footer, inside a dialog no taller than what's visible (dvh: a phone's 100vh reaches under its toolbar). The user,
+   2026-10-14: "a critical alarm comes up. It's not scrollable to go down and dismiss the alarm". */
+.critical-dialog { width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px);
+  padding: 0; border: 2px solid var(--red); overflow: hidden; }
+.critical-dialog[open] { display: flex; flex-direction: column; }
 .critical-dialog::backdrop { background: rgba(80, 0, 0, .55); }
 .crit-head {
   display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 18px;
@@ -530,12 +535,16 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 .crit-dot { width: 12px; height: 12px; border-radius: 50%; background: #fff; animation: crit-blink 1s steps(2, start) infinite; }
 @keyframes crit-blink { to { visibility: hidden; } }
 .crit-timer .timer { background: rgba(0, 0, 0, .25); font-size: 15px; }
-.crit-body { padding: 16px 18px 18px; max-height: calc(100vh - 120px); overflow-y: auto; }
+.crit-head, .crit-foot { flex: none; }
+.crit-body { flex: 1 1 auto; min-height: 0; padding: 16px 18px 8px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.crit-foot { padding: 10px 18px 14px; border-top: 1px solid var(--border); background: var(--surface); }
+.crit-player .player-stage { max-height: max(140px, 34vh); max-height: max(140px, 34dvh); }
 .crit-body h1 { font-size: 22px; margin-bottom: 4px; }
 .crit-where { font-size: 15px; margin-bottom: 2px; }
 .crit-snap { margin: 12px 0; }
-.crit-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.crit-pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; color: var(--text-muted); }
+.crit-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 560px) { .crit-foot .btn { padding: 6px 10px; } .crit-foot .ack-as { flex-basis: 100%; } }
+.crit-pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 10px; color: var(--text-muted); }
 
 /* ---------- settings ---------- */
 .level-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 16px; }

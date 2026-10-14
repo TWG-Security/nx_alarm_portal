@@ -38,6 +38,8 @@ function render() {
       <div class="player-mount crit-player"></div>
       <div class="field"><label for="crit-note">Disposition note</label>
         <textarea id="crit-note" maxlength="4000" placeholder="What did you see / do? (e.g. verified on camera, dispatched, false alarm)"></textarea></div>
+    </div>
+    <div class="crit-foot">
       <div class="crit-actions">
         <span class="muted ack-as">Acknowledge as</span>
         <button class="btn btn-verdict-real" data-act="ack" data-verdict="real">Real event</button>
