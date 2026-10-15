@@ -552,6 +552,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; background: var(--surface-3); padding: 1px 5px; border-radius: 4px; }
 .check { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 0 0 12px; }
 .check input { width: 16px; height: 16px; accent-color: var(--orange); }
+.check--top { align-items: flex-start; } .check--top input { margin-top: 2px; flex-shrink: 0; }
 
 @media (max-width: 1280px) {
   .map-layout { grid-template-columns: 260px minmax(0, 1fr) 340px; }

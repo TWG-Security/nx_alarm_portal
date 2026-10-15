@@ -3,7 +3,9 @@
 - start(): a new row and fresh cookie contents (uid, tid, sid, tv, csrf).
 - check() (deps.current_user, every request): the row exists and isn't revoked, the token version
   matches (bumped by "sign out everywhere"), and the browser wasn't closed longer than the limit.
-  last_seen_at is written at most once a minute.
+  last_seen_at is written at most once a minute, and the cookie is re-signed then too: its signature carries
+  its own age, so a cookie never renewed would expire counted from sign-in, open page or not.
+- Monitoring stations (User.monitoring_station) skip the max-age limit (and the page skips idle sign-out).
 - Sessions from before this existed (no sid in the cookie) are adopted, so a deploy never signs out
   the monitoring screens.
 - Revoking marks the row and an in-memory registry; the browser's live stream (SSE) checks it on
@@ -66,12 +68,12 @@ async def start(request: Request, db: AsyncSession, user: User, method: str = "p
     return row
 
 
-def expired_reason(row: UserSession, now=None) -> str:
+def expired_reason(row: UserSession, now=None, station: bool = False) -> str:
     snap = platform_settings.current()
     now = now or utcnow()
     if snap.session_closed_h > 0 and now - aware(row.last_seen_at) > timedelta(hours=snap.session_closed_h):
         return "inactive"
-    if snap.session_max_h > 0 and now - aware(row.created_at) > timedelta(hours=snap.session_max_h):
+    if snap.session_max_h > 0 and not station and now - aware(row.created_at) > timedelta(hours=snap.session_max_h):
         return "max_age"
     return ""
 
@@ -96,13 +98,14 @@ async def check(request: Request, db: AsyncSession, user: User) -> str:
         return "unknown session"
     if row.revoked_at is not None:
         return row.revoked_reason or "revoked"
-    why = expired_reason(row, now)
+    why = expired_reason(row, now, bool(user.monitoring_station))
     if why:
         row.revoked_at, row.revoked_reason = now, why
         await db.commit()
         return why
     if (now - aware(row.last_seen_at)).total_seconds() >= SEEN_EVERY_S:
         row.last_seen_at, row.ip = now, client_ip(request)
+        sess["seen"] = int(now.timestamp())             # changed -> the cookie goes out again, freshly signed
         await db.commit()
     return ""
 

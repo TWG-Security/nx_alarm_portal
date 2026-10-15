@@ -180,9 +180,9 @@
         <div class="field"><label for="s-closed">Sign out a closed browser after (hours)</label><input id="s-closed" type="number" min="1" max="2160" required>
           <small>No page open for this long: sign in again. Today 12.</small></div>
         <div class="field"><label for="s-max">Always sign out after (hours)</label><input id="s-max" type="number" min="0" max="8760" required>
-          <small>0 = never. Anything else signs monitoring screens out too.</small></div>
+          <small>0 = never. Anything else signs monitoring screens out too, except users marked <b>Monitoring station</b> (Users page).</small></div>
         <div class="field"><label for="s-idle">Sign out after no keyboard or mouse for (minutes)</label><input id="s-idle" type="number" min="0" max="1440" required>
-          <small>0 = off (recommended).</small></div>
+          <small>0 = off (recommended). Users marked <b>Monitoring station</b> are never signed out for this.</small></div>
       </div>
       <div id="sess-warn"></div>
       <div id="sess-error"></div>

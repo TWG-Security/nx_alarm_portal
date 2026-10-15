@@ -90,7 +90,7 @@ function textSummary(u) {
 function render() {
   tbody.innerHTML = users.map((u) => `<tr>
     <td><b>${esc(u.display_name || u.email)}</b>${u.display_name ? `<div class="muted small-print">${esc(u.email)}</div>` : ""}</td>
-    <td>${u.role === "admin" ? "Admin" : "Operator"}</td>
+    <td>${u.role === "admin" ? "Admin" : "Operator"}${u.monitoring_station ? '<div class="chips"><span class="chip" title="Never signed out for inactivity or by the sign-out-after limit">Monitoring station</span></div>' : ""}</td>
     <td>${statusChip(u)}${u.invited ? inviteNote(u) : ""}</td>
     <td>${textSummary(u)}</td>
     <td>${twoStep(u)}</td>
@@ -120,7 +120,7 @@ function openEdit(u) {
   edUser = u;
   $("ed-title").textContent = u.display_name || u.email;
   $("ed-email").textContent = u.email;
-  $("ed-name").value = u.display_name; $("ed-role").value = u.role;
+  $("ed-name").value = u.display_name; $("ed-role").value = u.role; $("ed-station").checked = !!u.monitoring_station;
   $("ed-phone").value = fmtPhone(u.phone); $("ed-sms").value = u.sms_level; $("ed-when").value = u.sms_when || "raised";
   paintSites("ed", u.sms_sites);
   $("ed-link").innerHTML = "";
@@ -158,6 +158,7 @@ $("edit-form").addEventListener("submit", async (e) => {
   const phone = $("ed-phone").value.trim(), level = $("ed-sms").value;
   if ($("ed-name").value.trim() !== u.display_name) body.display_name = $("ed-name").value.trim();
   if ($("ed-role").value !== u.role) body.role = $("ed-role").value;
+  if ($("ed-station").checked !== !!u.monitoring_station) body.monitoring_station = $("ed-station").checked;
   if (phone !== fmtPhone(u.phone)) body.phone = phone;
   // A first number with "No texts" picked defaults to Critical + Alarm (that's why it was added).
   const lvl = !u.phone && phone && level === "off" ? "alarm" : level;
@@ -221,7 +222,7 @@ $("user-form").addEventListener("submit", async (e) => {
   try {
     const r = await api("/api/users", { method: "POST", body: { email: $("u-email").value, display_name: $("u-name").value,
       password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value,
-      phone: $("u-phone").value, sms_level: $("u-sms").value, sms_when: $("u-when").value, sms_sites: readSites("u") } });
+      phone: $("u-phone").value, sms_level: $("u-sms").value, sms_when: $("u-when").value, sms_sites: readSites("u"), monitoring_station: $("u-station").checked } });
     toast(r.setup_link ? "User invited" : "User created");
     if (r.setup_link) { $("u-link").innerHTML = linkBox(r); $("u-submit").hidden = true; }     // keep it open: the admin may copy the link
     else addDlg.close();

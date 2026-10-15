@@ -59,6 +59,9 @@ class User(Base):
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a code's step can't be reused
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
+    # Never signed out for inactivity (idle) or by the "always sign out after" limit: operators watching alarms
+    # (the user, 2026-10-15: "i dont want operators to log out while monitoring"). A closed browser still expires.
+    monitoring_station: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
     invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Deleted by an admin (api.delete_user): hidden, can't sign in or be texted; the row stays so history keeps the name
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

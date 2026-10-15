@@ -98,7 +98,7 @@ def render(request: Request, name: str, user: User | None = None, scope=None, **
         "brand": _brand(user, scope),
         "csrf_token": ensure_csrf(request),
         "clip_config": {"pre": settings.clip_pre_s, "post": settings.clip_post_s, "max": settings.clip_max_window_s},
-        "session_config": {"idleMin": platform_settings.current().idle_timeout_min},
+        "session_config": {"idleMin": 0 if user is not None and user.monitoring_station else platform_settings.current().idle_timeout_min},
         "map_config": {
             "tileUrl": "/tiles/{z}/{x}/{y}.png",
             "attribution": settings.map_tile_attribution,

@@ -72,7 +72,10 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     prefetch_clips: bool = True          # build clips for critical/alarm events as soon as footage exists
-    session_max_age_s: int = 12 * 3600
+    # The signed cookie's own lifetime. Sessions end on the server (app/sessions.py: closed browser, max age, revoked);
+    # this only has to outlive the longest "closed browser" setting (90 days). It was 12 h counted from sign-in and
+    # never renewed, which signed every screen out 12 h after login however busy it was (fixed 2026-10-15).
+    session_max_age_s: int = 90 * 24 * 3600
 
     # Sign-in protection (app/security_guard.py, app/net.py). Both also editable on the Platform page.
     trusted_proxy_ips: str = ""          # comma-separated IPs/CIDRs allowed to send CF-Connecting-IP (the tunnel connector)

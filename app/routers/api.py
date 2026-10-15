@@ -961,6 +961,7 @@ class UserIn(BaseModel):
     sms_level: str = Field(default="off", pattern="^(off|critical|alarm)$")
     sms_sites: list[int] | None = Field(default=None, max_length=1000)     # None = all sites
     sms_when: str = Field(default="raised", pattern="^(raised|confirmed|both)$")
+    monitoring_station: bool = False
 
 
 class UserUpdate(BaseModel):
@@ -972,6 +973,7 @@ class UserUpdate(BaseModel):
     sms_level: str | None = Field(default=None, pattern="^(off|critical|alarm)$")
     sms_when: str | None = Field(default=None, pattern="^(raised|confirmed|both)$")
     sms_all_sites: bool | None = None                                     # True = every site (clears sms_sites)
+    monitoring_station: bool | None = None                                # never signed out for inactivity / max age
     sms_sites: list[int] | None = Field(default=None, max_length=1000)    # only these sites
 
 
@@ -1015,7 +1017,7 @@ def _check_password(pw: str) -> None:
 
 def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | None = None, text: dict | None = None) -> dict:
     return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
-            "phone": u.phone, "sms_level": u.sms_level, "sms_sites": u.sms_sites, "sms_when": u.sms_when, "last_text": text, "sms_consent": u.sms_consent,
+            "phone": u.phone, "sms_level": u.sms_level, "sms_sites": u.sms_sites, "sms_when": u.sms_when, "monitoring_station": bool(u.monitoring_station), "last_text": text, "sms_consent": u.sms_consent,
             "sms_consent_at": u.sms_consent_at.isoformat() if u.sms_consent_at else None,
             "sms_optin_sent_at": u.sms_optin_sent_at.isoformat() if u.sms_optin_sent_at else None,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
@@ -1066,7 +1068,7 @@ async def create_user(body: UserIn, request: Request, user: User = Depends(requi
     phone = _phone(body.phone)
     sites = await _site_choice(db, tid, body.sms_sites)
     new = User(tenant_id=tid, email=body.email.strip().lower(), display_name=body.display_name.strip(),
-               phone=phone, sms_level=body.sms_level if phone else "off", sms_sites=sites, sms_when=body.sms_when,
+               phone=phone, sms_level=body.sms_level if phone else "off", sms_sites=sites, sms_when=body.sms_when, monitoring_station=body.monitoring_station,
                password_hash=hash_password(body.password) if body.password else "", role=body.role,
                password_changed_at=now if body.password else None, invited_at=None if body.password else now)
     db.add(new)
@@ -1121,7 +1123,7 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
             body.sms_level = "off"
     if body.sms_level not in (None, "off") and not (body.phone if body.phone is not None else target.phone):
         raise HTTPException(400, "Add a mobile number first")
-    for name in ("display_name", "role", "is_active", "phone", "sms_level", "sms_when"):
+    for name in ("display_name", "role", "is_active", "phone", "sms_level", "sms_when", "monitoring_station"):
         value = getattr(body, name)
         if value is not None and getattr(target, name) != value:
             setattr(target, name, value)
