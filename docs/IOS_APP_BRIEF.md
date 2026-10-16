@@ -86,6 +86,23 @@ alarms that operators see, verify on camera and close. It texts people (Twilio) 
 
 A person can be both (an operator who also gets dispatched): show both.
 
+## 4a. Phase 1: a free Apple account (the user, 2026-10-16)
+
+The user tests with a free Apple ID (Xcode "Personal Team") and joins the paid Apple Developer Program only when a
+client wants the app. Build for that first:
+
+- **No push notifications** (a free account can't use APNs), no Critical Alerts, no TestFlight. Skip section 6.2,
+  section 8 and steps 4-5 of section 10 for now, but keep the code ready for them (a `PushService` that does nothing yet).
+- Alarms reach the phone **only while the app is open**: the live stream (6.3). A new alarm plays a sound and shows
+  an in-app banner (and a local notification if the app is just going to the background).
+- **Monitoring mode** switch (Settings and the Alarms screen): keeps the screen awake (`isIdleTimerDisabled`) so a
+  phone or iPad on a desk works like a wall screen.
+- When the app goes to the background, show once: "Alarms reach this phone only while the app is open. Texts are
+  still on." Never suggest turning texts off.
+- The install runs on the user's own iPhone from Xcode and stops after 7 days (plug in and Run again). Up to 3 apps
+  per free account at a time.
+- Background location for guards on a call should work with a free account: check it on the device early.
+
 ## 5. What the Mac needs
 
 - Xcode 16 or newer, Swift 6, **SwiftUI**, iOS 17+ minimum. No third-party dependencies unless they clearly earn
