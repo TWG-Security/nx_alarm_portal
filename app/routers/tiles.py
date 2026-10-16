@@ -21,10 +21,19 @@ from fastapi import APIRouter, HTTPException, Request, Response
 from app.config import get_settings
 
 router = APIRouter()
+log = __import__("logging").getLogger(__name__)
 
 _client: httpx.AsyncClient | None = None
 _osm_slots = asyncio.Semaphore(2)   # OSM asks for no more than 2 parallel downloads
-_sat_slots = asyncio.Semaphore(6)   # USGS has no stated limit; stay modest
+_sat_slots = asyncio.Semaphore(6)   # USGS tiled imagery (z <= 16): fast, cached by USGS; no stated limit, stay modest
+# NAIP (z17+) is rendered per request and can be very slow: measured 2026-10-16, 24 s and 30 s+ timeouts per tile.
+# It gets its own slots and a short timeout so it can never hold up the coarser tiles (with one shared queue, the
+# 3D and top-down views showed nothing: the user, 2026-10-16 "the earth view is not working right and not loading").
+_naip_slots = asyncio.Semaphore(4)
+NAIP_TIMEOUT_S = 12.0
+NAIP_TRIP_FAILS, NAIP_TRIP_WINDOW_S, NAIP_REST_S = 3, 60.0, 120.0
+_naip_fails: list[float] = []          # monotonic times of recent NAIP failures
+_naip_rest_until = 0.0                 # while resting: z17+ is drawn from the z16 tile at once, NAIP isn't asked
 _inflight: dict[str, asyncio.Future] = {}
 _MERC = math.pi * 6378137           # half the Web Mercator world width, in metres
 
@@ -36,18 +45,19 @@ def _http() -> httpx.AsyncClient:
     return _client
 
 
-async def _download(url: str, slots: asyncio.Semaphore) -> bytes:
+async def _download(url: str, slots: asyncio.Semaphore, timeout: float | None = None) -> bytes:
     async with slots:
         try:
-            r = await _http().get(url)
-        except httpx.HTTPError as exc:      # slow or unreachable upstream: a clean 502, not a 500 traceback
+            # timeout: the whole download (httpx's own limit is per network step: a trickling server outlasts it)
+            r = await (asyncio.wait_for(_http().get(url), timeout) if timeout else _http().get(url))
+        except (httpx.HTTPError, asyncio.TimeoutError) as exc:   # slow or unreachable upstream: a clean 502
             raise HTTPException(502, f"Tile server unreachable: {type(exc).__name__}") from None
     if r.status_code != 200 or not r.headers.get("content-type", "").startswith("image/"):
         raise HTTPException(502, f"Tile server returned {r.status_code}")
     return r.content
 
 
-async def _cached(path: Path, ttl_s: int, url: str, slots: asyncio.Semaphore) -> bytes:
+async def _cached(path: Path, ttl_s: int, url: str, slots: asyncio.Semaphore, timeout: float | None = None) -> bytes:
     """The tile at `path`, downloaded from `url` when missing or older than `ttl_s`.
 
     Concurrent requests for the same tile share one download; if upstream fails, a stale
@@ -67,7 +77,7 @@ async def _cached(path: Path, ttl_s: int, url: str, slots: asyncio.Semaphore) ->
     fut = asyncio.get_running_loop().create_future()
     _inflight[key] = fut
     try:
-        data = await _download(url, slots)
+        data = await _download(url, slots, timeout)
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(".tmp")
         tmp.write_bytes(data)
@@ -108,17 +118,69 @@ def tile_bbox(z: int, x: int, y: int) -> str:
     return f"{minx:.3f},{maxy - size:.3f},{minx + size:.3f},{maxy:.3f}"
 
 
+def _sat_path(z: int, x: int, y: int) -> Path:
+    return Path(get_settings().tile_cache_dir) / "sat" / str(z) / str(x) / f"{y}.jpg"
+
+
+async def _tiled(z: int, x: int, y: int) -> bytes:
+    settings = get_settings()
+    return await _cached(_sat_path(z, x, y), settings.sat_tile_cache_ttl_s, settings.sat_tile_url.format(z=z, x=x, y=y), _sat_slots)
+
+
+def naip_resting() -> bool:
+    return time.monotonic() < _naip_rest_until
+
+
+def _naip_failed() -> None:
+    global _naip_rest_until
+    now = time.monotonic()
+    _naip_fails[:] = [t for t in _naip_fails if now - t < NAIP_TRIP_WINDOW_S] + [now]
+    if len(_naip_fails) >= NAIP_TRIP_FAILS and not naip_resting():
+        _naip_rest_until = now + NAIP_REST_S
+        log.warning("imagery: NAIP failing (%d in %.0f s): sharp tiles drawn from level %d for %.0f s",
+                    len(_naip_fails), NAIP_TRIP_WINDOW_S, get_settings().sat_tile_max_tiled, NAIP_REST_S)
+
+
+async def _from_parent(z: int, x: int, y: int) -> bytes:
+    """A z17+ tile cut from its z16 ancestor and enlarged: softer than NAIP, but a picture now."""
+    from PIL import Image
+    top = get_settings().sat_tile_max_tiled
+    d = z - top
+    parent = await _tiled(top, x >> d, y >> d)
+
+    def cut() -> bytes:
+        import io
+        im = Image.open(io.BytesIO(parent)).convert("RGB")
+        size = im.width / 2 ** d
+        ox, oy = (x % 2 ** d) * size, (y % 2 ** d) * size
+        out = io.BytesIO()
+        im.crop((round(ox), round(oy), round(ox + size), round(oy + size))).resize((256, 256), Image.Resampling.BICUBIC) \
+            .save(out, "JPEG", quality=85)
+        return out.getvalue()
+    return await asyncio.to_thread(cut)
+
+
 @router.get("/tiles/sat/{z}/{x}/{y}.jpg", include_in_schema=False)
 async def sat_tile(z: int, x: int, y: int, request: Request):
     settings = get_settings()
     _check(request, z, x, y, settings.sat_tile_max_zoom)
     if z <= settings.sat_tile_max_tiled:
-        url = settings.sat_tile_url.format(z=z, x=x, y=y)
-    else:
-        url = settings.sat_hires_url.format(bbox=tile_bbox(z, x, y))
-    path = Path(settings.tile_cache_dir) / "sat" / str(z) / str(x) / f"{y}.jpg"
-    data = await _cached(path, settings.sat_tile_cache_ttl_s, url, _sat_slots)
-    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+        data = await _tiled(z, x, y)
+        return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+    path = _sat_path(z, x, y)
+    fresh = path.exists() and time.time() - path.stat().st_mtime < settings.sat_tile_cache_ttl_s
+    if not fresh and not naip_resting():
+        try:
+            data = await _cached(path, settings.sat_tile_cache_ttl_s, settings.sat_hires_url.format(bbox=tile_bbox(z, x, y)),
+                                 _naip_slots, NAIP_TIMEOUT_S)
+            return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+        except HTTPException:
+            _naip_failed()
+    elif fresh or path.exists():
+        return Response(path.read_bytes(), media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+    # NAIP slow or down and nothing cached: the coarser picture now; the browser asks again in 5 minutes.
+    data = await _from_parent(z, x, y)
+    return Response(data, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=300"})
 
 
 # ---------------------------------------------------------------- pre-loading sharp imagery
@@ -128,7 +190,6 @@ async def sat_tile(z: int, x: int, y: int, request: Request):
 PREFETCH_LEVELS = (17, 18, 19)
 PREFETCH_RADIUS_M = 250
 _prefetch_slots = asyncio.Semaphore(2)
-log = __import__("logging").getLogger(__name__)
 
 
 def tiles_around(lat: float, lng: float, z: int, radius_m: float) -> list[tuple[int, int]]:
@@ -152,9 +213,15 @@ async def prefetch_site(lat: float, lng: float) -> tuple[int, int]:
             if path.exists() and time.time() - path.stat().st_mtime < settings.sat_tile_cache_ttl_s:
                 continue
             try:
-                await _cached(path, settings.sat_tile_cache_ttl_s, settings.sat_hires_url.format(bbox=tile_bbox(z, x, y)), _prefetch_slots)
+                if naip_resting():
+                    failed += 1
+                    continue
+                async with _prefetch_slots:          # at most 2 of NAIP's slots: people looking at the map come first
+                    await _cached(path, settings.sat_tile_cache_ttl_s, settings.sat_hires_url.format(bbox=tile_bbox(z, x, y)),
+                                  _naip_slots, NAIP_TIMEOUT_S)
                 got += 1
             except Exception:  # noqa: BLE001 - outside the US, USGS down: the view falls back to coarser tiles
+                _naip_failed()
                 failed += 1
     return got, failed
 

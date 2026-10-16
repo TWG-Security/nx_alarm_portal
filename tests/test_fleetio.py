@@ -22,7 +22,7 @@ def fake_fleetio(monkeypatch):
     monkeypatch.setattr(svc, "_fleetio_clients", {})
     monkeypatch.setattr(svc, "_fleetio_due", {})
     monkeypatch.setattr(svc, "_refreshed_at", {})
-    fake_nx.FLEET.update(mode="ok", reads=0, archived=set(), entry_reads=0, version=None)
+    fake_nx.FLEET.update(mode="ok", reads=0, archived=set(), entry_reads=0, history_reads=0, version=None)
     yield fake_nx.FLEET
     fake_nx.FLEET.update(mode="ok", archived=set())
 
@@ -89,8 +89,12 @@ async def test_switching_fleetio_on_puts_every_van_on_the_map(client, session):
     await svc.poll_fleetio()
     vans = await _vans(session, tid)
     assert svc.aware(vans["501"].fix_at) >= svc.aware(fix_before) and vans["501"].heading is not None
-    points = (await session.scalars(select(TrackerPoint).where(TrackerPoint.tracker_id == vans["501"].id))).all()
-    assert len(points) == 2
+    points = (await session.scalars(select(TrackerPoint).where(TrackerPoint.tracker_id == vans["501"].id)
+                                    .order_by(TrackerPoint.ts))).all()
+    # First sight: Fleetio's last hour of Van 12 (5 positions) drawn as its trail; then one point per new read
+    # (the user, 2026-10-16: "the fleetio cars do not show trailing"). A read soon after the last: no history call.
+    assert len(points) == 7 and fake_nx.FLEET["history_reads"] == 1 + 2          # Van 12 (5 points); Van 7 and 20: none
+    assert all(a.ts < b.ts for a, b in zip(points, points[1:]))
     assert len((await session.scalars(select(TrackerPoint).where(TrackerPoint.tracker_id == vans["502"].id))).all()) == 1
 
     assert fake_nx.FLEET["entry_reads"] == 1                          # the same entry id isn't read again
@@ -191,3 +195,24 @@ async def test_test_connection_says_why_there_are_no_positions(client, session, 
     monkeypatch.setattr(fake_nx, "_fleet_vehicles", lambda: [dict(v, current_location_entry_id=99) for v in bare()])
     r = (await client.post("/api/tracking/fleetio/test")).json()       # the entry reads answer 404
     assert r["detail"]["lookup_failed"] == 2 and "wouldn't let this key read it" in r["why_none"]
+
+
+async def test_a_long_gap_between_reads_is_filled_from_fleetio_history(client, session):
+    """A van read again after longer than the interval (the portal restarted, Fleetio was down, rate limited): the
+    positions between are fetched, so the trail shows the road it took, not a straight jump."""
+    from datetime import timedelta
+    tenant, _ = await _admin(client, session)
+    tid = tenant.id
+    await client.put("/api/tracking/fleetio", json={"enabled": True, "account_token": "dev-account", "api_key": "dev-key", "poll_s": 60})
+    van = (await _vans(session, tid))["501"]
+    await session.execute(TrackerPoint.__table__.delete().where(TrackerPoint.tracker_id == van.id))
+    van.fix_at = svc.utcnow() - timedelta(minutes=10)          # last read 10 minutes ago
+    await session.commit()
+    reads = fake_nx.FLEET["history_reads"]
+    svc._fleetio_due.clear()
+    await svc.poll_fleetio()
+    assert fake_nx.FLEET["history_reads"] == reads + 1
+    pts = (await session.scalars(select(TrackerPoint).where(TrackerPoint.tracker_id == van.id))).all()
+    assert len(pts) == 6                                        # 5 between + the newest
+    trail = {t["name"]: t for t in (await client.get("/api/trackers?trail_min=60")).json()}["Van 12"]["trail"]
+    assert len(trail) == 6

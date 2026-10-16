@@ -251,6 +251,8 @@ async def refresh_one(tracker_id: int) -> dict | None:
 # ---------------------------------------------------------------- Fleetio (fleet vehicles)
 FLEETIO_POLL_MIN_S = 30
 FLEETIO_POLL_DEFAULT_S = 60
+FLEETIO_HISTORY_PER_ROUND = 20   # vehicles whose path between two reads is fetched each round (one call each)
+FLEETIO_BACKFILL_MIN = 60        # a vehicle seen for the first time: its last hour, so the trail starts drawn
 _fleetio_clients: dict[int, tuple[tuple[str, str], fleetio.Client]] = {}
 _fleetio_due: dict[int, float] = {}          # source id -> monotonic time of its next round
 fleetio_transport = None                     # tests: an httpx transport for the Fleetio client
@@ -290,9 +292,35 @@ async def poll_fleetio(force_tenant: int | None = None) -> float:
                 _fleetio_due[sid] = time.monotonic() + max(every, e.retry_after_s)
             await _fleetio_failed(sid, str(e))
             continue
-        await _store_fleetio(sid, tenant_id, vehicles, complete=True)
+        history = await _fleetio_history(client, tenant_id, vehicles, every)
+        await _store_fleetio(sid, tenant_id, vehicles, complete=True, history=history)
     now = time.monotonic()
     return max(1.0, min((_fleetio_due[w[0]] - now for w in work if w[0] in _fleetio_due), default=300.0))
+
+
+async def _fleetio_history(client: fleetio.Client, tenant_id: int, vehicles: list[fleetio.Vehicle],
+                           every: float) -> dict[str, list]:
+    """Where each moved vehicle was between its last two reads (Fleetio's location history), for the map's trail. Only
+    when a gap could hide positions (longer than the read interval) or the vehicle is new; never fails the round."""
+    async with sessionmaker()() as db:
+        held = dict((await db.execute(select(Tracker.ext_id, Tracker.fix_at).where(
+            Tracker.tenant_id == tenant_id, Tracker.source == "fleetio"))).all())
+    now, out, asked = utcnow(), {}, 0
+    for v in vehicles:
+        if v.at is None or asked >= FLEETIO_HISTORY_PER_ROUND:
+            continue
+        prev = aware(held.get(v.id)) if v.id in held else None
+        if prev is not None and (v.at <= prev or (v.at - prev).total_seconds() <= every + 30):
+            continue
+        since = prev or max(now - timedelta(minutes=FLEETIO_BACKFILL_MIN), v.at - timedelta(minutes=FLEETIO_BACKFILL_MIN))
+        asked += 1
+        try:
+            out[v.id] = [h for h in await client.history(v.id, since) if h[0] < v.at]
+        except fleetio.FleetioError as e:
+            log.info("Fleetio: history of vehicle %s: %s", v.id, e)
+            if e.retry_after_s:
+                break
+    return out
 
 
 async def _fleetio_failed(source_id: int, error: str) -> None:
@@ -304,7 +332,8 @@ async def _fleetio_failed(source_id: int, error: str) -> None:
             await db.commit()
 
 
-async def _store_fleetio(source_id: int, tenant_id: int, vehicles: list[fleetio.Vehicle], complete: bool) -> None:
+async def _store_fleetio(source_id: int, tenant_id: int, vehicles: list[fleetio.Vehicle], complete: bool,
+                        history: dict[str, list] | None = None) -> None:
     """Fleetio's vehicles -> trackers: new vehicles are added (on the map at once), positions newer than the one held
     move the marker. complete: the whole list, so a tracker whose vehicle is gone (archived) says so."""
     now, changed = utcnow(), []
@@ -325,6 +354,9 @@ async def _store_fleetio(source_id: int, tenant_id: int, vehicles: list[fleetio.
             else:
                 t.error = ""
                 if t.fix_at is None or v.at > aware(t.fix_at):
+                    for at, lat, lng in (history or {}).get(v.id, []):      # the path since the last read: trail points
+                        if t.fix_at is None or at > aware(t.fix_at):
+                            _move(db, t, peplink.Fix(lat=lat, lng=lng, at=at, speed=None, alt=None))
                     _move(db, t, peplink.Fix(lat=v.lat, lng=v.lng, at=v.at, speed=None, alt=None))
             if (t.error, t.fix_at, t.device_name) != before[:3] or before[3] is None:
                 changed.append(t)

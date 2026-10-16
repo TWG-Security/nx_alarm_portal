@@ -515,6 +515,27 @@ async def fleet_one(vid: int, request: Request):
     found = next((r for r in _fleet_vehicles() if r["id"] == vid), None)
     return found or JSONResponse({"error": "not found"}, status_code=404)
 
+@app.get("/_fleetio/vehicles/{vid}/location_entries")
+async def fleet_history(vid: int, request: Request):
+    """Van 12's last few positions (every 20 s behind the current one, on its line of travel); others: none."""
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["history_reads"] = FLEET.get("history_reads", 0) + 1
+    gt = request.query_params.get("filter[created_at][gt]")
+    since = _dt.fromisoformat(gt).timestamp() if gt else 0
+    if vid != 501:
+        return {"next_cursor": None, "records": []}
+    now, step = time.time(), FLEET["reads"]
+    rows = []
+    for k in range(1, 6):
+        ts = now - 40 - 20 * k
+        if ts > since:
+            lat, lng = 40.2700 + step * 0.0004 - k * 0.0002, -76.8800 + step * 0.0003 - k * 0.00015
+            rows.append({"id": 8000 + k, "date": _fleet_iso(ts), "created_at": _fleet_iso(ts), "item_type": "Vehicle",
+                         "geolocation": {"latitude": lat, "longitude": lng}})
+    return {"next_cursor": None, "records": rows}
+
+
 @app.get("/_fleetio/vehicles/{vid}/location_entries/{eid}")
 async def fleet_entry(vid: int, eid: int, request: Request):
     if (bad := _fleet_gate(request)) is not None:

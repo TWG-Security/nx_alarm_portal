@@ -103,12 +103,17 @@ function rulesLineHtml(s) {
   if (!d.length) {
     return `<div class="sp-status ok" title="${esc(sysTxt)}">${ICON.check}<span>Security alarms on time</span></div>`;
   }
+  // Each flagged rule opens that rule (the user, 2026-10-16: "when the system flags a delayed alarm and i click open
+  // rules it should open that rule"): its editor for administrators, its row picked out for everyone else.
+  const one = d.length === 1 && d[0].id;
   return `<details class="sp-status warn" ${rulesLineOpen ? "open" : ""}><summary>${ICON.warn}
       <span>${d.length} NX rule${d.length === 1 ? "" : "s"} delay${d.length === 1 ? "s" : ""} repeat alarms</span><span class="sp-status-more">Review</span>${ICON.chevron}</summary>
-    <ul>${d.slice(0, 8).map((r) => `<li>${esc(r.name)}: repeats up to <b>${durTxt(r.interval_s)}</b> late</li>`).join("")}
+    <ul>${d.slice(0, 8).map((r) => `<li>${r.id ? `<button type="button" class="linkish" data-rules-open data-rule="${esc(r.id)}" title="Open this rule">${esc(r.name)}</button>` : esc(r.name)}: repeats up to <b>${durTxt(r.interval_s)}</b> late</li>`).join("")}
       ${d.length > 8 ? `<li>…and ${d.length - 8} more</li>` : ""}</ul>
-    <p><b>Fix:</b> in NX, add a rule for the same event with action <b>Write to log</b> and <b>Interval of action</b> off. Existing notification rules can keep their limits.</p>
-    ${sysTxt ? `<p class="muted">${esc(sysTxt)}</p>` : ""}${btn}</details>`;
+    <p><b>Fix:</b> set the rule's <b>Interval of action</b> to 0, or in NX add a rule for the same event with action <b>Write to log</b> and Interval of action off. Existing notification rules can keep their limits.</p>
+    ${sysTxt ? `<p class="muted">${esc(sysTxt)}</p>` : ""}${one
+      ? `<button type="button" class="btn btn-sm" data-rules-open data-rule="${esc(d[0].id)}">Open this rule</button>`
+      : `<button type="button" class="btn btn-sm" data-rules-open data-rules-delayed>Open NX rules</button>`}</details>`;
 }
 
 // Which camera view the map pane shows: the switcher marks it.
@@ -217,7 +222,9 @@ function paintRules(s, v, error = "") {
         ${editingRule === r.id ? editorRow(r) : ""}`).join("")}
       </tbody></table></div>` : `<p class="muted">${v.readable === false ? "" : rulesFilter === "tagged" && v.rules.length ? "No tagged rules on this site." : "No rules read yet. Press Check now."}</p>`}`;
 }
-async function openRules(siteId, check = false) {
+// focus: a rule id to open (administrators: its editor; others: its row, picked out), or "delayed" (every rule that
+// holds repeats back, picked out).
+async function openRules(siteId, check = false, focus = null) {
   const s = sites.get(siteId);
   if (!s) return;
   if (!rulesDlg.open) rulesDlg.showModal();
@@ -230,7 +237,21 @@ async function openRules(siteId, check = false) {
       saveSiteData(r.site);
       paintRules(sites.get(siteId), r.rules, r.error);
     } else paintRules(s, await api(`/api/sites/${siteId}/rules`));
+    if (focus) focusRules(focus);
   } catch (err) { rulesDlg.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div><button type="button" class="btn btn-sm" data-rules-close>Close</button>`; }
+}
+function focusRules(focus) {
+  const { v } = rulesState;
+  const ids = focus === "delayed" ? v.rules.filter((r) => r.delayed).map((r) => r.id) : [focus];
+  if (!ids.length) return;
+  if (rulesFilter === "tagged" && ids.some((id) => !v.rules.find((r) => r.id === id)?.tag)) {
+    rulesFilter = "all"; paintRules(rulesState.s, v);                      // a filtered-out rule would be invisible
+  }
+  if (focus !== "delayed" && CFG.isAdmin && v.readable !== false && v.rules.some((r) => r.id === focus)) return openEditor(focus);
+  const rows = ids.map((id) => rulesDlg.querySelector(`[data-rule-row="${CSS.escape(id)}"]`)).filter(Boolean);
+  rows.forEach((tr) => tr.classList.add("rule-focus"));
+  if (!rows.length) { toast("That rule isn't in NX any more. Press Check now to read the rules again.", { kind: "warn" }); return; }
+  rows[0].scrollIntoView({ block: "center" });
 }
 function saveSiteData(data) { if (data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); } }
 // The full rule editor (rule_editor.js) takes over the dialog; "Quick edit" (tags, on/off, interval) is the fallback
@@ -290,7 +311,8 @@ rulesDlg.addEventListener("change", async (e) => {
 document.getElementById("site-detail").addEventListener("click", async (e) => {
   const s = sites.get(selectedId);
   if (!s) return;
-  if (e.target.closest("[data-rules], [data-rules-open]")) return openRules(s.id);
+  const ro = e.target.closest("[data-rules], [data-rules-open]");
+  if (ro) return openRules(s.id, false, ro.dataset.rule || (ro.hasAttribute("data-rules-delayed") ? "delayed" : null));
   const btn = e.target.closest("[data-check]");
   if (!btn) return;
   const label = btn.querySelector("span") || btn;

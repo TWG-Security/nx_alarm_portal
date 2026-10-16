@@ -179,10 +179,61 @@ async def test_sat_tile_proxy_tiled_then_hires(client, admin, tmp_path, monkeypa
 @respx.mock
 async def test_sat_tile_upstream_timeout_is_a_502(client, admin, tmp_path, monkeypatch):
     from app.config import get_settings
+    from app.routers import tiles
     monkeypatch.setattr(get_settings(), "tile_cache_dir", str(tmp_path / "tiles"))
+    monkeypatch.setattr(tiles, "_naip_rest_until", 0.0)
+    monkeypatch.setattr(tiles, "_naip_fails", [])
     respx.get(url__startswith="https://imagery.nationalmap.gov/").mock(side_effect=httpx.ReadTimeout("slow"))
+    respx.get(url__startswith="https://basemap.nationalmap.gov/").mock(side_effect=httpx.ConnectError("down"))
     await login(client, admin[1].email)
-    assert (await client.get("/tiles/sat/18/76057/98686.jpg")).status_code == 502
+    assert (await client.get("/tiles/sat/18/76057/98686.jpg")).status_code == 502     # both USGS services down
+
+
+def _jpeg(color=(30, 120, 40)) -> bytes:
+    import io
+    from PIL import Image
+    out = io.BytesIO()
+    Image.new("RGB", (256, 256), color).save(out, "JPEG")
+    return out.getvalue()
+
+
+@respx.mock
+async def test_slow_naip_never_holds_up_the_coarse_tiles(client, admin, tmp_path, monkeypatch):
+    """2026-10-16: NAIP took 24-30 s+ a tile; with one shared queue of 6 the coarse tiles waited behind it and the 3D
+    and top-down views showed nothing. Now NAIP has its own slots and a 12 s limit, and a z17+ tile it can't give
+    is cut from the z16 tile at once; after 3 failures NAIP rests for 2 minutes (not asked at all)."""
+    import asyncio
+    import time
+    from app.config import get_settings
+    from app.routers import tiles
+    monkeypatch.setattr(get_settings(), "tile_cache_dir", str(tmp_path / "tiles"))
+    monkeypatch.setattr(tiles, "NAIP_TIMEOUT_S", 0.3)
+    monkeypatch.setattr(tiles, "_naip_rest_until", 0.0)
+    monkeypatch.setattr(tiles, "_naip_fails", [])
+
+    async def slow(request):
+        await asyncio.sleep(5)
+        return httpx.Response(200, content=b"never", headers={"content-type": "image/jpeg"})
+    naip = respx.get(url__startswith="https://imagery.nationalmap.gov/").mock(side_effect=slow)
+    tiled = respx.get(url__startswith="https://basemap.nationalmap.gov/").mock(
+        return_value=httpx.Response(200, content=_jpeg(), headers={"content-type": "image/jpeg"}))
+    await login(client, admin[1].email)
+
+    # Ten sharp tiles in flight (more than NAIP's slots) while a coarse tile is asked for: the coarse one is immediate.
+    sharp = [asyncio.create_task(client.get(f"/tiles/sat/18/{76057 + i}/98686.jpg")) for i in range(10)]
+    await asyncio.sleep(0.05)
+    t0 = time.monotonic()
+    r = await client.get("/tiles/sat/15/9507/12335.jpg")
+    assert r.status_code == 200 and time.monotonic() - t0 < 0.5
+    done = await asyncio.gather(*sharp)
+    assert all(x.status_code == 200 and x.content[:2] == b"\xff\xd8" for x in done)          # pictures, cut from z16
+    assert all(x.headers["cache-control"] == "private, max-age=300" for x in done)           # asked again later
+    assert tiles.naip_resting()
+    asked = naip.call_count
+    t0 = time.monotonic()
+    r = await client.get("/tiles/sat/19/152114/197372.jpg")                                  # resting: NAIP not asked
+    assert r.status_code == 200 and time.monotonic() - t0 < 0.5 and naip.call_count == asked
+    assert tiled.call_count >= 2
 
 
 def test_tile_bbox_is_web_mercator():

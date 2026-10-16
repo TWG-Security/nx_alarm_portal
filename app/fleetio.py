@@ -12,6 +12,10 @@ not yet verified against a live account:
     inspection entries), so how fresh they are depends on that feed; `date` says when each was recorded.
   - Rate limits depend on the Fleetio plan; a 429 carries Retry-After (seconds).
   - The version answered is the API key's locked one unless X-Api-Version says otherwise: always sent (API_VERSION).
+  - GET /vehicles/{id}/location_entries?filter[created_at][gt]=...&sort[created_at]=desc&per_page=100 -> {records:
+    [LocationEntry {id, date, geolocation, ...}]}: the vehicle's position history, read for the map's trail
+    (history()). The list alone only gives the newest position, and a poll a minute caught too few to draw a trail
+    (the user, 2026-10-16: "the fleetio cars do not show trailing").
   - First live read (TWG, 2026-10-14 18:07 UTC): 19 vehicles listed, none with a position on the map. In case the
     list carries only current_location_entry_id, that entry is read (GET /vehicles/{id}/location_entries/{entry},
     once per entry id); `stats` says what each list held (Sites page → Test connection).
@@ -159,6 +163,20 @@ class Client:
         stats["with_position"] = sum(1 for v in out if v.at is not None)
         self.stats, self._entries = stats, used              # keep only the vehicles' current entries
         return out
+
+    async def history(self, vehicle_id: str, since: datetime) -> list[tuple[datetime, float, float]]:
+        """Positions Fleetio recorded for this vehicle after `since`, oldest first (at most one page, 100)."""
+        slack = since.astimezone(timezone.utc).timestamp() - 120          # created_at can trail the recorded date
+        page = await self._get(f"/vehicles/{int(vehicle_id)}/location_entries", {
+            "per_page": 100, "sort[created_at]": "desc",
+            "filter[created_at][gt]": datetime.fromtimestamp(slack, timezone.utc).isoformat()})
+        rows = page.get("records") if isinstance(page, dict) else page
+        out = []
+        for e in rows if isinstance(rows, list) else []:
+            v = vehicle({"id": vehicle_id}, e if isinstance(e, dict) else None)
+            if v is not None and v.at is not None and v.at > since:
+                out.append((v.at, v.lat, v.lng))
+        return sorted(set(out))
 
     async def vehicle(self, vehicle_id: str) -> Vehicle | None:
         rec = await self._get(f"/vehicles/{int(vehicle_id)}")

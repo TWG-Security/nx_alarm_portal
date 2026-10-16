@@ -1137,3 +1137,7 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 @media (prefers-reduced-motion: reduce) { .call-item.call-flash { animation: none; outline: 2px solid #1f6feb; } }
 .call-latest-more { margin-top: 2px; font-size: 12px; }
 .call-latest-more b { font-weight: 600; }
+
+/* NX rules: the rule a "delays repeat alarms" warning pointed at (map.js focusRules) */
+.rules-table tr.rule-focus > td { background: var(--warn-soft); }
+.rules-table tr.rule-focus > td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
