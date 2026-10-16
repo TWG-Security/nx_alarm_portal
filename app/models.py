@@ -200,6 +200,28 @@ class WebAuthnCredential(Base):
     tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class ApiToken(Base):
+    """A person's key for the portal's MCP server (/mcp, app/mcp_server.py). Acts as that person: their company,
+    sites and permissions. Only the SHA-256 is stored; the token is shown once. It stops working when revoked,
+    expired, the person is disabled or deleted, or their sessions are ended everywhere (token_version)."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hint: Mapped[str] = mapped_column(String(16), default="")              # "twgp_…a1b2": recognisable, not usable
+    token_version: Mapped[int] = mapped_column(Integer, default=0)         # the user's at creation
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_ip: Mapped[str] = mapped_column(String(64), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(100), default="")
+
+
 class UserSession(Base):
     """One signed-in browser. The session cookie carries its id (sid); revoking the row signs it out."""
 

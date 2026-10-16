@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
-from app import platform_settings, security_guard
+from app import mcp_server, platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
@@ -150,6 +150,7 @@ def create_app() -> FastAPI:
     app.include_router(site_models.router)
     app.include_router(guards.router)
     app.include_router(share.router)
+    app.include_router(mcp_server.router)
     return app
 
 

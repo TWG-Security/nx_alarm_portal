@@ -40,6 +40,26 @@
       </table></div>
       <small class="muted" style="display:block;margin-top:8px">A screen that's signed out shows a red "SIGNED OUT" banner and stops receiving alarms until someone signs in again.</small>
     </div>
+    <div class="card" id="tok-card">
+      <h2>API tokens (AI assistants / MCP)</h2>
+      <p class="muted" style="margin-top:0">A token lets an AI assistant (Claude, through the TWG MCP Gateway) use the portal <b>as you</b>:
+        read alarms, sites, guards and the audit log, add notes, close alarms, end calls and <b>dispatch guards (real texts)</b>,
+        within your company and permissions. Everything it does is in the audit log, marked MCP.</p>
+      <form id="tok-form" class="row" style="align-items:flex-end">
+        <div class="field"><label for="tok-name">Name</label><input id="tok-name" type="text" maxlength="100" required placeholder="e.g. Claude gateway"></div>
+        <div class="field"><label for="tok-days">Expires</label><select id="tok-days">
+          <option value="30">In 30 days</option><option value="90" selected>In 90 days</option><option value="365">In a year</option><option value="">Never (until revoked)</option></select></div>
+        <div class="field" style="flex:0 0 auto"><button class="btn btn-primary" type="submit">Create token</button></div>
+      </form>
+      <div id="tok-new"></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Token</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+        <tbody id="tok-rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+      <small class="muted" style="display:block;margin-top:8px">Server URL: <span class="mono" id="tok-url"></span>, header
+        <span class="mono">Authorization: Bearer &lt;token&gt;</span>. Tokens stop working if you're disabled, your password is reset
+        by an admin, or you use Sign out everywhere.</small>
+    </div>
   </div>
 </div>
 <dialog id="totp-dialog">

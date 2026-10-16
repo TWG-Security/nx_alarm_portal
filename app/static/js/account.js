@@ -136,7 +136,43 @@ $("sign-out-all").addEventListener("click", async () => {
   location.href = "/login";
 });
 
+// ---------------------------------------------------------------- API tokens (MCP server)
+async function loadTokens() {
+  const r = await api("/api/account/tokens");
+  $("tok-url").textContent = r.mcp_url;
+  $("tok-rows").innerHTML = r.tokens.map((t) => `<tr><td><b>${esc(t.name)}</b><div class="muted small-print">Created ${esc(fmtTime(t.created_at))}</div></td>
+      <td class="mono">${esc(t.hint)}</td>
+      <td>${t.last_used_at ? `${esc(relTime(t.last_used_at))}<div class="muted small-print mono">${esc(t.last_used_ip)}</div>` : '<span class="muted">Never</span>'}</td>
+      <td>${t.expires_at ? esc(fmtTime(t.expires_at)) : "Never"}</td>
+      <td><button class="btn btn-sm" type="button" data-revoke="${t.id}" data-name="${esc(t.name)}">Revoke</button></td></tr>`).join("")
+    || '<tr><td colspan="5" class="empty">No tokens.</td></tr>';
+}
+$("tok-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const days = $("tok-days").value;
+    const r = await api("/api/account/tokens", { method: "POST", body: { name: $("tok-name").value, days: days ? Number(days) : null } });
+    $("tok-new").innerHTML = `<div class="alert alert-ok"><b>Token "${esc(r.name)}"</b>: copy it now, it won't be shown again.
+      <div class="row" style="margin-top:8px;align-items:center"><input type="text" readonly value="${esc(r.token)}" class="mono" id="tok-value" onfocus="this.select()">
+      <button class="btn btn-sm" type="button" id="tok-copy" style="flex:0 0 auto">Copy</button></div></div>`;
+    $("tok-copy").addEventListener("click", () => {
+      $("tok-value").select();
+      (navigator.clipboard ? navigator.clipboard.writeText(r.token) : Promise.reject()).then(() => toast("Token copied"))
+        .catch(() => { document.execCommand("copy"); toast("Token copied"); });
+    });
+    e.target.reset(); $("tok-days").value = "90";
+    await loadTokens();
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+$("tok-rows").addEventListener("click", async (e) => {
+  const d = e.target.dataset;
+  if (!d.revoke || !confirm(`Revoke the token "${d.name}"? Anything using it stops working right away.`)) return;
+  try { await api(`/api/account/tokens/${d.revoke}`, { method: "DELETE" }); toast("Token revoked"); $("tok-new").innerHTML = ""; await loadTokens(); }
+  catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+
 async function load() {
+  loadTokens().catch((err) => toast(esc(err.message), { kind: "error" }));
   me = await api("/api/account");
   $("acct-who").innerHTML = `${esc(me.display_name || me.email)} · ${esc(me.email)} · ${esc(me.company)} (${me.role === "admin" ? "admin" : "operator"})`;
   $("pw-hint").textContent = me.password_hint;

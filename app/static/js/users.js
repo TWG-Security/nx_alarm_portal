@@ -258,7 +258,13 @@ async function openSecurity(u) {
         || '<tr><td colspan="4" class="empty">Not signed in anywhere.</td></tr>'}
     </tbody></table></div>
     ${s.sessions.length ? `<button class="btn btn-sm" type="button" id="sec-all" style="margin-top:10px">Sign them out everywhere</button>
-      <p class="muted small-print">A signed-out screen shows a red "SIGNED OUT" banner and stops receiving alarms until someone signs in.</p>` : ""}`;
+      <p class="muted small-print">A signed-out screen shows a red "SIGNED OUT" banner and stops receiving alarms until someone signs in.</p>` : ""}
+    ${s.tokens?.length ? `<h3>API tokens (AI assistants / MCP)</h3>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Token</th><th>Last used</th><th></th></tr></thead><tbody>
+      ${s.tokens.map((t) => `<tr><td>${esc(t.name)}<div class="muted small-print">created ${esc(fmtTime(t.created_at))}${t.expires_at ? `, expires ${esc(fmtTime(t.expires_at))}` : ""}</div></td>
+        <td class="mono">${esc(t.hint)}</td><td>${t.last_used_at ? `${esc(relTime(t.last_used_at))} <span class="mono muted">${esc(t.last_used_ip)}</span>` : "Never"}</td>
+        <td><button class="btn btn-sm" data-revoke-token="${t.id}" data-name="${esc(t.name)}">Revoke</button></td></tr>`).join("")}
+    </tbody></table></div>` : ""}`;
 }
 
 $("sec-body").addEventListener("click", async (e) => {
@@ -271,6 +277,10 @@ $("sec-body").addEventListener("click", async (e) => {
       if (!confirm(`Sign ${secUser.email} out of every browser?`)) return;
       const r = await api(`/api/users/${secUser.id}/sessions`, { method: "DELETE" });
       toast(`Signed out of ${r.ended} browser${r.ended === 1 ? "" : "s"}`);
+    } else if (e.target.dataset.revokeToken) {
+      if (!confirm(`Revoke ${secUser.email}'s API token "${e.target.dataset.name}"? Anything using it stops working right away.`)) return;
+      await api(`/api/users/${secUser.id}/tokens/${e.target.dataset.revokeToken}`, { method: "DELETE" });
+      toast("Token revoked");
     } else if (e.target.dataset.end) {
       await api(`/api/users/${secUser.id}/sessions/${encodeURIComponent(e.target.dataset.end)}`, { method: "DELETE" });
       toast("Signed out there");

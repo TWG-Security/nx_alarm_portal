@@ -9,10 +9,12 @@
 - POST /api/account/passkeys/{id}/test/options|test, DELETE /api/account/passkeys/{id}
 - DELETE /api/account/sessions/{sid}, POST /api/account/sign-out-everywhere
 - GET|PUT /api/account/texts, POST /api/account/texts/opt-in|test   your own alarm texts (number, which, when, sites)
+- GET|POST /api/account/tokens, DELETE /api/account/tokens/{id}      your API tokens for the MCP server (/mcp)
 Admins (their company, or TWG support):
 - GET  /api/users/{id}/security                   2FA state and signed-in browsers
 - POST /api/users/{id}/reset-2fa                  clears the authenticator app and recovery codes (optionally passkeys)
-- DELETE /api/users/{id}/sessions[/{sid}]         sign them out (everywhere, or one browser)
+- DELETE /api/users/{id}/sessions[/{sid}]         sign them out (everywhere, or one browser; everywhere ends API tokens too)
+- DELETE /api/users/{id}/tokens/{tid}             revoke one of their API tokens
 """
 
 import time
@@ -22,11 +24,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import mfa, passwords, platform_settings, sessions
+from app import api_tokens, mfa, passwords, platform_settings, sessions
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, current_user, render, require_admin
-from app.models import Tenant, User, UserSession, WebAuthnCredential
+from app.models import ApiToken, Tenant, User, UserSession, WebAuthnCredential
 from app.scope import Scope, get_scope
 from app.security import hash_password, verify_password
 
@@ -357,6 +359,54 @@ async def sign_out_everywhere(request: Request, user: User = Depends(current_use
     return {"ended": n}
 
 
+# ---------------------------------------------------------------- your API tokens (the MCP server, app/mcp_server.py)
+class TokenIn(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    days: int | None = Field(default=None, ge=1, le=3650)        # None = until revoked
+
+
+def _no_mcp(request: Request) -> None:
+    """An AI holding a token can't make, list or revoke tokens: only a person signed in to the website can."""
+    if request.scope.get("twg_mcp"):
+        raise HTTPException(403, "API tokens are managed on the Account page, not through the MCP server")
+
+
+def mcp_url(request: Request) -> str:
+    from app.config import get_settings
+    return get_settings().webauthn_origins.split(",")[0].strip().rstrip("/") + "/mcp"
+
+
+@router.get("/api/account/tokens")
+async def list_tokens(request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    _no_mcp(request)
+    return {"tokens": [api_tokens.token_dict(t) for t in await api_tokens.active(db, user.id)], "mcp_url": mcp_url(request)}
+
+
+@router.post("/api/account/tokens")
+async def create_token(body: TokenIn, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    _no_mcp(request)
+    try:
+        row, token = await api_tokens.create(db, user, body.name, body.days)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    audit(db, user.tenant_id, "api_token.created", user_id=user.id, ip=client_ip(request), name=row.name,
+          hint=row.hint, days=body.days)
+    await db.commit()
+    return {**api_tokens.token_dict(row), "token": token, "mcp_url": mcp_url(request)}
+
+
+@router.delete("/api/account/tokens/{token_id}")
+async def revoke_token(token_id: int, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    _no_mcp(request)
+    row = await db.get(ApiToken, token_id)
+    if row is None or row.user_id != user.id or row.revoked_at is not None:
+        raise HTTPException(404, "No such token")
+    await api_tokens.revoke(row, "revoked by the user")
+    audit(db, user.tenant_id, "api_token.revoked", user_id=user.id, ip=client_ip(request), name=row.name, hint=row.hint)
+    await db.commit()
+    return {"revoked": token_id}
+
+
 # ---------------------------------------------------------------- admins: a company's users
 async def _target(db: AsyncSession, scope: Scope, user_id: int, *, write: bool = False) -> User:
     target = await db.scalar(select(User).where(User.id == user_id, scope.where(User.tenant_id), User.deleted_at.is_(None)))
@@ -375,7 +425,8 @@ async def user_security(user_id: int, request: Request, user: User = Depends(req
     return {"totp_enabled": target.totp_enabled, "mfa_required": mfa.required_for(tenant),
             "recovery_left": await mfa.recovery_codes_left(db, target.id) if target.totp_enabled else 0,
             "passkeys": [_passkey_dict(c) for c in await _passkeys(db, target.id)],
-            "sessions": [sessions.session_dict(r, request.session.get("sid")) for r in await sessions.active(db, [target.id])]}
+            "sessions": [sessions.session_dict(r, request.session.get("sid")) for r in await sessions.active(db, [target.id])],
+            "tokens": [api_tokens.token_dict(t) for t in await api_tokens.active(db, target.id)]}
 
 
 class ResetIn(BaseModel):
@@ -421,6 +472,21 @@ async def end_user_session(user_id: int, sid: str, request: Request, user: User 
           session_ip=row.ip)
     await db.commit()
     return {"ended": sid}
+
+
+@router.delete("/api/users/{user_id}/tokens/{token_id}")
+async def revoke_user_token(user_id: int, token_id: int, request: Request, user: User = Depends(require_admin),
+                            scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    _no_mcp(request)
+    target = await _target(db, scope, user_id, write=True)
+    row = await db.get(ApiToken, token_id)
+    if row is None or row.user_id != target.id or row.revoked_at is not None:
+        raise HTTPException(404, "No such token")
+    await api_tokens.revoke(row, f"revoked by {user.email}")
+    audit(db, target.tenant_id, "api_token.revoked_by_admin", user_id=user.id, ip=client_ip(request), target=target.email,
+          name=row.name, hint=row.hint)
+    await db.commit()
+    return {"revoked": token_id}
 
 
 # ---------------------------------------------------------------- company setting: require 2FA

@@ -5,6 +5,8 @@ incident report). Once such a row is committed, open screens get "alarm.timeline
 watches the guard open the link, go en route and arrive, live.
 """
 
+import contextvars
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import AuditLog
@@ -15,8 +17,14 @@ QUIET = {"alarm.received"}           # every alarm has one; screens already get 
 GUARD_ACTIONS = {"alarm.link_opened", "alarm.link_cameras", "tracker.share_from_alarm", "guard.status"}
 
 
+# Set while an MCP tool call runs (app/mcp_server.py): every audit row it causes says so, e.g. "MCP (Claude desk)".
+VIA: contextvars.ContextVar[str] = contextvars.ContextVar("audit_via", default="")
+
+
 def audit(db: AsyncSession, tenant_id: int, action: str, *, user_id: int | None = None,
           site_id: int | None = None, alarm_id: int | None = None, ip: str = "", **detail) -> AuditLog:
+    if VIA.get() and "via" not in detail:
+        detail["via"] = VIA.get()
     row = AuditLog(tenant_id=tenant_id, action=action, user_id=user_id, site_id=site_id,
                    alarm_id=alarm_id, ip=ip, detail=detail)
     db.add(row)

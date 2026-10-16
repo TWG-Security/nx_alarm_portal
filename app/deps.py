@@ -35,7 +35,7 @@ def ensure_csrf(request: Request) -> str:
 
 
 async def csrf_protect(request: Request) -> None:
-    if request.method not in UNSAFE_METHODS:
+    if request.method not in UNSAFE_METHODS or request.scope.get("twg_mcp"):   # MCP calls: no cookie, nothing to forge
         return
     expected = request.session.get("csrf")
     supplied = request.headers.get("x-csrf-token")
@@ -47,6 +47,17 @@ async def csrf_protect(request: Request) -> None:
 
 
 async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> User:
+    mcp = request.scope.get("twg_mcp")
+    if mcp is not None:
+        # A tool call from the MCP server (app/mcp_server.py), made inside this process after it checked the API
+        # token. Only the server puts this key in the ASGI scope; nothing from outside can.
+        user = await db.get(User, mcp["user_id"])
+        tenant = await db.get(Tenant, user.tenant_id) if user is not None else None
+        if user is None or not user.is_active or user.deleted_at is not None or tenant is None or not tenant.is_active:
+            raise NotAuthenticated()
+        user._tenant = tenant
+        user._perms = await load_permissions(db, user, tenant)
+        return user
     uid = request.session.get("uid")
     if not uid:
         raise NotAuthenticated()
