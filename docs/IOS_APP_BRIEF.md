@@ -1,0 +1,316 @@
+# TWG Alarm Portal: iOS app brief
+
+For Claude Code on the Mac that builds the iOS app. Written 2026-10-16 from the portal's code (branch
+`feature/base-portal`, commit `46b4a1a` and later). The portal itself is built and run on TWG's Linux server by a
+separate Claude Code session; this app is a client of it.
+
+Read the whole document before writing code. Where it says **(server: to build)**, that endpoint doesn't exist yet:
+the Linux-side session builds it (the user carries messages between the two). Build against the contract
+described here, with mocks until it's live.
+
+---
+
+## 1. What the portal is
+
+TWG Security (The Wire Guys) is a commercial security integrator that monitors customer sites. The **TWG Alarm
+Portal** watches NX Witness VMS servers (one per site, reached through Nx's cloud relay) and turns NX events into
+alarms that operators see, verify on camera and close. It texts people (Twilio) and dispatches mobile guards.
+
+- Production: `https://alarmportal.twgsecurity.net` (Cloudflare Tunnel, valid public certificate). Use this host.
+  The LAN address `https://10.1.10.97` has a self-signed certificate: don't use it from the app.
+- Companies (tenants): TWG plus customer companies. Every user belongs to one company; TWG staff with platform
+  rights can see all companies. The server enforces all of this; the app just shows what the API returns.
+- Roles: `admin` and `operator`, plus optional permissions from groups. Guards are ordinary users who are linked
+  to a tracker (a GPS router in a vehicle, a Fleetio vehicle, or a phone) and are texted when dispatched.
+- Source repo (read it for reference, don't change it): `github.com/TWG-Security/nx_alarm_portal`, branch
+  `feature/base-portal`. `CLAUDE.md` there is the portal's own brief. Useful files: `app/routers/api.py`,
+  `app/routers/guards.py`, `app/routers/links.py`, `app/routers/share.py`, `app/routers/stream.py`,
+  `app/services/serialize.py` (the JSON shapes), `app/static/js/` (the web UI, the reference for behaviour).
+
+## 2. Rules that are not negotiable
+
+1. **An alarm must never be delayed or silently missed.** The app is an extra screen, never the only one.
+   - Background iOS apps don't keep connections open, so alarms reach a phone by **push notification** (APNs).
+     The live stream (section 6) is only for while the app is open and in front.
+   - Text messages stay on as the backup. The app must not offer to turn them off "because I have the app".
+   - If the app can't reach the server, or the live stream stops (no `ping` for 12 s), show a loud red banner
+     ("Not receiving alarms") until it's back. Never fail quietly.
+   - Measure: time from an NX event to the push on the phone, and to the alarm on screen with the app open.
+     The web screen gets alarms in about 10–90 ms after the portal sees them.
+2. **Real-world actions need a confirmation.** A verdict of Real event texts people; Dispatch texts guards. Ask
+   "Are you sure?" with what will happen, as the web does.
+3. **Respect the server.** Never cache another company's data, never store passwords. Keep the token in the
+   Keychain (`kSecAttrAccessibleAfterFirstUnlock`, so push actions work while the phone is locked).
+4. **Plain words in the UI.** Operators and guards aren't technical. "Alarm", "Real event", "False alarm",
+   "Dismiss", "En route", "On scene", "Clear", as on the website.
+
+## 3. Branding
+
+| Token | Value | Use |
+|---|---|---|
+| Charcoal | `#1A1A1A` | text, dark backgrounds |
+| White | `#FFFFFF` | light backgrounds |
+| Red | `#C0392B` | critical / alarm state, dividers, heading accents |
+| Red (text on dark) | `#EE7366` | red text on dark surfaces |
+| Orange | `#E08A30` | buttons, calls to action (text on orange: `#1A1A1A`) |
+| Green (ok) | `#2FA36B` | online, all clear |
+| Amber (warning) | `#D9A21B` | warnings |
+| Grey (offline) | `#767676` | offline |
+| Dark surfaces | `#222222`, `#2C2C2C`, `#363636`; border `#3A3A3A`; muted text `#A8A8A8` |
+| Light surfaces | `#F7F7F7`, `#EEEEEE`, `#E3E3E3`; border `#D6D6D6`; muted text `#5C5C5C` |
+
+- Font: the system font (SF Pro) is fine; the web uses Arial/Helvetica/system sans-serif.
+- Logo: `https://static.wixstatic.com/media/d4fc57_b28e915a1b924e33b12eb77028f74f62~mv2.png` (260×80). Bundle it.
+- Dark mode first (control-room use), light mode supported. Alarm levels: critical = red, alarm = orange,
+  warning = amber.
+
+## 4. App scope (decided by the user: one app, screens by who signs in)
+
+**Operators**
+- Alarms list: open alarms, newest first, filter by level and site; badge counts per level.
+- Push for new alarms by level (critical always; alarm and warning if the user chose them). Critical uses the
+  Critical Alerts entitlement once Apple grants it (section 8), otherwise `time-sensitive`.
+- Alarm details: caption, site and address, camera, time, the **picture at the alarm moment**, a **clip** of the
+  seconds around it, **live view** of the camera, notes, and the timeline (texts sent and delivered, who viewed,
+  guard status).
+- Actions: **Real event / False alarm / Dismiss** with a note (closes the alarm; real texts people), add note,
+  **Dispatch** guards (nearest first, with distance), **End call** for a dispatched alarm.
+- Active calls: dispatched alarms still open, with each guard's latest status.
+- Map (MapKit): site pins coloured by state, guards and vans with their last positions and trails.
+
+**Guards**
+- Push when dispatched, with the site and directions.
+- Dispatch screen: alarm details (picture, clip, the site's live cameras), **En route / On scene / Clear**
+  buttons, notes to dispatch, "Open in Apple Maps".
+- Share location while on a call (foreground and background), so dispatch sees them move.
+
+A person can be both (an operator who also gets dispatched): show both.
+
+## 5. What the Mac needs
+
+- Xcode 16 or newer, Swift 6, **SwiftUI**, iOS 17+ minimum. No third-party dependencies unless they clearly earn
+  it (URLSession, MapKit, AVKit, CoreLocation and UserNotifications cover everything).
+- **Apple Developer Program** membership (paid; the user's TWG account). Needed for push, TestFlight and Critical Alerts.
+- Bundle ID suggestion: `com.twgsecurity.alarmportal` (confirm with the user).
+- Capabilities: Push Notifications; Background Modes → Remote notifications and Location updates; Time Sensitive
+  Notifications; Critical Alerts (after Apple approves, section 8).
+- Info.plist usage strings: `NSLocationWhenInUseUsageDescription`, `NSLocationAlwaysAndWhenInUseUsageDescription`
+  ("So dispatch can see you while you're on a call. Only shared during a call."), `NSCameraUsageDescription` not needed.
+- An **APNs auth key** (.p8) from the Apple Developer site, with its Key ID and the Team ID. The user gives these
+  to the Linux side (they go on the portal's Platform page), never into the app.
+
+## 6. The API (exists today unless marked)
+
+Base URL `https://alarmportal.twgsecurity.net`. JSON in and out. Times are ISO 8601 UTC strings, except `*_ms`
+and timeline `ts`, which are milliseconds since 1970. Errors: HTTP 4xx/5xx with `{"detail": "message for a person"}`
+(show `detail` as is). `401` = signed out: go to sign-in. `403` = not allowed. `404` = not found or another company's.
+`409` on acknowledge = someone else already closed it (refresh and say so).
+
+### 6.1 Sign-in (server: to build)
+
+The website signs in with a cookie session, a CSRF token and HTML two-step pages, which doesn't suit an app.
+The Linux side adds a token sign-in for the app:
+
+```
+POST /api/mobile/login            {"email", "password", "device_name": "Mike's iPhone"}
+  -> 200 {"token": "twgm_…", "user": Me}                      signed in
+  -> 200 {"step": "totp", "challenge": "…"}                   two-step: ask for the 6-digit code (or a recovery code)
+  -> 200 {"step": "enroll", "detail": "…"}                    the company requires two-step but they haven't set it up:
+                                                              tell them to set it up on the website first
+  -> 400/401 {"detail": "…"}                                  wrong email/password, locked, banned address
+POST /api/mobile/login/totp       {"challenge", "code"}  -> 200 {"token", "user": Me}
+POST /api/mobile/logout           (Bearer)              -> 200      ends this device's token
+GET  /api/mobile/me               (Bearer)              -> Me
+```
+
+`Me` = `{id, email, display_name, role: "admin"|"operator", company: {id, name}, permissions: [..],
+is_guard: bool, monitoring_station: bool, sms_level, sms_when}`.
+
+Every other call sends `Authorization: Bearer <token>`; no cookies, no CSRF. A device token works on all the
+`/api/…` and `/media/…` endpoints below and stops when the user signs out everywhere, is disabled, or the token is
+revoked (it shows on the website's Account page as a signed-in device). Passkeys and Google sign-in are not in v1.
+
+### 6.2 Push registration (server: to build)
+
+```
+POST   /api/mobile/devices        {"apns_token": "<hex>", "environment": "sandbox"|"production",
+                                   "app_version", "ios_version",
+                                   "levels": ["critical","alarm","warning"]}     -> 200
+DELETE /api/mobile/devices/{apns_token}                                          -> 200
+```
+
+Register on every launch (tokens change). `environment`: `sandbox` for Xcode debug builds, `production` for
+TestFlight / App Store.
+
+Push payloads the server will send:
+
+```json
+{ "aps": { "alert": {"title": "CRITICAL · Warehouse East", "subtitle": "Front Gate PTZ",
+                      "body": "Panic button · 14:03:12"},
+           "sound": {"critical": 1, "name": "critical.caf", "volume": 1.0},
+           "interruption-level": "critical",
+           "thread-id": "alarm-1234", "category": "ALARM", "mutable-content": 1 },
+  "type": "alarm", "alarm_id": 1234, "level": "critical", "site_id": 3, "company_id": 1 }
+```
+
+- `type`: `alarm` (new alarm), `alarm_closed` (someone closed it: remove its notification, `thread-id` matches),
+  `dispatch` (you were dispatched: also has `link_token`, below), `guard_update` (a guard on your active call changed
+  status or wrote a note), `call_ended`.
+- `interruption-level`: `critical` for critical alarms (when the entitlement is there), `time-sensitive` for
+  alarm-level and dispatch, `active` for warnings.
+- Categories with actions: `ALARM` → "Open", "False alarm" (asks for the note in the app, so it opens the app; never
+  closes an alarm from the lock screen without a confirmation); `DISPATCH` → "En route", "Open".
+- A Notification Service Extension may download `/media/alarms/{id}/snapshot.jpg` (Bearer) and attach it.
+
+### 6.3 Live stream (open while the app is in front)
+
+`GET /api/events` (Bearer) → `text/event-stream`. Read it with `URLSession.bytes(for:)` and parse lines
+(`event: …`, `data: …`, blank line ends a message). The server sends `retry: 3000` first, then:
+
+| event | data | do |
+|---|---|---|
+| `ping` | `{}` every 5 s | reset the 12 s watchdog; no ping for 12 s → reconnect and show "Reconnecting" |
+| `alarm.new` | Alarm | add it, sound, banner |
+| `alarm.updated`, `alarm.acked` | Alarm | replace it (closed ones leave the open list) |
+| `alarm.note` | Note | add to that alarm's notes |
+| `alarm.timeline` | `{alarm_id, guard: bool}` | re-read that alarm's timeline; `guard: true` = a guard update (chime on active calls) |
+| `alarms.reload` | `{}` | re-read the open alarm list |
+| `site.updated` | Site | replace it |
+| `site.status` | `{site_id, status, detail?}` | update the site's online/offline |
+| `site.push` | `{site_id, push: bool}` | live push to NX connected or not (informational) |
+| `site.removed` | Site | remove |
+| `tracker.moved` | Tracker | move the guard/van marker, extend its trail |
+| `tracker.removed` | `{id}` | remove |
+| `signedout` | `{}` | the session was ended elsewhere: sign out loudly |
+
+After a reconnect, and every 60 s while connected, re-read `GET /api/alarms?state=open` (the web does the same:
+belt and braces). The stream needs the Bearer change on `/api/events` too (server: to build, part of 6.1).
+
+### 6.4 Alarms
+
+```
+GET  /api/alarms?state=open|active|acknowledged|disarmed|all&site_id=&priority=1|2|3&verdict=real|false|dismissed|none
+                &q=&before_id=&after_id=&order=newest|oldest&limit=1..500        -> [Alarm]
+     state=open: waiting for an operator. state=active: dispatched calls still running.
+GET  /api/alarms/{id}                                                          -> Alarm
+POST /api/alarms/{id}/ack        {"note": "", "verdict": "real"|"false"|"dismissed"}   -> Alarm   (409: already closed)
+POST /api/alarms/{id}/viewed                                                   -> {"logged": bool}  (call when details open)
+GET  /api/alarms/{id}/notes                                                    -> [Note]
+POST /api/alarms/{id}/notes      {"text": "…"}  (1-4000 chars)                 -> Note
+GET  /api/alarms/{id}/timeline                                                 -> [TimelineRow]
+POST /api/alarms/{id}/end-call   {"note": ""}                                  -> Alarm   (400 if not acknowledged yet)
+GET  /api/summary                                                              -> {"open_critical", "open_alarm", "open_warning"}
+```
+
+`Alarm` (from `app/services/serialize.py alarm_dict`):
+
+```
+id, tenant_id, tenant_name, site_id, site_name, site_address,
+level: "critical"|"alarm"|"warning", priority: 1|2|3, category: "security"|"system",
+caption, description, source_name (camera name), device_id (camera id; "" = no camera), has_snapshot,
+event_type, event_subtype, event_ts_ms, received_at,
+state: "new" (open) | "acknowledged" | "disarmed",
+acked_at, acked_by, ack_note, verdict: ""|"real"|"false"|"dismissed", verdict_by, verdict_at,
+nx_ack_required, nx_ack_result, level_source,
+call_state: ""|"active"|"ended", call_ended_at, call_ended_by, call_end_note
+```
+
+`Note` = `{id, alarm_id, text, by, at}`. `TimelineRow` = `{ts (ms), what, who, detail, kind: "event"|"operator"|"guard"|"text"|"system"}`.
+
+### 6.5 Pictures and video
+
+```
+GET /media/alarms/{id}/snapshot.jpg       the frame at the alarm moment (JPEG; 404 if no camera; 502 if NX has none yet)
+GET /media/alarms/{id}/live.jpg           the camera now (poll every 1-1.5 s for a live view)
+GET /media/alarms/{id}/live.webm          live video, VP8/WebM: AVPlayer can't play it. Use live.jpg polling.
+GET /api/alarms/{id}/clip?pre=&post=&quality=sd|hd
+    -> {"status": "pending"|"processing"|"ready"|"error", "url": "/media/clips/….mp4", "message",
+        "ready_in_s" (pending: footage not recorded yet), "partial", "final_in_s", ...}
+       poll every ~1 s until "ready" (or show "message" on "error"), then play `url` with AVPlayer
+       (H.264 MP4; the server transcodes anything else). A "partial" clip grows: ask again after final_in_s.
+GET /media/sites/{site_id}/cameras/{device_id}/live.jpg     any camera of a site, live
+GET /api/sites/{site_id}/cameras          -> [{device_id, name, in_nx, place}]
+```
+
+### 6.6 Sites, guards, vans, dispatch
+
+```
+GET  /api/sites                           -> [Site]  (id, tenant_name, name, address, lat, lng, enabled, status:
+                                              "online"|"offline"|"auth_error"|…, status_detail, last_seen_at,
+                                              camera_count, open_critical, open_alarm, open_warning, marker:
+                                              "ok"|"warn"|"alarm"|"offline", arming {...}, timezone_effective)
+GET  /api/trackers?trail_min=0..1440      -> [Tracker + "trail": [[lat, lng, iso], …]]
+     Tracker = {id, tenant_id, name, kind: "guard"|"vehicle", source: "peplink"|"fleetio"|"phone", enabled,
+                lat, lng, speed, heading, fix_at, checked_at, error, device_name, user_id, online, offline_since}
+GET  /api/alarms/{id}/guards              -> {"guards": [{tracker_id, name, kind, source, person, user_id,
+                                              distance_m, distance ("0.2 mi"), fix_at, online, usable, can_text,
+                                              reason, closest}], "dispatched": [...], "from": "site"|…,
+                                              "texts_ready": bool, "auto": bool}
+POST /api/alarms/{id}/dispatch            {"tracker_ids": [ids]}  -> {"sent": [{to, person, distance, phone}],
+                                              "failed": [{name, error}]}   (texts real people: confirm first)
+```
+
+### 6.7 Guard side (works today without signing in, by link token)
+
+When a guard is dispatched they're texted a link `https://alarmportal.twgsecurity.net/a/<token>`. The token is the
+key to that one alarm (expires after 24 h by default). The app gets the same token in the `dispatch` push
+(`link_token`), so the guard screens can use these endpoints:
+
+```
+GET  /api/a/{token}                       -> alarm details as JSON (server: to build; today only the HTML page /a/{token})
+GET  /api/a/{token}/clip                  clip status (as 6.5)
+GET  /media/a/{token}/snapshot.jpg | alarm.jpg (with analytics boxes) | live.jpg | clips/{name}.mp4
+GET  /api/a/{token}/cameras               the site's other cameras -> /media/a/{token}/cameras/{device}/live.jpg
+POST /api/a/{token}/status                {"status": "en_route"|"on_scene"|"clear"}
+POST /api/a/{token}/note                  {"text": "…"} (1-2000 chars; at most 50 per person per alarm)
+POST /api/a/{token}/share                 -> the guard's location-share token (makes them a phone tracker)
+POST /api/g/{share_token}/pos             {"lat", "lng", "accuracy", "speed", "heading", "ts" (ms)}
+                                          send at least every 10 s while sharing, sooner when moving;
+                                          fixes vaguer than 250 m are ignored
+POST /api/g/{share_token}/stop            stopped sharing
+```
+
+Guards dispatched from the app should also be able to list their current dispatches:
+`GET /api/mobile/dispatches` → `[{alarm_id, link_token, site_name, address, lat, lng, dispatched_at, status}]`
+(server: to build).
+
+## 7. Suggested structure
+
+- `APIClient` (async/await, Bearer from Keychain, one place that maps 401 to sign-out and `detail` to errors).
+- `EventStream` (the SSE reader with the 12 s watchdog and exponential reconnect, 1 s → 30 s cap).
+- `AlarmStore` (`@Observable`): open alarms by id, applies stream events, re-syncs every 60 s.
+- Screens: SignIn (+ code step), Alarms, AlarmDetail, ActiveCalls, Map, Dispatch (guard), Settings
+  (push levels, sign out, server status, app version).
+- `LocationSharer` (CoreLocation, `allowsBackgroundLocationUpdates` only while a dispatch is open, stop on Clear).
+- Mocks: a `MockAPI` with sample JSON copied from section 6, so the UI can be built before the server parts exist.
+
+## 8. Critical Alerts
+
+Critical alerts sound even when the phone is muted or in Do Not Disturb. Apple grants the entitlement
+(`com.apple.developer.usernotifications.critical-alerts`) on request, for apps like public safety and security
+monitoring: request it at developer.apple.com/contact/request/notifications-critical-alerts-entitlement/ early (it
+can take weeks). Until then, use `interruption-level: time-sensitive` and say so in Settings.
+
+## 9. Testing
+
+- The Linux side can fire real test alarms on TWG's own NX ("TWG Security Office") and on a fake NX (the repo's
+  `tools/fake_nx.py`, used with `tools/dev_up.sh`: portal on :8099, login `admin@twgsecurity.com` /
+  `Smoke-test-password-123!`, dev database only). The Mac can run that dev stack itself too: Python 3.12,
+  `python -m venv .venv && .venv/bin/pip install -r requirements.txt`, an `.env.dev` like the Linux one (ask), then
+  `tools/dev_up.sh`. Point the app at `http://<mac>:8099` for UI work (allow it in ATS for debug builds only).
+- Use a separate test user on production for anything real; never test dispatch on real guards without warning them.
+- Before calling it done: push arrives with the app killed, the phone locked, and in Low Power Mode; the red
+  "Not receiving alarms" banner appears when Wi-Fi drops; a critical alarm while the app is open shows within a second.
+
+## 10. Order of work
+
+1. Mac: project, branding, mocks, Alarms list + Alarm detail against `MockAPI`.
+2. Linux (server): 6.1 sign-in + Bearer on `/api` and `/media`, `/api/mobile/me`, `/api/events` with Bearer.
+3. Mac: real sign-in, live stream, actions (verdict, note, end call, dispatch), pictures, clip, live view, map.
+4. Linux: 6.2 device registration + APNs sending (needs the .p8 key, Key ID, Team ID, bundle ID).
+5. Mac: push, categories, Notification Service Extension for the picture.
+6. Linux: `/api/a/{token}` JSON and `/api/mobile/dispatches`. Mac: guard screens and location sharing.
+7. TestFlight to a few operators and guards; measure push times; then the App Store (or keep it TestFlight/internal).
+
+When something in this document doesn't match what the server answers, trust the server, note it, and tell the
+user so the Linux side can fix the server or this document.
