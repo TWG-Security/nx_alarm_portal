@@ -123,7 +123,7 @@ and timeline `ts`, which are milliseconds since 1970. Errors: HTTP 4xx/5xx with 
 (show `detail` as is). `401` = signed out: go to sign-in. `403` = not allowed. `404` = not found or another company's.
 `409` on acknowledge = someone else already closed it (refresh and say so).
 
-### 6.1 Sign-in (built 2026-10-19)
+### 6.1 Sign-in (live since 2026-10-19 14:17 UTC)
 
 The website signs in with a cookie session, a CSRF token and HTML two-step pages, which doesn't suit an app.
 The app signs in with these (`app/routers/mobile.py`; tests `tests/test_mobile.py`):
