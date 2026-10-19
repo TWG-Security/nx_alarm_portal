@@ -283,6 +283,9 @@ def _audit_row(a: AuditLog) -> dict:
         away = f", {d['distance']} away" if d.get("distance") else (", position unknown" if "distance" in d else "")
         return {"ts": ts, "what": f"Dispatched {d.get('guard', '')}" + (" (automatic, on confirm)" if d.get("auto") else ""),
                 "who": who, "kind": "operator", "detail": f"text to {d.get('to', '')}{away}"}
+    if a.action == "alarm.call_started":
+        return {"ts": ts, "what": "Call started", "who": who, "kind": "operator",
+                "detail": "Real event: stays in Active calls until someone ends the call"}
     if a.action == "alarm.call_ended":
         how = {"false": "marked false alarm: guards told to stand down", "dismissed": "dismissed: guards told to stand down"}
         return {"ts": ts, "what": "Call ended", "who": who, "kind": "operator",

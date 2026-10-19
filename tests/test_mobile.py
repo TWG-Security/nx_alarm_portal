@@ -611,3 +611,49 @@ async def test_nothing_is_sent_when_apns_isnt_set_up(client, session):
     apns.notify([await make_alarm(session, site, priority=1)])
     await sms.drain()
     assert (await session.scalars(select(PushLog))).all() == []
+
+
+# ---------------------------------------------------------------- Real event = a call; "On duty" share token
+@respx.mock
+async def test_a_real_event_becomes_an_active_call_until_end_call(client, session):
+    """The user, 2026-10-19: "when a real event happens it just clears it, this needs to turn into a call"."""
+    t, site, p = await world(session)
+    nx_ok()
+    a1 = await make_alarm(session, site, event_ts_ms=now_ms())
+    a2 = await make_alarm(session, site, event_ts_ms=now_ms())
+    await login(client, "admin@twgsecurity.com")
+    r = (await client.post(f"/api/alarms/{a1.id}/ack", json={"verdict": "real", "note": "seen"})).json()
+    assert r["state"] == "acknowledged" and r["call_state"] == "active"          # no dispatch needed
+    assert [x["id"] for x in (await client.get("/api/alarms?state=active")).json()] == [a1.id]
+    rows = (await client.get(f"/api/alarms/{a1.id}/timeline")).json()
+    assert any(x["what"] == "Call started" for x in rows)
+    r = (await client.post(f"/api/alarms/{a1.id}/end-call", json={"note": "handled"})).json()
+    assert r["call_state"] == "ended" and (await client.get("/api/alarms?state=active")).json() == []
+    # A verdict changed to real (admin override) starts it too; False alarm ends it
+    await client.post(f"/api/alarms/{a2.id}/ack", json={"verdict": "false"})
+    assert (await client.get(f"/api/alarms/{a2.id}")).json()["call_state"] == ""
+    await client.post("/api/alarms/bulk", json={"ids": [a2.id], "verdict": "real"})
+    assert (await client.get(f"/api/alarms/{a2.id}")).json()["call_state"] == "active"
+    await client.post("/api/alarms/bulk", json={"ids": [a2.id], "verdict": "false"})
+    assert (await client.get(f"/api/alarms/{a2.id}")).json()["call_state"] == "ended"
+    # The app sees it too
+    a3 = await make_alarm(session, site, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{a3.id}/ack", json={"verdict": "real"})
+    h = bearer((await app_login(client, "admin@twgsecurity.com")).json()["token"])
+    assert [x["id"] for x in (await client.get("/api/alarms?state=active", headers=h)).json()] == [a3.id]
+
+
+async def test_on_duty_share_token_from_the_app(client, session):
+    t, site, p = await world(session)
+    h = bearer((await app_login(client, "admin@twgsecurity.com")).json()["token"])
+    r = await client.post("/api/mobile/share", headers=h)
+    assert r.status_code == 200 and set(r.json()) == {"token", "name"} and r.json()["name"] == "admin"
+    token = r.json()["token"]
+    assert (await client.post("/api/mobile/share", headers=h)).json()["token"] == token     # the same link each time
+    r = await client.post(f"/api/g/{token}/pos", json={"lat": 40.1, "lng": -75.1, "accuracy": 8, "ts": now_ms()})
+    assert r.status_code == 200
+    from app.models import Tracker
+    tr = await session.scalar(select(Tracker).where(Tracker.source == "phone"))
+    assert tr.user_id == p["admin"].id and tr.lat == 40.1
+    await login(client, "admin@twgsecurity.com")
+    assert (await client.post("/api/mobile/share")).status_code == 400                      # the app's token only

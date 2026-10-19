@@ -241,6 +241,17 @@ Apple", or "NOT sent" + Apple's reason). APNs only says it accepted a push; ther
 Measured on the dev server (fake APNs): NX event → APNs request 34-89 ms (median 38 ms, 8 alarms); with APNs
 hanging, alarms reached the operator screen in 41-53 ms and the stuck pushes gave up after ~21 s (logged as failed).
 
+### 6.2a Real event = a call; "On duty" (built 2026-10-19)
+
+- A **Real event** verdict (acknowledging as real, or changing a verdict to real) now starts a call:
+  `call_state` "active", so the alarm is in `GET /api/alarms?state=active` (website Active calls and the app) until
+  `POST /api/alarms/{id}/end-call`, with or without a dispatch. False alarm / Dismiss still end it. The timeline shows
+  "Call started".
+- `POST /api/mobile/share` (Bearer, the app's token only; a website cookie gets 400) → `{"token", "name"}`: the
+  signed-in person's location-share token without a dispatch (the same phone tracker and token as
+  `POST /api/a/{token}/share`, created if they have none), for "On duty". Post positions to `/api/g/{token}/pos` as
+  today. The same token comes back every time (until someone presses New link on the Sites page).
+
 ### 6.3 Live stream (open while the app is in front)
 
 `GET /api/events` (Bearer) → `text/event-stream`. Read it with `URLSession.bytes(for:)` and parse lines

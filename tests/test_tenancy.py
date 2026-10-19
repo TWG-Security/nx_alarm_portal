@@ -415,3 +415,16 @@ async def test_iphone_push_stays_inside_its_company(client, session, world, tmp_
     a_user = await session.scalar(select(User).where(User.email == a_email))
     assert a_user.push_level is None
     apns.reset()
+
+
+async def test_on_duty_share_token_is_in_the_callers_company(client, session, world):
+    """POST /api/mobile/share makes / finds the caller's phone tracker in THEIR company only."""
+    from app.models import Tracker
+    a_email, a_id = world["a_admin"].email, world["a"].id
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    t = (await client.post("/api/mobile/login", json={"email": a_email, "password": PASSWORD, "device_name": "t"})).json()["token"]
+    r = await client.post("/api/mobile/share", headers={"Authorization": f"Bearer {t}"})
+    assert r.status_code == 200
+    rows = (await session.scalars(select(Tracker).where(Tracker.source == "phone"))).all()
+    assert [x.tenant_id for x in rows] == [a_id]

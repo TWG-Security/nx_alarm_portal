@@ -9,6 +9,7 @@
   {challenge_id, credential} -> {token, user}: a passkey sign-in (any passkey for the site), or with the two-step
   challenge only that person's passkeys as the second factor; same checks as /login/passkey/*
 - GET  /.well-known/apple-app-site-association   so iOS offers the portal's passwords and passkeys in the app
+- POST /api/mobile/share (Bearer) -> {token, name}: my location-share token without a dispatch ("On duty")
 - POST /api/mobile/devices (Bearer) {apns_token, environment, app_version, ios_version}; DELETE /api/mobile/devices/{t}
   this iPhone's notifications (app/apns.py); PUT /api/mobile/me/push {push_level, push_when} -> Me
 
@@ -390,3 +391,19 @@ async def my_push(body: PushIn, request: Request, user: User = Depends(current_u
     await save_push(db, request, user, user, body)
     await db.commit()
     return await me_dict(db, user, user._tenant)
+
+
+@router.post("/api/mobile/share")
+async def my_share_token(request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """"On duty" in the app: my location-share token (POST /api/g/{token}/pos), without a dispatch. The same phone
+    tracker as POST /api/a/{token}/share (made if I have none), so dispatch sees me on the map."""
+    from app import guard_share
+    from app.services import trackers
+    from app.services.bus import bus
+    _app_session(request)
+    t, created = await guard_share.phone_tracker(db, user, user.tenant_id)
+    url = guard_share.share_url(t)
+    audit(db, user.tenant_id, "tracker.share_from_app", user_id=user.id, ip=client_ip(request), name=t.name, created=created)
+    await db.commit()
+    bus.publish(t.tenant_id, "tracker.moved", trackers.tracker_dict(t))
+    return {"token": url.rstrip("/").rsplit("/", 1)[-1], "name": t.name}

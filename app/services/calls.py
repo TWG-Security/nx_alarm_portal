@@ -1,4 +1,5 @@
-"""Calls: once a guard is dispatched, the alarm is a call. A Real event stays on screen (map page → Active calls)
+"""Calls: once an alarm is confirmed a Real event, or a guard is dispatched, the alarm is a call (the user, 2026-10-19:
+"when a real event happens it just clears it, this needs to turn into a call"). A Real event stays on screen (map page → Active calls)
 until someone presses End call; False alarm or Dismissed end it on their own. (The user, 2026-10-13: "if a guard is
 dispatched and its a real alarm we still want the alarm open so we need a end of dispatch or end of call".)
 
@@ -28,6 +29,16 @@ def start(alarm: Alarm) -> bool:
     if alarm.call_state == "active" or alarm.verdict in STAND_DOWN:
         return False
     alarm.call_state, alarm.call_ended_at, alarm.call_ended_by_id, alarm.call_end_note = "active", None, None, ""
+    return True
+
+
+def start_real(db: AsyncSession, alarm: Alarm, user: User | None, ip: str = "") -> bool:
+    """A Real event verdict (acknowledge, or a verdict changed to real): the alarm stays on screen as an active call
+    (map → Active calls, the app's dispatches) until End call, dispatched or not. The caller commits."""
+    if not start(alarm):
+        return False
+    audit(db, alarm.tenant_id, "alarm.call_started", user_id=user.id if user else None, site_id=alarm.site_id,
+          alarm_id=alarm.id, ip=ip, reason="real")
     return True
 
 
