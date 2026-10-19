@@ -4,6 +4,7 @@
 - POST /api/mobile/login/totp   {challenge, code}: a 6-digit code or a recovery code -> {token, user}
 - POST /api/mobile/logout       (Bearer) ends this phone's token only
 - GET  /api/mobile/me           (Bearer) who is signed in
+- GET  /api/mobile/dispatches   (Bearer) my dispatch links on calls still in progress (the guard screen's list)
 
 The same rules as the website's sign-in (app/routers/auth.py): every attempt goes to auth_events, so failures lock
 the account and ban the address (a banned address gets 403 from BanGate before reaching here), a disabled company
@@ -190,3 +191,31 @@ async def mobile_logout(request: Request, user: User = Depends(current_user), db
 @router.get("/api/mobile/me")
 async def mobile_me(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     return await me_dict(db, user, user._tenant)
+
+
+@router.get("/api/mobile/dispatches")
+async def my_dispatches(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """The calls this person was dispatched to that are still in progress, newest first, with each one's link token
+    (kept encrypted for this: alarm_links.mint purpose "dispatch"). Live: the stream sends `dispatch` and `call_ended`
+    to this person only (stream.PERSONAL_EVENTS)."""
+    from app.models import Alarm, AlarmLink
+    from app.routers.links import _guard_status
+    from app.security import decrypt
+    from app.services import dispatch
+    now = sessions.utcnow()
+    rows = (await db.execute(select(AlarmLink, Alarm).join(Alarm, Alarm.id == AlarmLink.alarm_id).where(
+        AlarmLink.user_id == user.id, AlarmLink.purpose == "dispatch", AlarmLink.revoked_at.is_(None),
+        AlarmLink.expires_at > now, Alarm.tenant_id == user.tenant_id, Alarm.call_state == "active")
+        .order_by(AlarmLink.id.desc()))).all()
+    out, seen = [], set()
+    for link, alarm in rows:
+        if alarm.id in seen or alarm.site is None or alarm.site.archived_at is not None or not link.token_enc:
+            continue
+        seen.add(alarm.id)                                   # dispatched twice: the newest link
+        where = dispatch.target(alarm)
+        out.append({"alarm_id": alarm.id, "link_token": decrypt(link.token_enc), "site_name": alarm.site.name,
+                    "address": alarm.site.address or "", "lat": where[0] if where else None,
+                    "lng": where[1] if where else None,
+                    "dispatched_at": sessions.aware(link.created_at).isoformat(),
+                    "status": await _guard_status(db, alarm.id, user.id)})
+    return out

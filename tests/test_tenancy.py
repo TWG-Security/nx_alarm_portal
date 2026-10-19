@@ -310,3 +310,34 @@ async def test_iphone_app_tokens_see_only_their_own_company(client, session, wor
     ids = [x["id"] for x in (await client.get("/api/alarms?state=all", headers=h)).json()]
     assert ids == [twg_alarm.id]
     assert (await client.get(f"/api/alarms/{aa.id}", headers=h)).status_code == 404
+
+
+async def test_guard_dispatch_endpoints_stay_inside_their_company(client, session, world):
+    """GET /api/mobile/dispatches lists only the caller's own dispatch links in their own company; GET /api/a/{token}
+    answers only for a real token (the token is the key), and an unknown one counts as a failed sign-in."""
+    from datetime import timedelta
+    from app import alarm_links
+    from app.models import AuthEvent
+    ab = world["alarms"]["Bravo Guards"]
+    b_op_id, a_email, b_email = world["b_op"].id, world["a_admin"].email, world["b_op"].email
+    ab.call_state = "active"
+    b_op = await session.get(User, b_op_id)
+    token = await alarm_links.mint(session, ab, b_op, 24, purpose="dispatch")
+    await session.commit()
+
+    async def bearer_for(email):
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        r = await client.post("/api/mobile/login", json={"email": email, "password": PASSWORD, "device_name": "t"})
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    assert (await client.get("/api/mobile/dispatches", headers=await bearer_for(a_email))).json() == []
+    mine = (await client.get("/api/mobile/dispatches", headers=await bearer_for(b_email))).json()
+    assert [(d["alarm_id"], d["link_token"]) for d in mine] == [(ab.id, token)]
+    assert (await client.get("/api/mobile/dispatches")).status_code == 401           # no sign-in
+    client.cookies.clear()
+    assert (await client.get(f"/api/a/{token}")).json()["alarm"]["id"] == ab.id
+    before = len((await session.scalars(select(AuthEvent).where(AuthEvent.kind == "alarm_link"))).all())
+    assert (await client.get(f"/api/a/{token[:-2]}xx")).status_code == 404
+    after = len((await session.scalars(select(AuthEvent).where(AuthEvent.kind == "alarm_link"))).all())
+    assert after == before + 1

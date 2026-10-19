@@ -143,7 +143,7 @@ async def dispatch(alarm_id: int, tracker_id: int, by: User | None, *, auto: boo
             raise DispatchError(reason)
         where = target(alarm)
         dist = metres(where[0], where[1], t.lat, t.lng) if where and t.lat is not None else None
-        token = await alarm_links.mint(db, alarm, u, cfg.link_hours)
+        token = await alarm_links.mint(db, alarm, u, cfg.link_hours, purpose="dispatch")
         share = guard_share.share_url(t) if (t.source or "peplink") == "phone" else ""
         by_name = by.label if by else ""
         body = sms.dispatch_text(alarm, alarm_links.url(token), by_name, dist, share, auto=auto)
@@ -163,6 +163,9 @@ async def dispatch(alarm_id: int, tracker_id: int, by: User | None, *, auto: boo
         from app.services.serialize import note_dict
         note_data = note_dict(note)
     bus.publish(alarm.tenant_id, "alarm.note", note_data)
+    # The guard's own iPhone app (only their streams get it: stream.PERSONAL_EVENTS), so it opens the dispatch at once.
+    bus.publish(alarm.tenant_id, "dispatch", {"alarm_id": alarm.id, "link_token": token,
+                                              "site_name": alarm.site.name if alarm.site else "", "user_ids": [u.id]})
     sms._spawn(_send(cfg, u, body, alarm, arrived, token))
     log.info("alarm %s: dispatched %s (%s)%s", alarm_id, t.name, away or "no position", " automatically" if auto else "")
     return {"to": t.name, "person": u.label, "distance": away, "phone": sms.masked(u.phone)}

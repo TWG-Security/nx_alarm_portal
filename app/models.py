@@ -181,6 +181,10 @@ class AlarmLink(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     open_count: Mapped[int] = mapped_column(Integer, default=0)
+    # "dispatch" for a dispatch text's link (migration 0026): its token is kept Fernet-encrypted so the iPhone app can
+    # list the guard's dispatches (GET /api/mobile/dispatches). Other links keep only the hash.
+    purpose: Mapped[str] = mapped_column(String(12), default="", server_default="")
+    token_enc: Mapped[str] = mapped_column(Text, default="", server_default="")
 
 
 class WebAuthnCredential(Base):

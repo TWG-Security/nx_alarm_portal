@@ -301,7 +301,12 @@ key to that one alarm (expires after 24 h by default). The app gets the same tok
 (`link_token`), so the guard screens can use these endpoints:
 
 ```
-GET  /api/a/{token}                       -> alarm details as JSON (server: to build; today only the HTML page /a/{token})
+GET  /api/a/{token}                       -> {"alarm": Alarm (no nx_ack_result), "sent_to", "expires_at",
+                                             "guard_status": ""|"en_route"|"on_scene"|"clear", "guard_notes": [Note],
+                                             "lat", "lng" (the alarm camera's placed spot, else the site pin, else null),
+                                             "position_from": "camera"|"site"|null}   (built 2026-10-19)
+                                          404 unknown (counts as a failed sign-in), 410 expired. Logged as "Opened the
+                                          alarm link" at most once per 5 minutes per person (re-reads aren't logged)
 GET  /api/a/{token}/clip                  clip status (as 6.5)
 GET  /media/a/{token}/snapshot.jpg | alarm.jpg (with analytics boxes) | live.jpg | clips/{name}.mp4
 GET  /api/a/{token}/cameras               the site's other cameras -> /media/a/{token}/cameras/{device}/live.jpg
@@ -314,9 +319,17 @@ POST /api/g/{share_token}/pos             {"lat", "lng", "accuracy", "speed", "h
 POST /api/g/{share_token}/stop            stopped sharing
 ```
 
-Guards dispatched from the app should also be able to list their current dispatches:
-`GET /api/mobile/dispatches` → `[{alarm_id, link_token, site_name, address, lat, lng, dispatched_at, status}]`
-(server: to build).
+Guards list their current dispatches (built 2026-10-19):
+`GET /api/mobile/dispatches` (Bearer) → `[{alarm_id, link_token, site_name, address, lat, lng, dispatched_at, status}]`:
+dispatch links sent to me that haven't expired, on calls still active, newest first, one per alarm (the newest
+link if dispatched twice). Only links from dispatches made after 2026-10-19's deploy are listed (older ones kept
+only the token's hash).
+
+Live, on the guard's own `/api/events` stream only (never anyone else's):
+- `event: dispatch` `{alarm_id, link_token, site_name}` when they're dispatched
+- `event: call_ended` `{alarm_id}` when a call they were dispatched to ends (End call, or False alarm / Dismiss)
+
+Keep the 15 s re-read of `/api/mobile/dispatches` as the backstop after a reconnect.
 
 ## 7. Suggested structure
 

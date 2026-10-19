@@ -1,6 +1,7 @@
 """The no-sign-in alarm page a text message links to (app/alarm_links.py, app/sms.py).
 
 - GET /a/{token}                               the page: one alarm's details, clip and live video
+- GET /api/a/{token}                            the page's data as JSON (the iPhone app's guard screen)
 - GET /api/a/{token}/clip, /objects            clip status and analytics boxes (same as the signed-in ones)
 - GET /media/a/{token}/snapshot.jpg, alarm.jpg (frame + boxes: the MMS picture), alarm.gif (the moving one, Confirmed / Dispatch texts), live.jpg, live.webm, clips/{name}.mp4
 - GET /api/a/{token}/cameras, /media/a/{token}/cameras/{device}/live.jpg|live.webm   the site's other cameras, live
@@ -84,6 +85,47 @@ async def alarm_page(token: str, request: Request, db: AsyncSession = Depends(ge
                       guard_notes=await _guard_notes(db, alarm.id, link.user_id) if who else [])
     response.headers.update(PRIVATE)
     return response
+
+
+APP_OPEN_AGAIN_S = 300     # the app re-reading the same link within 5 min isn't logged as another open
+
+
+@router.get("/api/a/{token}")
+async def alarm_link_json(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """What the /a/{token} page shows, as JSON for the iPhone app's guard screen (docs/IOS_APP_BRIEF.md 6.7). Same
+    checks (unknown tokens count as failed sign-ins) and the same "Opened the alarm link" audit, but an app re-reading
+    the link within APP_OPEN_AGAIN_S isn't logged again (it would chime the dispatcher on every refresh)."""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models import AuditLog
+    from app.services import dispatch
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(410 if status == "expired" else 404,
+                            "This alarm link has expired" if status == "expired" else "Not found")
+    now = utcnow()
+    recent = await db.scalar(select(AuditLog.id).where(
+        AuditLog.alarm_id == alarm.id, AuditLog.action == "alarm.link_opened",
+        AuditLog.user_id == link.user_id if link.user_id else AuditLog.user_id.is_(None),
+        AuditLog.ts >= now - timedelta(seconds=APP_OPEN_AGAIN_S)).limit(1))
+    if recent is None:
+        link.opened_at = link.opened_at or now
+        link.open_count += 1
+        audit(db, alarm.tenant_id, "alarm.link_opened", user_id=link.user_id, site_id=alarm.site_id, alarm_id=alarm.id,
+              ip=client_ip(request), opens=link.open_count, app=True)
+        await db.commit()
+    who = await db.get(User, link.user_id) if link.user_id else None
+    data = alarm_dict(alarm)
+    data.pop("nx_ack_result", None)
+    where = dispatch.target(alarm)
+    return JSONResponse({
+        "alarm": data, "sent_to": who.label if who else "",
+        "expires_at": link.expires_at.replace(tzinfo=link.expires_at.tzinfo or now.tzinfo).isoformat(),
+        "guard_status": await _guard_status(db, alarm.id, link.user_id) if who else "",
+        "guard_notes": await _guard_notes(db, alarm.id, link.user_id) if who else [],
+        "lat": where[0] if where else None, "lng": where[1] if where else None,
+        "position_from": where[2] if where else None,
+    }, headers=PRIVATE)
 
 
 @router.get("/api/a/{token}/clip")

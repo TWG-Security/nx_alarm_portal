@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import platform_settings
 from app.models import Alarm, AlarmLink, User, utcnow
+from app.security import encrypt
 
 PATH = "/a/"
 
@@ -40,11 +41,13 @@ def gif_url(token: str) -> str:
     return f"{platform_settings.current().portal_url}/media/a/{token}/alarm.gif"
 
 
-async def mint(db: AsyncSession, alarm: Alarm, user: User | None, hours: int) -> str:
+async def mint(db: AsyncSession, alarm: Alarm, user: User | None, hours: int, purpose: str = "") -> str:
+    """purpose "dispatch": the token is also kept encrypted, so the dispatched guard's iPhone app can list it."""
     token = secrets.token_urlsafe(18)
     now = utcnow()
     db.add(AlarmLink(token_hash=_hash(token), alarm_id=alarm.id, tenant_id=alarm.tenant_id,
-                     user_id=user.id if user else None, created_at=now, expires_at=now + timedelta(hours=hours)))
+                     user_id=user.id if user else None, created_at=now, expires_at=now + timedelta(hours=hours),
+                     purpose=purpose, token_enc=encrypt(token) if purpose == "dispatch" else ""))
     await db.flush()
     return token
 

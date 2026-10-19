@@ -69,7 +69,22 @@ def _after_commit(db: AsyncSession, alarm_id: int, by: str, verdict: str) -> Non
             from app import sms
             for aid, who, v in db.info.pop("call_texts", []):
                 sms._spawn(_text_guards(aid, who, v))
+                sms._spawn(_tell_apps(aid))
         event.listen(db.sync_session, "after_commit", _go, once=True)
+
+
+async def _tell_apps(alarm_id: int) -> None:
+    """`call_ended` {alarm_id} to the iPhone apps of everyone dispatched to it (their streams only)."""
+    from sqlalchemy import select
+    from app.db import sessionmaker
+    from app.models import Alarm, AlarmLink
+    from app.services.bus import bus
+    async with sessionmaker()() as db:
+        alarm = await db.get(Alarm, alarm_id)
+        users = set((await db.scalars(select(AlarmLink.user_id).where(
+            AlarmLink.alarm_id == alarm_id, AlarmLink.purpose == "dispatch", AlarmLink.user_id.is_not(None)))).all())
+    if alarm is not None and users:
+        bus.publish(alarm.tenant_id, "call_ended", {"alarm_id": alarm_id, "user_ids": sorted(users)})
 
 
 async def _text_guards(alarm_id: int, by: str, verdict: str) -> None:

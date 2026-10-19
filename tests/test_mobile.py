@@ -170,3 +170,98 @@ async def test_a_device_token_never_works_as_a_cookie_and_cookies_are_ignored(cl
     assert (await client.post("/api/mobile/logout")).status_code == 400   # a cookie can't end a phone
     r = await client.get("/api/mobile/me", headers=bearer(token))
     assert r.status_code == 200
+
+
+# ---------------------------------------------------------------- the guard's side (brief 6.7)
+import re  # noqa: E402
+
+import httpx  # noqa: E402
+import respx  # noqa: E402
+
+from app import sms  # noqa: E402
+from app.services.bus import bus  # noqa: E402
+from tests.test_dispatch import track  # noqa: E402
+from tests.test_sms import TWILIO, body_of, fresh_sms, guards, nx_ok, texts_on, world  # noqa: E402,F401
+
+
+@respx.mock
+async def test_guard_dispatch_list_link_json_and_personal_events(client, session):
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMg"}))
+    guard_tracker = await track(session, t.id, "Guard 1", 400, g["guard"])
+    other_tracker = await track(session, t.id, "Both's car", 900, g["both"])
+    site.camera_places = {"cam-1": {"name": "Gate", "lat": 40.001, "lng": -75.002, "heading": 0, "fov": 60, "range_m": 30}}
+    await session.commit()
+    a1 = await make_alarm(session, site, event_ts_ms=now_ms(), device_id="cam-1")
+    a2 = await make_alarm(session, site, event_ts_ms=now_ms(), caption="Door forced")
+    ids = (a1.id, a2.id)
+    guard_sub, both_sub, admin_sub = bus.subscribe({t.id}), bus.subscribe({t.id}), bus.subscribe({t.id})
+
+    await login(client, "mike@twgsecurity.com")                         # the dispatcher
+    for aid in ids:
+        assert (await client.post(f"/api/alarms/{aid}/dispatch", json={"tracker_id": guard_tracker.id})).status_code == 200
+    await client.post(f"/api/alarms/{a2.id}/dispatch", json={"tracker_id": other_tracker.id})
+    await sms.drain()
+    sent = [body_of(c) for c in twilio.calls]
+    token_1 = re.search(r"/a/([\w-]+)/", sent[0]).group(1)
+
+    # The guard's app signs in and lists its calls: newest first, with each link token
+    h = bearer((await app_login(client, "guard@twgsecurity.com")).json()["token"])
+    mine = (await client.get("/api/mobile/dispatches", headers=h)).json()
+    assert [d["alarm_id"] for d in mine] == [a2.id, a1.id]
+    d1 = mine[1]
+    assert d1["link_token"] == token_1 and d1["site_name"] == site.name and d1["status"] == ""
+    assert (d1["lat"], d1["lng"]) == (40.001, -75.002)                      # the alarm camera's placed spot
+    assert mine[0]["lat"] == site.lat and mine[0]["dispatched_at"]           # no placed camera: the site pin
+
+    # The link as JSON: what the page shows; opening is logged once per 5 minutes, not on every refresh
+    r = await client.get(f"/api/a/{token_1}")
+    assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
+    j = r.json()
+    assert j["alarm"]["id"] == a1.id and "nx_ack_result" not in j["alarm"] and j["sent_to"] == "guard"
+    assert j["guard_status"] == "" and j["guard_notes"] == [] and (j["lat"], j["lng"]) == (40.001, -75.002)
+    assert j["position_from"] == "camera" and j["expires_at"]
+    await client.post(f"/api/a/{token_1}/status", json={"status": "en_route"})
+    await client.post(f"/api/a/{token_1}/note", json={"text": "Two minutes out"})
+    j = (await client.get(f"/api/a/{token_1}")).json()
+    assert j["guard_status"] == "en_route" and [n["text"] for n in j["guard_notes"]] == ["Two minutes out"]
+    assert (await client.get("/api/mobile/dispatches", headers=h)).json()[1]["status"] == "en_route"
+    opens = (await session.scalars(select(AuditLog).where(AuditLog.action == "alarm.link_opened",
+                                                          AuditLog.alarm_id == a1.id))).all()
+    assert len(opens) == 1 and opens[0].detail["app"] is True
+    assert (await client.get("/api/a/not-a-real-token")).status_code == 404
+
+    # Live events: only the dispatched person's streams get them (they carry the link token)
+    def events(sub, name):
+        out = []
+        while not sub.queue.empty():
+            ev, data = sub.queue.get_nowait()
+            if ev == name:
+                out.append(data)
+        return out
+    dispatched = events(guard_sub, "dispatch")
+    assert [(d["alarm_id"], d["user_ids"]) for d in dispatched][:2] == [(a1.id, [g["guard"].id]), (a2.id, [g["guard"].id])]
+    assert dispatched[0]["link_token"] == token_1
+
+    # A call ends (Real event, then End call): it leaves the list; call_ended goes to everyone dispatched to it
+    await login(client, "mike@twgsecurity.com")
+    await client.post(f"/api/alarms/{a2.id}/ack", json={"verdict": "real", "note": "ok"})
+    assert (await client.post(f"/api/alarms/{a2.id}/end-call", json={"note": "clear"})).status_code == 200
+    await sms.drain()
+    ended = events(both_sub, "call_ended")
+    assert ended and ended[-1]["alarm_id"] == a2.id and sorted(ended[-1]["user_ids"]) == sorted([g["guard"].id, g["both"].id])
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    assert [d["alarm_id"] for d in (await client.get("/api/mobile/dispatches", headers=h)).json()] == [a1.id]
+    # False alarm on the other one ends its call too
+    await login(client, "mike@twgsecurity.com")
+    await client.post(f"/api/alarms/{a1.id}/ack", json={"verdict": "false"})
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    assert (await client.get("/api/mobile/dispatches", headers=h)).json() == []
+    for sub in (guard_sub, both_sub, admin_sub):
+        bus.unsubscribe(sub)
+
