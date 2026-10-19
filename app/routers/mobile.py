@@ -5,6 +5,10 @@
 - POST /api/mobile/logout       (Bearer) ends this phone's token only
 - GET  /api/mobile/me           (Bearer) who is signed in
 - GET  /api/mobile/dispatches   (Bearer) my dispatch links on calls still in progress (the guard screen's list)
+- POST /api/mobile/passkey/options {device_name, challenge?} -> {challenge_id, options}; POST /api/mobile/passkey/verify
+  {challenge_id, credential} -> {token, user}: a passkey sign-in (any passkey for the site), or with the two-step
+  challenge only that person's passkeys as the second factor; same checks as /login/passkey/*
+- GET  /.well-known/apple-app-site-association   so iOS offers the portal's passwords and passkeys in the app
 
 The same rules as the website's sign-in (app/routers/auth.py): every attempt goes to auth_events, so failures lock
 the account and ban the address (a banned address gets 403 from BanGate before reaching here), a disabled company
@@ -118,22 +122,23 @@ async def mobile_login(body: LoginIn, request: Request, db: AsyncSession = Depen
         await db.commit()
         raise HTTPException(403, "Your company's portal access is disabled. Contact TWG Security.")
     required = mfa.required_for(tenant)
-    if user.totp_enabled:
+    has_passkeys = mfa.passkeys_enabled() and await mfa.passkey_count(db, user.id) > 0
+    if user.totp_enabled or (required and has_passkeys):
+        # Second factor next: the authenticator code (/login/totp) and/or a passkey (/passkey/options + verify).
         _sweep()
         challenge = secrets.token_urlsafe(32)
         _challenges[_key(challenge)] = {"uid": user.id, "tv": user.token_version or 0, "exp": time.time() + MFA_TTL_S,
                                         "tries": 0, "device": body.device_name}
-        await guard.record(db, ip, "login", "success", email=addr, user=user, reason="password ok, code next (app)")
+        await guard.record(db, ip, "login", "success", email=addr, user=user, reason="password ok, second factor next (app)")
         await db.commit()
-        return {"step": "totp", "challenge": challenge, "expires_in_s": MFA_TTL_S}
-    if required:
-        has_passkeys = mfa.passkeys_enabled() and await mfa.passkey_count(db, user.id) > 0
-        await guard.record(db, ip, "login", "denied", email=addr, user=user,
-                           reason="two-step needed but no authenticator app (app)")
-        await db.commit()
+        out = {"step": "totp" if user.totp_enabled else "passkey", "challenge": challenge, "expires_in_s": MFA_TTL_S}
         if has_passkeys:
-            raise HTTPException(400, "Your account signs in with a passkey, which the app can't use yet. On the website, "
-                                     "add an authenticator app (Account → Two-step sign-in), then sign in here with its code.")
+            out["passkey"] = True
+        return out
+    if required:
+        await guard.record(db, ip, "login", "denied", email=addr, user=user,
+                           reason="two-step needed but not set up (app)")
+        await db.commit()
         return {"step": "enroll", "detail": "Your company requires two-step sign-in. Sign in on the website once to set up "
                                             "an authenticator app, then sign in here with its code."}
     return await _signed_in(request, db, user, tenant, "password", body.device_name, "login")
@@ -219,3 +224,92 @@ async def my_dispatches(user: User = Depends(current_user), db: AsyncSession = D
                     "dispatched_at": sessions.aware(link.created_at).isoformat(),
                     "status": await _guard_status(db, alarm.id, user.id)})
     return out
+
+
+# ---------------------------------------------------------------- passkeys (the same ones the website uses)
+PASSKEY_TTL_S = 5 * 60
+_passkey: dict[str, dict] = {}       # sha256(challenge_id) -> {c (WebAuthn challenge), exp, uid (second factor) or None,
+                                     #                         mfa_key (its two-step challenge), device}
+
+
+class PasskeyOptionsIn(BaseModel):
+    device_name: str = Field(default="", max_length=300)
+    challenge: str | None = Field(default=None, max_length=200)      # the two-step challenge: second factor
+
+
+class PasskeyVerifyIn(BaseModel):
+    challenge_id: str = Field(min_length=10, max_length=200)
+    credential: dict
+
+
+@router.post("/api/mobile/passkey/options")
+async def mobile_passkey_options(body: PasskeyOptionsIn, db: AsyncSession = Depends(get_db)):
+    """WebAuthn options for the app's passkey sheet. The WebAuthn challenge stays here under challenge_id (5 min, one
+    use). Without "challenge": any passkey for the site (passkey sign-in, no password). With the two-step challenge
+    from /login: only that person's passkeys, as their second factor."""
+    if not mfa.passkeys_enabled():
+        raise HTTPException(400, "Passkeys are turned off.")
+    now = time.time()
+    for k in [k for k, v in _passkey.items() if v["exp"] < now]:
+        del _passkey[k]
+    uid = mfa_key = None
+    allow = None
+    if body.challenge:
+        _sweep()
+        mfa_key = _key(body.challenge)
+        c = _challenges.get(mfa_key)
+        if c is None:
+            raise HTTPException(401, "That took too long, or the code was already used. Sign in again.")
+        uid = c["uid"]
+        from app.models import WebAuthnCredential
+        allow = (await db.scalars(select(WebAuthnCredential).where(WebAuthnCredential.user_id == uid))).all()
+        if not allow:
+            raise HTTPException(400, "This account has no passkeys. Use the code from your authenticator app.")
+    options, webauthn_challenge = mfa.authentication_options(list(allow) if allow is not None else None)
+    challenge_id = secrets.token_urlsafe(32)
+    _passkey[_key(challenge_id)] = {"c": webauthn_challenge, "exp": now + PASSKEY_TTL_S, "uid": uid, "mfa_key": mfa_key,
+                                    "device": body.device_name or (_challenges.get(mfa_key, {}).get("device") if mfa_key else "")}
+    return {"challenge_id": challenge_id, "options": options, "expires_in_s": PASSKEY_TTL_S}
+
+
+@router.post("/api/mobile/passkey/verify")
+async def mobile_passkey_verify(body: PasskeyVerifyIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """Check the passkey's answer and sign the app in, exactly as the website's /login/passkey/verify decides
+    (bans on failures, disabled accounts and companies refused, audit), then a device token like the password login."""
+    state = _passkey.pop(_key(body.challenge_id), None)              # one use, whatever happens next
+    if state is None or state["exp"] < time.time():
+        raise HTTPException(400, "That took too long. Try again.")
+    cred = await mfa.find_credential(db, body.credential)
+    user = await db.get(User, cred.user_id) if cred else None
+    if cred is None or user is None or (state["uid"] and state["uid"] != user.id):
+        await _failed(request, db, None, "passkey", "unknown passkey")
+        raise HTTPException(400, "That passkey isn't registered here.")
+    try:
+        mfa.verify_assertion(body.credential, state["c"], cred)
+    except Exception as e:  # noqa: BLE001 - py_webauthn raises several types
+        await _failed(request, db, user, "passkey", f"passkey check failed: {type(e).__name__}")
+        raise HTTPException(400, "The passkey couldn't be verified.") from None
+    tenant = await db.get(Tenant, user.tenant_id)
+    if not user.is_active or user.deleted_at is not None or tenant is None or not tenant.is_active:
+        await guard.record(db, client_ip(request), "passkey", "denied", email=user.email, user=user,
+                           reason="account or company sign-in disabled (app)")
+        await db.commit()
+        raise HTTPException(403, "This account can't sign in. Contact your administrator.")
+    if state["mfa_key"]:                                             # second factor: that sign-in is now used up
+        c = _challenges.pop(state["mfa_key"], None)
+        if c is None or c["exp"] < time.time() or (user.token_version or 0) != c["tv"]:
+            raise HTTPException(401, "That took too long, or the code was already used. Sign in again.")
+    return await _signed_in(request, db, user, tenant, "passkey", state["device"] or "", "passkey")
+
+
+@router.get("/.well-known/apple-app-site-association", include_in_schema=False)
+async def apple_app_site_association():
+    """Apple's devices (through Apple's CDN) read this to let the iPhone app use the portal's saved passwords and
+    passkeys. No sign-in, no redirect, JSON. Empty until APPLE_TEAM_ID is set."""
+    import re
+    from fastapi.responses import JSONResponse
+    from app.config import get_settings
+    s = get_settings()
+    team = (s.apple_team_id or "").strip().upper()
+    apps = [f"{team}.{s.apple_bundle_id}"] if re.fullmatch(r"[A-Z0-9]{10}", team) else []
+    return JSONResponse({"webcredentials": {"apps": apps}}, headers={"Cache-Control": "public, max-age=3600"})

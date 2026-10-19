@@ -341,3 +341,33 @@ async def test_guard_dispatch_endpoints_stay_inside_their_company(client, sessio
     assert (await client.get(f"/api/a/{token[:-2]}xx")).status_code == 404
     after = len((await session.scalars(select(AuthEvent).where(AuthEvent.kind == "alarm_link"))).all())
     assert after == before + 1
+
+
+async def test_iphone_app_passkey_sign_in_stays_in_its_company(client, session, world):
+    """A customer's passkey sign-in from the app (POST /api/mobile/passkey/options + verify) gives a token for
+    their own company only; a second factor can't be answered with another company's passkey."""
+    from tests.test_two_factor import add_passkey, soft_key
+    a_email, b_email, a_id = world["a_admin"].email, world["b_admin"].email, world["a"].id
+    aa, ab = world["alarms"]["Acme Security"], world["alarms"]["Bravo Guards"]
+    keys = {}
+    for email in (a_email, b_email):
+        keys[email] = soft_key()
+        await _as(client, email)
+        await add_passkey(client, keys[email])
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    o = (await client.post("/api/mobile/passkey/options", json={"device_name": "t"})).json()
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": keys[a_email].sign(o["options"])})
+    h = {"Authorization": f"Bearer {r.json()['token']}"}
+    assert r.json()["user"]["company"]["id"] == a_id
+    assert [x["id"] for x in (await client.get("/api/alarms?state=all", headers=h)).json()] == [aa.id]
+    assert (await client.get(f"/api/alarms/{ab.id}", headers=h)).status_code == 404
+    # Acme's password step, answered with Bravo's passkey: refused
+    from app import mfa
+    from sqlalchemy import update
+    await session.execute(update(User).where(User.email == a_email).values(totp_enabled=True, totp_secret_enc=mfa.new_totp_secret()))
+    await session.commit()
+    ch = (await client.post("/api/mobile/login", json={"email": a_email, "password": PASSWORD, "device_name": "t"})).json()["challenge"]
+    o = (await client.post("/api/mobile/passkey/options", json={"challenge": ch})).json()
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": keys[b_email].sign(o["options"])})
+    assert r.status_code == 400 and "token" not in r.json()

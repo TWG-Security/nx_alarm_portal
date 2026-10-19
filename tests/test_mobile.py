@@ -265,3 +265,102 @@ async def test_guard_dispatch_list_link_json_and_personal_events(client, session
     for sub in (guard_sub, both_sub, admin_sub):
         bus.unsubscribe(sub)
 
+
+
+# ---------------------------------------------------------------- passkeys in the app (same keys as the website)
+from tests.test_two_factor import add_passkey, soft_key  # noqa: E402
+
+
+async def _app_key(client, email):
+    key = soft_key()
+    await login(client, email)
+    await add_passkey(client, key, name="iPhone")
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    return key
+
+
+async def test_passkey_sign_in_without_a_password(client, session, twg):
+    t, u = twg
+    uid = u.id
+    key = await _app_key(client, u.email)
+    r = await client.post("/api/mobile/passkey/options", json={"device_name": DEVICE})
+    assert r.status_code == 200 and r.json()["options"]["allowCredentials"] == [] and r.json()["challenge_id"]
+    body = r.json()
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": body["challenge_id"], "credential": key.sign(body["options"])})
+    assert r.status_code == 200, r.text
+    assert r.json()["token"].startswith("twgm_") and r.json()["user"]["id"] == uid
+    row = await session.get(UserSession, sessions.mobile_id(r.json()["token"]))
+    assert row.method == "mobile" and row.user_agent == DEVICE
+    assert (await client.get("/api/mobile/me", headers=bearer(r.json()["token"]))).status_code == 200
+    # The challenge is single use
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": body["challenge_id"], "credential": key.sign(body["options"])})
+    assert r.status_code == 400 and "too long" in r.json()["detail"]
+
+
+async def test_passkey_rejections_count_as_failed_sign_ins(client, session, twg):
+    t, u = twg
+    key = await _app_key(client, u.email)
+
+    async def attempt(credential_from):
+        o = (await client.post("/api/mobile/passkey/options", json={})).json()
+        return await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": credential_from(o["options"])})
+    r = await attempt(lambda o: soft_key().sign(o))                          # not registered here
+    assert r.status_code == 400 and "isn't registered" in r.json()["detail"]
+    r = await attempt(lambda o: key.sign(o, origin="https://evil.example"))  # wrong origin
+    assert r.status_code == 400 and "couldn't be verified" in r.json()["detail"]
+    o1 = (await client.post("/api/mobile/passkey/options", json={})).json()
+    o2 = (await client.post("/api/mobile/passkey/options", json={})).json()
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o2["challenge_id"], "credential": key.sign(o1["options"])})
+    assert r.status_code == 400                                              # signed for another challenge
+    fails = (await session.scalars(select(AuthEvent).where(AuthEvent.kind == "passkey", AuthEvent.outcome == "failure"))).all()
+    assert len(fails) == 3 and all("(app)" in f.reason for f in fails)
+
+
+async def test_passkey_as_the_second_factor_and_the_two_step_answer_says_so(client, session, twg):
+    t, u = twg
+    uid, email = u.id, u.email
+    key = await _app_key(client, email)
+    secret, _codes = await enable_totp(client, email)
+    r = await app_login(client, email)
+    assert r.json()["step"] == "totp" and r.json()["passkey"] is True
+    ch = r.json()["challenge"]
+    o = (await client.post("/api/mobile/passkey/options", json={"challenge": ch})).json()
+    assert len(o["options"]["allowCredentials"]) == 1                       # only this person's keys
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": key.sign(o["options"])})
+    assert r.status_code == 200 and r.json()["user"]["id"] == uid
+    # The two-step challenge is used up: the code no longer works with it
+    r = await client.post("/api/mobile/login/totp", json={"challenge": ch, "code": now_code(secret, 30)})
+    assert r.status_code == 401
+    assert (await client.post("/api/mobile/passkey/options", json={"challenge": ch})).status_code == 401
+    # A different person's passkey can't be the second factor
+    o = (await client.post("/api/mobile/passkey/options", json={"challenge": (await app_login(client, email)).json()["challenge"]})).json()
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": soft_key().sign(o["options"])})
+    assert r.status_code == 400
+
+
+async def test_passkey_only_two_step_when_required(client, session, twg):
+    """Required two-step, no authenticator app, a passkey: the app is asked for the passkey (was a 400 before)."""
+    t, u = twg
+    email = u.email
+    key = await _app_key(client, email)
+    await settings_row(session, mfa_require_twg=True)
+    try:
+        r = await app_login(client, email)
+        assert r.json()["step"] == "passkey" and r.json()["passkey"] is True and "token" not in r.json()
+        o = (await client.post("/api/mobile/passkey/options", json={"challenge": r.json()["challenge"]})).json()
+        r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": key.sign(o["options"])})
+        assert r.status_code == 200 and r.json()["token"]
+    finally:
+        await settings_row(session, mfa_require_twg=False)
+
+
+async def test_apple_app_site_association(client, monkeypatch):
+    from app.config import get_settings
+    r = await client.get("/.well-known/apple-app-site-association")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/json" and r.json() == {"webcredentials": {"apps": []}}
+    monkeypatch.setattr(get_settings(), "apple_team_id", "abcde12345")
+    r = await client.get("/.well-known/apple-app-site-association", follow_redirects=False)
+    assert r.status_code == 200 and r.json() == {"webcredentials": {"apps": ["ABCDE12345.com.twgsecurity.alarmportal"]}}
+    monkeypatch.setattr(get_settings(), "apple_team_id", "not-a-team")
+    assert (await client.get("/.well-known/apple-app-site-association")).json()["webcredentials"]["apps"] == []

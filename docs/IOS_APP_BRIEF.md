@@ -132,10 +132,10 @@ The app signs in with these (`app/routers/mobile.py`; tests `tests/test_mobile.p
 POST /api/mobile/login            {"email", "password", "device_name"}            (device_name: up to 300 chars, shown on
                                                                                     the website; needn't be unique)
   200 {"token": "twgm_…", "user": Me}                                  signed in
-  200 {"step": "totp", "challenge": "…", "expires_in_s": 300}          ask for the 6-digit code or a recovery code
+  200 {"step": "totp", "challenge": "…", "expires_in_s": 300[, "passkey": true]}   code, recovery code (or passkey: 6.1a)
+  200 {"step": "passkey", "challenge": "…", "expires_in_s": 300, "passkey": true}  passkey only (6.1a)
   200 {"step": "enroll", "detail": "…"}                                two-step required but not set up: show detail
                                                                        (set it up on the website first)
-  400 {"detail": "Your account signs in with a passkey, which the app can't use yet. …"}   passkey-only two-step
   400 {"detail": "Your password has expired. Change it on the website …"}
   401 {"detail": "Invalid email or password."}                         wrong email or password, unknown, locked, deactivated
   403 {"detail": "This address is blocked after repeated failed sign-ins. Try again after … UTC."}   banned address
@@ -173,6 +173,27 @@ sms_when: "raised"|"confirmed"|"both"}`.
   gets `event: signedout` (measured: 0.3 s after a revoke on the website).
 - **Stream:** `retry: 3000`, then `event: ping` at once (measured 14 ms after connecting), then a ping every 5 s.
 - A valid Bearer request counts as signed in, so the phone's address (Wi-Fi or cellular) is never banned while in use.
+
+### 6.1a Passkeys and saved passwords in the app (built 2026-10-19)
+
+- `GET https://alarmportal.twgsecurity.net/.well-known/apple-app-site-association` → 200, `application/json`, no
+  redirect, no sign-in: `{"webcredentials": {"apps": ["<TEAMID>.com.twgsecurity.alarmportal"]}}`. The Team ID comes
+  from `APPLE_TEAM_ID` in the server's `.env` (bundle id `APPLE_BUNDLE_ID`, default `com.twgsecurity.alarmportal`);
+  until it's set the list is empty (`"apps": []`). Apple's CDN caches the file: after the Team ID is set, delete and
+  reinstall the app (or wait for Apple's refresh) so iOS reads the new one.
+- `POST /api/mobile/login` two-step answers now say whether passkeys work as the second factor:
+  `{"step": "totp", "challenge", "expires_in_s": 300, "passkey": true}` (code or passkey), and, new,
+  `{"step": "passkey", "challenge", "expires_in_s": 300, "passkey": true}` when two-step is required and the person
+  has passkeys but no authenticator app (this was a 400 before). `"passkey"` is absent when they have none.
+- `POST /api/mobile/passkey/options` `{"device_name", "challenge"?}` → `{"challenge_id", "options", "expires_in_s": 300}`.
+  `options` is the WebAuthn request (rpId, challenge, allowCredentials, userVerification "preferred", timeout).
+  Without `challenge`: any passkey for the site (`allowCredentials: []`), i.e. sign in with no password. With the
+  two-step `challenge`: only that person's passkeys. 401 if that challenge is gone (sign in again); 400 "This account
+  has no passkeys…" / "Passkeys are turned off."; 403 banned address.
+- `POST /api/mobile/passkey/verify` `{"challenge_id", "credential"}` (standard WebAuthn JSON, base64url) →
+  `{"token", "user": Me}` like the password login. `challenge_id` is single use (5 min). 400 "That took too long. Try
+  again." / "That passkey isn't registered here." / "The passkey couldn't be verified."; 403 banned address or "This
+  account can't sign in…"; 400 "Your password has expired…" as for passwords. Every failure counts toward bans.
 
 ### 6.2 Push registration (server: to build)
 
