@@ -34,8 +34,17 @@ def ensure_csrf(request: Request) -> str:
     return token
 
 
+def bearer_device_token(request: Request) -> str:
+    """The iPhone app's device token from "Authorization: Bearer twgm_…" ("" if none)."""
+    auth = request.headers.get("authorization", "")
+    token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    return token if token.startswith(sessions.MOBILE_PREFIX) else ""
+
+
 async def csrf_protect(request: Request) -> None:
-    if request.method not in UNSAFE_METHODS or request.scope.get("twg_mcp"):   # MCP calls: no cookie, nothing to forge
+    # MCP calls and the iPhone app's Bearer requests carry no cookie, so there's nothing to forge: a browser can't
+    # add an Authorization header to a cross-site request. A bad token is refused by current_user (401).
+    if request.method not in UNSAFE_METHODS or request.scope.get("twg_mcp") or bearer_device_token(request):
         return
     expected = request.session.get("csrf")
     supplied = request.headers.get("x-csrf-token")
@@ -57,6 +66,19 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
             raise NotAuthenticated()
         user._tenant = tenant
         user._perms = await load_permissions(db, user, tenant)
+        return user
+    token = bearer_device_token(request)
+    if token:
+        # The iPhone app (app/routers/mobile.py): the token is the sign-in; cookies are ignored. Always the user's
+        # own company (no company switcher); request.scope["twg_mobile"] tells the stream which device this is.
+        found = await sessions.check_mobile(request, db, token)
+        if found is None:
+            raise NotAuthenticated()
+        user, tenant, row = found
+        request.scope["twg_mobile"] = {"sid": row.id, "tv": user.token_version or 0}
+        user._tenant = tenant
+        user._perms = await load_permissions(db, user, tenant)
+        note_session_ip(client_ip(request))   # phones move between Wi-Fi and cellular addresses: never banned while in use
         return user
     uid = request.session.get("uid")
     if not uid:

@@ -123,29 +123,56 @@ and timeline `ts`, which are milliseconds since 1970. Errors: HTTP 4xx/5xx with 
 (show `detail` as is). `401` = signed out: go to sign-in. `403` = not allowed. `404` = not found or another company's.
 `409` on acknowledge = someone else already closed it (refresh and say so).
 
-### 6.1 Sign-in (server: to build)
+### 6.1 Sign-in (built 2026-10-19)
 
 The website signs in with a cookie session, a CSRF token and HTML two-step pages, which doesn't suit an app.
-The Linux side adds a token sign-in for the app:
+The app signs in with these (`app/routers/mobile.py`; tests `tests/test_mobile.py`):
 
 ```
-POST /api/mobile/login            {"email", "password", "device_name": "Mike's iPhone"}
-  -> 200 {"token": "twgm_…", "user": Me}                      signed in
-  -> 200 {"step": "totp", "challenge": "…"}                   two-step: ask for the 6-digit code (or a recovery code)
-  -> 200 {"step": "enroll", "detail": "…"}                    the company requires two-step but they haven't set it up:
-                                                              tell them to set it up on the website first
-  -> 400/401 {"detail": "…"}                                  wrong email/password, locked, banned address
-POST /api/mobile/login/totp       {"challenge", "code"}  -> 200 {"token", "user": Me}
-POST /api/mobile/logout           (Bearer)              -> 200      ends this device's token
-GET  /api/mobile/me               (Bearer)              -> Me
+POST /api/mobile/login            {"email", "password", "device_name"}            (device_name: up to 300 chars, shown on
+                                                                                    the website; needn't be unique)
+  200 {"token": "twgm_…", "user": Me}                                  signed in
+  200 {"step": "totp", "challenge": "…", "expires_in_s": 300}          ask for the 6-digit code or a recovery code
+  200 {"step": "enroll", "detail": "…"}                                two-step required but not set up: show detail
+                                                                       (set it up on the website first)
+  400 {"detail": "Your account signs in with a passkey, which the app can't use yet. …"}   passkey-only two-step
+  400 {"detail": "Your password has expired. Change it on the website …"}
+  401 {"detail": "Invalid email or password."}                         wrong email or password, unknown, locked, deactivated
+  403 {"detail": "This address is blocked after repeated failed sign-ins. Try again after … UTC."}   banned address
+  403 {"detail": "Your company's portal access is disabled. Contact TWG Security."}
+  422 FastAPI validation error (missing / empty field)
+
+POST /api/mobile/login/totp       {"challenge", "code"}       code: 6 digits (spaces ignored) or a recovery code
+  200 {"token": "twgm_…", "user": Me}
+  400 {"detail": "That code didn't work."} or {"detail": "That code was already used. Wait for the next one."}  try again
+  401 {"detail": "Too many wrong codes. Sign in again."}               after 5 wrong codes: back to email/password
+  401 {"detail": "That took too long, or the code was already used. Sign in again."}   challenge expired (5 min) or used
+  401 {"detail": "Sign in again."}                                     the account changed meanwhile
+  403 banned address (as above)
+
+POST /api/mobile/logout           (Bearer)  -> 200 {"signed_out": true}   ends this phone's token only
+GET  /api/mobile/me               (Bearer)  -> Me
 ```
 
-`Me` = `{id, email, display_name, role: "admin"|"operator", company: {id, name}, permissions: [..],
-is_guard: bool, monitoring_station: bool, sms_level, sms_when}`.
+`Me` = `{id, email, display_name, role: "admin"|"operator", company: {id, name}, permissions: [strings],
+is_guard: bool (a tracker is linked to them), monitoring_station: bool, sms_level: "off"|"critical"|"alarm",
+sms_when: "raised"|"confirmed"|"both"}`.
 
-Every other call sends `Authorization: Bearer <token>`; no cookies, no CSRF. A device token works on all the
-`/api/…` and `/media/…` endpoints below and stops when the user signs out everywhere, is disabled, or the token is
-revoked (it shows on the website's Account page as a signed-in device). Passkeys and Google sign-in are not in v1.
+- Every attempt is recorded like a website sign-in (failures lock the account and ban the address the same way).
+- **Bearer:** every other call sends `Authorization: Bearer <token>`: all `/api/…` and `/media/…` endpoints and
+  `GET /api/events`. No cookies, no CSRF. Send no cookies at all (`httpShouldHandleCookies = false`): a Bearer
+  request ignores them anyway. `/tiles/…` (the website's map tiles) are not for the app; use MapKit.
+- **Company:** a device token always sees the user's own company (no company switcher, for TWG staff too).
+  `GET /api/alarms?state=open` already includes all of it: **don't send `alerting=1`** (harmless, not needed).
+- **Lifetime:** no fixed expiry. A token ends when: the app signs out; it's revoked on the website (Account page →
+  "Where you're signed in" lists the phone as "iPhone app (<device_name>)", admins see it under Users → Sign-in
+  security); the user uses Sign out everywhere, changes their password, or an admin resets it or ends their
+  sessions; the user is disabled or deleted; the company's sign-in is switched off; **30 days without being used**
+  (or the platform's closed-browser limit if that's set longer); or the platform's "always sign out after" limit
+  if one is set (monitoring station users are exempt). Then every call answers 401 and an open `/api/events` stream
+  gets `event: signedout` (measured: 0.3 s after a revoke on the website).
+- **Stream:** `retry: 3000`, then `event: ping` at once (measured 14 ms after connecting), then a ping every 5 s.
+- A valid Bearer request counts as signed in, so the phone's address (Wi-Fi or cellular) is never banned while in use.
 
 ### 6.2 Push registration (server: to build)
 
@@ -201,7 +228,7 @@ Push payloads the server will send:
 | `signedout` | `{}` | the session was ended elsewhere: sign out loudly |
 
 After a reconnect, and every 60 s while connected, re-read `GET /api/alarms?state=open` (the web does the same:
-belt and braces). The stream needs the Bearer change on `/api/events` too (server: to build, part of 6.1).
+belt and braces). `/api/events` takes the Bearer token (6.1).
 
 ### 6.4 Alarms
 
@@ -322,7 +349,7 @@ can take weeks). Until then, use `interruption-level: time-sensitive` and say so
 ## 10. Order of work
 
 1. Mac: project, branding, mocks, Alarms list + Alarm detail against `MockAPI`.
-2. Linux (server): 6.1 sign-in + Bearer on `/api` and `/media`, `/api/mobile/me`, `/api/events` with Bearer.
+2. Linux (server): 6.1 sign-in + Bearer on `/api` and `/media`, `/api/mobile/me`, `/api/events` with Bearer. **Done 2026-10-19.**
 3. Mac: real sign-in, live stream, actions (verdict, note, end call, dispatch), pictures, clip, live view, map.
 4. Linux: 6.2 device registration + APNs sending (needs the .p8 key, Key ID, Team ID, bundle ID).
 5. Mac: push, categories, Notification Service Extension for the picture.

@@ -5,9 +5,10 @@ import { createPasskey, getPasskey, passkeyError, passkeysUsable } from "./webau
 const $ = (id) => document.getElementById(id);
 let me = null;
 
-const METHOD = { password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
+const METHOD = { mobile: "the iPhone app", password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
   sso: "Google", legacy: "before sessions were tracked" };
 function browserName(ua) {
+  if (/TWG Alarms/.test(ua)) return `iPhone app (${ua})`;
   const os = /Windows/.test(ua) ? "Windows" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Android/.test(ua) ? "Android"
     : /iPhone|iPad/.test(ua) ? "iPhone/iPad" : /Linux/.test(ua) ? "Linux" : "";
   const br = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";

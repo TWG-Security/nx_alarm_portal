@@ -270,3 +270,43 @@ async def test_create_company_branding_and_logo_rules(client, session, world):
     assert (await client.put(f"/api/tenants/{cid}", json={"is_active": False})).status_code == 403
     await _as(client, world["a_admin"].email)
     assert (await client.get(f"/branding/{cid}/logo")).status_code == 404
+
+
+async def test_iphone_app_tokens_see_only_their_own_company(client, session, world):
+    """The iPhone app (Bearer device tokens, app/routers/mobile.py): always the user's own company, no switcher,
+    and every way into another company's things answers 404 as on the website."""
+    sb, ab, aa = world["sites"]["Bravo Guards"], world["alarms"]["Bravo Guards"], world["alarms"]["Acme Security"]
+    twg_alarm = world["alarms"]["TWG Security"]
+    a_email, viewer_email, a_id = world["a_admin"].email, world["twg_viewer"].email, world["a"].id
+
+    async def token(email):
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        r = await client.post("/api/mobile/login", json={"email": email, "password": PASSWORD, "device_name": "test"})
+        assert r.status_code == 200, r.text
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    h = await token(a_email)
+    assert (await client.get("/api/mobile/me", headers=h)).json()["company"]["id"] == a_id
+    assert [s["name"] for s in (await client.get("/api/sites", headers=h)).json()] == ["Acme Security HQ"]
+    for q in ("state=all", "state=open", "state=open&alerting=1", f"state=all&tenant_id={world['b'].id}"):
+        ids = [x["id"] for x in (await client.get(f"/api/alarms?{q}", headers=h)).json()]
+        assert ids == ([aa.id] if "tenant_id" not in q else []), q
+    for method, path, body in [
+        ("GET", f"/api/alarms/{ab.id}", None), ("GET", f"/api/alarms/{ab.id}/notes", None),
+        ("GET", f"/api/alarms/{ab.id}/timeline", None), ("POST", f"/api/alarms/{ab.id}/ack", {"verdict": "false"}),
+        ("POST", f"/api/alarms/{ab.id}/notes", {"text": "x"}), ("POST", f"/api/alarms/{ab.id}/end-call", {}),
+        ("GET", f"/api/alarms/{ab.id}/guards", None), ("POST", f"/api/alarms/{ab.id}/dispatch", {"tracker_ids": [1]}),
+        ("GET", f"/media/alarms/{ab.id}/snapshot.jpg", None), ("GET", f"/media/alarms/{ab.id}/live.jpg", None),
+        ("GET", f"/api/alarms/{ab.id}/clip", None), ("GET", f"/api/sites/{sb.id}/cameras", None),
+        ("POST", f"/api/sites/{sb.id}/disarm", {}),
+    ]:
+        r = await client.request(method, path, json=body, headers=h)
+        assert r.status_code == 404, (method, path, r.status_code, r.text[:200])
+
+    # TWG's view-everything operator: the app shows TWG's own company only, even after asking for "all".
+    h = await token(viewer_email)
+    await client.post("/api/scope", json={"scope": "all"}, headers=h)
+    ids = [x["id"] for x in (await client.get("/api/alarms?state=all", headers=h)).json()]
+    assert ids == [twg_alarm.id]
+    assert (await client.get(f"/api/alarms/{aa.id}", headers=h)).status_code == 404

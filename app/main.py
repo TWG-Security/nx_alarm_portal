@@ -15,7 +15,7 @@ from app import mcp_server, platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, guards, links, pages, platform, share, site_models, sso, stream, tenants, tiles
+from app.routers import account, api, auth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -151,6 +151,7 @@ def create_app() -> FastAPI:
     app.include_router(guards.router)
     app.include_router(share.router)
     app.include_router(mcp_server.router)
+    app.include_router(mobile.router)
     return app
 
 
