@@ -654,7 +654,9 @@ async def test_timeline_shows_when_each_text_was_sent_and_when_it_was_delivered(
     monkeypatch.setattr(sms, "WATCH_AT_S", (0.05,))
     respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMd"}))
     status = respx.get(f"https://api.twilio.com/2010-04-01/Accounts/{SID}/Messages/SMd.json")
-    when = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=1)
+    # Twilio's date_updated has whole seconds: +3 s keeps it after the send even on a busy test machine (+1 s from a
+    # rounded-down now was sometimes only milliseconds ahead, and the send landed after it).
+    when = datetime.now(timezone.utc).replace(microsecond=0) + timedelta(seconds=3)
     status.mock(return_value=httpx.Response(200, json={"status": "delivered", "date_updated": format_datetime(when)}))
     alarm = await make_alarm(session, site)
     sms.notify([alarm])
