@@ -62,6 +62,10 @@ class User(Base):
     # Never signed out for inactivity (idle) or by the "always sign out after" limit: operators watching alarms
     # (the user, 2026-10-15: "i dont want operators to log out while monitoring"). A closed browser still expires.
     monitoring_station: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # iPhone app notifications (app/push.py), like sms_level / sms_when; which sites: sms_sites. push_level None =
+    # not chosen yet: critical + alarm (as a newly added number texts), once they have the app.
+    push_level: Mapped[str | None] = mapped_column(String(10), nullable=True)   # off | critical | alarm | warning
+    push_when: Mapped[str] = mapped_column(String(10), default="raised", server_default="raised")
     invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Deleted by an admin (api.delete_user): hidden, can't sign in or be texted; the row stays so history keeps the name
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -202,6 +206,44 @@ class WebAuthnCredential(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PushDevice(Base):
+    """An iPhone that gets this person's app notifications (APNs device token). Tied to the app's sign-in
+    (user_sessions row, session_id): it's dropped when that sign-in ends, or when APNs says the token is dead."""
+
+    __tablename__ = "push_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    apns_token: Mapped[str] = mapped_column(String(200), unique=True)
+    environment: Mapped[str] = mapped_column(String(10))                       # sandbox | production
+    app_version: Mapped[str] = mapped_column(String(40), default="")
+    ios_version: Mapped[str] = mapped_column(String(40), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PushLog(Base):
+    """Every push sent (or not), like sms_log: the alarm's timeline and the incident report show them."""
+
+    __tablename__ = "push_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    alarm_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    device: Mapped[str] = mapped_column(String(80), default="")               # "iPhone · iOS 27.0 · …" (who it went to)
+    purpose: Mapped[str] = mapped_column(String(12))   # alarm | summary | confirmed | dispatch | call_ended | stand_down | closed | test
+    outcome: Mapped[str] = mapped_column(String(12))   # sent (APNs accepted) | failed | dropped (dead token, removed)
+    status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    apns_id: Mapped[str] = mapped_column(String(64), default="")
+    delay_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)       # alarm reached the portal -> APNs accepted
 
 
 class ApiToken(Base):

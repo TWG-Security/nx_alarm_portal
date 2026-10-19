@@ -156,6 +156,8 @@ async def check_mobile(request: Request, db: AsyncSession, token: str):
     why = expired_reason(row, now, bool(user.monitoring_station))
     if why:
         row.revoked_at, row.revoked_reason = now, why
+        from app import apns
+        await apns.drop_for_sessions(db, [row.id])
         await db.commit()
         _note_revoked([row.id], row.tenant_id)
         return None
@@ -169,6 +171,8 @@ async def check_mobile(request: Request, db: AsyncSession, token: str):
 async def revoke(db: AsyncSession, row: UserSession, reason: str) -> None:
     if row.revoked_at is None:
         row.revoked_at, row.revoked_reason = utcnow(), reason[:100]
+    from app import apns
+    await apns.drop_for_sessions(db, [row.id])       # an iPhone signed out stops getting notifications
     _note_revoked([row.id], row.tenant_id)
 
 
@@ -182,6 +186,8 @@ async def revoke_all(db: AsyncSession, user: User, reason: str, *, keep_sid: str
     if sids:
         await db.execute(update(UserSession).where(UserSession.id.in_(sids))
                          .values(revoked_at=utcnow(), revoked_reason=reason[:100]))
+        from app import apns
+        await apns.drop_for_sessions(db, sids)
     if keep_sid is None:
         user.token_version = (user.token_version or 0) + 1
         _min_tv[user.id] = user.token_version

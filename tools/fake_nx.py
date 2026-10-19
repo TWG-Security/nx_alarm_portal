@@ -555,3 +555,45 @@ async def fleet_mode(mode: str):
 async def fleet_archive(vid: int):
     FLEET["archived"].add(vid)
     return {"ok": True}
+
+# ---------------------------------------------------------------- fake APNs (app/apns.py)
+# dev_up.sh points APNS_API_BASE at /_apns (HTTP/1.1 here; Apple's is HTTP/2). Records every push with its arrival
+# time, checks the provider token's shape and the topic. POST /_apns/mode/{ok|gone|bad|fail|hang}; GET /_apns/log.
+APNS = {"mode": "ok", "log": []}
+
+
+@app.post("/_apns/3/device/{token}")
+async def fake_apns(token: str, request: Request):
+    import asyncio as _aio
+    body = await request.json()
+    auth = request.headers.get("authorization", "")
+    APNS["log"].append({"t": time.time(), "token": token, "payload": body, "topic": request.headers.get("apns-topic"),
+                        "headers": {k: v for k, v in request.headers.items() if k.startswith("apns-")},
+                        "jwt_parts": len(auth.split(" ", 1)[-1].split(".")) if auth.startswith("bearer ") else 0})
+    mode = APNS["mode"]
+    if mode == "hang":
+        await _aio.sleep(30)
+    if mode == "gone":
+        return JSONResponse({"reason": "Unregistered", "timestamp": int(time.time() * 1000)}, status_code=410)
+    if mode == "bad":
+        return JSONResponse({"reason": "BadDeviceToken"}, status_code=400)
+    if mode == "fail":
+        return JSONResponse({"reason": "InternalServerError"}, status_code=500)
+    return Response(status_code=200, headers={"apns-id": f"00000000-0000-0000-0000-{len(APNS['log']):012d}"})
+
+
+@app.get("/_apns/log")
+async def fake_apns_log():
+    return APNS["log"]
+
+
+@app.post("/_apns/mode/{mode}")
+async def fake_apns_mode(mode: str):
+    APNS["mode"] = mode
+    return {"mode": mode}
+
+
+@app.post("/_apns/clear")
+async def fake_apns_clear():
+    APNS["log"].clear()
+    return {"cleared": True}

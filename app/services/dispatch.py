@@ -167,6 +167,8 @@ async def dispatch(alarm_id: int, tracker_id: int, by: User | None, *, auto: boo
     bus.publish(alarm.tenant_id, "dispatch", {"alarm_id": alarm.id, "link_token": token,
                                               "site_name": alarm.site.name if alarm.site else "", "user_ids": [u.id]})
     sms._spawn(_send(cfg, u, body, alarm, arrived, token))
+    from app import apns
+    apns.dispatch(alarm, u.id, token, away, by_name, auto)          # the guard's iPhone app too (same link token)
     log.info("alarm %s: dispatched %s (%s)%s", alarm_id, t.name, away or "no position", " automatically" if auto else "")
     return {"to": t.name, "person": u.label, "distance": away, "phone": sms.masked(u.phone)}
 

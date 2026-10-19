@@ -70,6 +70,8 @@ def _after_commit(db: AsyncSession, alarm_id: int, by: str, verdict: str) -> Non
             for aid, who, v in db.info.pop("call_texts", []):
                 sms._spawn(_text_guards(aid, who, v))
                 sms._spawn(_tell_apps(aid))
+                from app import apns
+                apns.call_ended(aid, who, v)
         event.listen(db.sync_session, "after_commit", _go, once=True)
 
 

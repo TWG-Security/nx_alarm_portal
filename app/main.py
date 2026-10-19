@@ -72,6 +72,8 @@ async def lifespan(app: FastAPI):
         t.cancel()
     from app import sms
     await sms.shutdown()
+    from app import apns
+    await apns.close()
     await manager.shutdown()
 
 

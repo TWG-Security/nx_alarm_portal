@@ -1181,3 +1181,5 @@ def reset() -> None:
     from app.services import alarm_gif         # its caches are keyed by alarm id, and its semaphore is per event loop
     alarm_gif._gifs.clear(); alarm_gif._failed.clear(); alarm_gif._inflight.clear()
     alarm_gif._slots = None
+    from app import apns
+    apns.reset()

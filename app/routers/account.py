@@ -359,6 +359,52 @@ async def sign_out_everywhere(request: Request, user: User = Depends(current_use
     return {"ended": n}
 
 
+# ---------------------------------------------------------------- your iPhone app notifications (app/apns.py)
+async def _push_view(db: AsyncSession, user: User) -> dict:
+    from app import apns
+    from app.models import PushDevice
+    rows = (await db.scalars(select(PushDevice).where(PushDevice.user_id == user.id).order_by(PushDevice.id))).all()
+    return {"ready": apns.configured(), "push_level": apns.level_of(user), "push_when": user.push_when or "raised",
+            "devices": [{"id": d.id, "environment": d.environment, "app_version": d.app_version, "ios_version": d.ios_version,
+                         "created_at": _iso(d.created_at), "last_push_at": _iso(d.last_push_at)} for d in rows]}
+
+
+@router.get("/api/account/push")
+async def get_push(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    return await _push_view(db, user)
+
+
+@router.put("/api/account/push")
+async def put_push(request: Request, body: dict = Body(...), user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    from app.routers.mobile import PushIn, save_push
+    await save_push(db, request, user, user, PushIn(**{k: body.get(k) for k in ("push_level", "push_when")}))
+    await db.commit()
+    return await _push_view(db, user)
+
+
+@router.delete("/api/account/push/devices/{device_id}")
+async def remove_push_device(device_id: int, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    from app.models import PushDevice
+    d = await db.get(PushDevice, device_id)
+    if d is None or d.user_id != user.id:
+        raise HTTPException(404, "No such iPhone")
+    await db.delete(d)
+    audit(db, user.tenant_id, "push.device_removed", user_id=user.id, ip=client_ip(request))
+    await db.commit()
+    return await _push_view(db, user)
+
+
+@router.post("/api/account/push/test")
+async def test_push(user: User = Depends(current_user)):
+    from app import apns
+    if not apns.configured():
+        raise HTTPException(400, "App notifications aren't set up on the server yet")
+    results = await apns.send_test(user.id)
+    if not results:
+        raise HTTPException(400, "No iPhone is signed in to the app as you")
+    return {"results": results}
+
+
 # ---------------------------------------------------------------- your API tokens (the MCP server, app/mcp_server.py)
 class TokenIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)

@@ -87,6 +87,13 @@ class Settings(BaseSettings):
     # portal's saved passwords and passkeys in the app. APPLE_TEAM_ID = the 10-character Apple Developer Team ID.
     apple_team_id: str = ""
     apple_bundle_id: str = "com.twgsecurity.alarms"
+    # Push notifications for the iPhone app (app/push.py): token-based APNs auth. The .p8 file lives next to .env on
+    # the host (mode 600, never in git or the backups) and is mounted into the container read-only.
+    apns_key_path: str = ""
+    apns_key_id: str = ""
+    apns_team_id: str = ""
+    apns_topic: str = "com.twgsecurity.alarms"
+    apns_api_base: str = ""          # "" = Apple's (production / sandbox per device); dev and tests point it at a fake
     webauthn_rp_name: str = "TWG Alarm Portal"
     cookie_secure: bool = True           # set False only for plain-http local dev
     twilio_api_base: str = "https://api.twilio.com"   # text messages (app/sms.py); tests and dev point it at a fake

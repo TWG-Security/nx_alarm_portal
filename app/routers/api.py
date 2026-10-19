@@ -765,6 +765,10 @@ async def bulk_edit(body: BulkIn, request: Request, user: User = Depends(require
     if confirmed or withdrawn:
         from app import sms
         sms.notify_verdicts(confirmed, withdrawn, user.id)
+    from app import apns
+    if confirmed or withdrawn:
+        apns.notify_verdicts(confirmed, withdrawn, user.id)
+    apns.notify_closed(acked, user.label, body.verdict)
     return {"acknowledged": acked, "changed": changed, "unchanged": unchanged}
 
 
@@ -974,6 +978,8 @@ class UserUpdate(BaseModel):
     sms_when: str | None = Field(default=None, pattern="^(raised|confirmed|both)$")
     sms_all_sites: bool | None = None                                     # True = every site (clears sms_sites)
     monitoring_station: bool | None = None                                # never signed out for inactivity / max age
+    push_level: str | None = Field(default=None, pattern="^(off|critical|alarm|warning)$")   # iPhone app notifications
+    push_when: str | None = Field(default=None, pattern="^(raised|confirmed|both)$")
     sms_sites: list[int] | None = Field(default=None, max_length=1000)    # only these sites
 
 
@@ -1023,7 +1029,8 @@ def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | No
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
             "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
             "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
-            "invite_email": invite}
+            "invite_email": invite, "push_level": u.push_level or "alarm", "push_when": u.push_when or "raised",
+            "push_devices": getattr(u, "_push_devices", 0)}
 
 
 @router.get("/users")
@@ -1054,6 +1061,11 @@ async def list_users(user: User = Depends(require_admin), scope: Scope = Depends
                 .group_by(SmsLog.user_id).subquery())
         for t in (await db.scalars(select(SmsLog).join(last, SmsLog.id == last.c.id))).all():
             texts[t.user_id] = {"outcome": t.outcome, "ts": t.ts.isoformat(), "error": t.error, "purpose": t.purpose}
+    from app.models import PushDevice
+    phones = dict((await db.execute(select(PushDevice.user_id, func.count()).where(PushDevice.user_id.in_(ids))
+                                    .group_by(PushDevice.user_id))).all()) if ids else {}
+    for u in rows:
+        u._push_devices = phones.get(u.id, 0)
     return [_user_dict(u, keys.get(u.id, 0), live.get(u.id, 0), mails.get(u.id), texts.get(u.id)) for u in rows]
 
 
@@ -1123,7 +1135,8 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
             body.sms_level = "off"
     if body.sms_level not in (None, "off") and not (body.phone if body.phone is not None else target.phone):
         raise HTTPException(400, "Add a mobile number first")
-    for name in ("display_name", "role", "is_active", "phone", "sms_level", "sms_when", "monitoring_station"):
+    for name in ("display_name", "role", "is_active", "phone", "sms_level", "sms_when", "monitoring_station",
+                 "push_level", "push_when"):
         value = getattr(body, name)
         if value is not None and getattr(target, name) != value:
             setattr(target, name, value)

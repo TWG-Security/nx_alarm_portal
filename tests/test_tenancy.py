@@ -371,3 +371,47 @@ async def test_iphone_app_passkey_sign_in_stays_in_its_company(client, session, 
     o = (await client.post("/api/mobile/passkey/options", json={"challenge": ch})).json()
     r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": keys[b_email].sign(o["options"])})
     assert r.status_code == 400 and "token" not in r.json()
+
+
+async def test_iphone_push_stays_inside_its_company(client, session, world, tmp_path, monkeypatch):
+    """App notifications (app/apns.py) go only to the alarm's own company's phones; a phone can only be removed by its
+    owner; push settings are per person (PUT /api/mobile/me/push changes only the caller)."""
+    import httpx
+    import respx
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from app import apns, sms
+    from app.config import get_settings
+    from app.models import PushDevice
+    path = tmp_path / "k.p8"
+    path.write_bytes(ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    for k, v in {"apns_key_path": str(path), "apns_key_id": "K1", "apns_team_id": "NY8H9358QD", "apns_api_base": "https://apns.test"}.items():
+        monkeypatch.setattr(get_settings(), k, v)
+    apns.reset()
+    aa, ab = world["alarms"]["Acme Security"], world["alarms"]["Bravo Guards"]
+    a_email, b_email = world["a_admin"].email, world["b_admin"].email
+    tokens = {}
+    for email, tok in ((a_email, "a" * 64), (b_email, "b" * 64)):
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        t = (await client.post("/api/mobile/login", json={"email": email, "password": PASSWORD, "device_name": "t"})).json()["token"]
+        tokens[email] = {"Authorization": f"Bearer {t}"}
+        assert (await client.post("/api/mobile/devices", headers=tokens[email], json={"apns_token": tok, "environment": "sandbox"})).status_code == 200
+    with respx.mock:
+        route = respx.post(url__startswith="https://apns.test/3/device/").mock(return_value=httpx.Response(200))
+        for a in (aa, ab):
+            a.state = "new"
+        await session.commit()
+        apns.notify([aa])
+        await sms.drain()
+        assert [c.request.url.path.rsplit("/", 1)[-1] for c in route.calls] == ["a" * 64]       # Acme's alarm: Acme's phone only
+    # Bravo can't remove Acme's phone; settings change only the caller
+    r = await client.delete(f"/api/mobile/devices/{'a' * 64}", headers=tokens[b_email])
+    assert r.json() == {"removed": False}
+    assert len((await session.scalars(select(PushDevice))).all()) == 2
+    await client.put("/api/mobile/me/push", headers=tokens[b_email], json={"push_level": "off"})
+    session.expire_all()
+    a_user = await session.scalar(select(User).where(User.email == a_email))
+    assert a_user.push_level is None
+    apns.reset()

@@ -9,6 +9,8 @@
   {challenge_id, credential} -> {token, user}: a passkey sign-in (any passkey for the site), or with the two-step
   challenge only that person's passkeys as the second factor; same checks as /login/passkey/*
 - GET  /.well-known/apple-app-site-association   so iOS offers the portal's passwords and passkeys in the app
+- POST /api/mobile/devices (Bearer) {apns_token, environment, app_version, ios_version}; DELETE /api/mobile/devices/{t}
+  this iPhone's notifications (app/apns.py); PUT /api/mobile/me/push {push_level, push_when} -> Me
 
 The same rules as the website's sign-in (app/routers/auth.py): every attempt goes to auth_events, so failures lock
 the account and ban the address (a banned address gets 403 from BanGate before reaching here), a disabled company
@@ -31,7 +33,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import mfa, passwords, sessions
+from app import apns, mfa, passwords, sessions
 from app import security_guard as guard
 from app.audit import audit
 from app.db import get_db
@@ -71,7 +73,8 @@ async def me_dict(db: AsyncSession, user: User, tenant: Tenant) -> dict:
     return {"id": user.id, "email": user.email, "display_name": user.display_name or user.email, "role": user.role,
             "company": {"id": tenant.id, "name": tenant.label}, "permissions": sorted(user.permissions),
             "is_guard": guard_tracker is not None, "monitoring_station": bool(user.monitoring_station),
-            "sms_level": user.sms_level or "off", "sms_when": user.sms_when or "raised"}
+            "sms_level": user.sms_level or "off", "sms_when": user.sms_when or "raised",
+            "push_level": apns.level_of(user), "push_when": user.push_when or "raised", "push_ready": apns.configured()}
 
 
 async def _signed_in(request: Request, db: AsyncSession, user: User, tenant: Tenant, method: str, device: str, kind: str) -> dict:
@@ -313,3 +316,77 @@ async def apple_app_site_association():
     team = (s.apple_team_id or "").strip().upper()
     apps = [f"{team}.{s.apple_bundle_id}"] if re.fullmatch(r"[A-Z0-9]{10}", team) else []
     return JSONResponse({"webcredentials": {"apps": apps}}, headers={"Cache-Control": "public, max-age=3600"})
+
+
+# ---------------------------------------------------------------- push notifications (app/apns.py)
+class DeviceIn(BaseModel):
+    apns_token: str = Field(min_length=32, max_length=200, pattern=r"^[0-9a-fA-F]+$")
+    environment: str = Field(pattern="^(sandbox|production)$")
+    app_version: str = Field(default="", max_length=40)
+    ios_version: str = Field(default="", max_length=40)
+
+
+def _app_session(request: Request) -> str:
+    sid = (request.scope.get("twg_mobile") or {}).get("sid")
+    if not sid:
+        raise HTTPException(400, "This is for the iPhone app's token")
+    return sid
+
+
+@router.post("/api/mobile/devices")
+async def register_device(body: DeviceIn, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """This iPhone gets the signed-in person's notifications. Upsert by APNs token (a token moving to another sign-in
+    or person follows the latest registration). Tied to this app sign-in: ending it drops the device."""
+    from app.models import PushDevice
+    sid = _app_session(request)
+    token, now = body.apns_token.lower(), sessions.utcnow()
+    d = await db.scalar(select(PushDevice).where(PushDevice.apns_token == token))
+    new = d is None
+    if new:
+        d = PushDevice(apns_token=token, created_at=now)
+        db.add(d)
+    d.user_id, d.tenant_id, d.session_id, d.environment = user.id, user.tenant_id, sid, body.environment
+    d.app_version, d.ios_version, d.last_seen_at = body.app_version, body.ios_version, now
+    if new:
+        audit(db, user.tenant_id, "push.device_added", user_id=user.id, ip=client_ip(request), environment=body.environment,
+              app_version=body.app_version, ios_version=body.ios_version)
+    await db.commit()
+    return {"registered": True, "push_ready": apns.configured(), "push_level": apns.level_of(user), "push_when": user.push_when}
+
+
+@router.delete("/api/mobile/devices/{apns_token}")
+async def unregister_device(apns_token: str, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    from sqlalchemy import delete
+    from app.models import PushDevice
+    r = await db.execute(delete(PushDevice).where(PushDevice.apns_token == apns_token.lower(), PushDevice.user_id == user.id))
+    if r.rowcount:
+        audit(db, user.tenant_id, "push.device_removed", user_id=user.id, ip=client_ip(request))
+    await db.commit()
+    return {"removed": bool(r.rowcount)}
+
+
+class PushIn(BaseModel):
+    push_level: str | None = Field(default=None, pattern="^(off|critical|alarm|warning)$")
+    push_when: str | None = Field(default=None, pattern="^(raised|confirmed|both)$")
+
+
+async def save_push(db: AsyncSession, request: Request, by: User, target: User, body: PushIn) -> list[str]:
+    changed = []
+    if body.push_level is not None and body.push_level != target.push_level:
+        target.push_level = body.push_level
+        changed.append("push_level")
+    if body.push_when is not None and body.push_when != target.push_when:
+        target.push_when = body.push_when
+        changed.append("push_when")
+    if changed:
+        audit(db, target.tenant_id, "push.settings", user_id=by.id, ip=client_ip(request), target=target.email,
+              push_level=apns.level_of(target), push_when=target.push_when, self_service=by.id == target.id)
+    return changed
+
+
+@router.put("/api/mobile/me/push")
+async def my_push(body: PushIn, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """The app's own notification settings (the same ones as the Account page)."""
+    await save_push(db, request, user, user, body)
+    await db.commit()
+    return await me_dict(db, user, user._tenant)

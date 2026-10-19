@@ -195,37 +195,51 @@ sms_when: "raised"|"confirmed"|"both"}`.
   again." / "That passkey isn't registered here." / "The passkey couldn't be verified."; 403 banned address or "This
   account can't sign in…"; 400 "Your password has expired…" as for passwords. Every failure counts toward bans.
 
-### 6.2 Push registration (server: to build)
+### 6.2 Push notifications (built 2026-10-19; switched on once Apple's key is installed on the server)
+
+Server side: `app/apns.py`. They work like the alarm texts (`app/sms.py`): the same triggers, per-person choices,
+flood limit and background sending. **Texts stay on as the backup; push never changes them.**
 
 ```
-POST   /api/mobile/devices        {"apns_token": "<hex>", "environment": "sandbox"|"production",
-                                   "app_version", "ios_version",
-                                   "levels": ["critical","alarm","warning"]}     -> 200
-DELETE /api/mobile/devices/{apns_token}                                          -> 200
+POST   /api/mobile/devices  (Bearer)  {"apns_token": "<hex, 32-200>", "environment": "sandbox"|"production",
+                                       "app_version", "ios_version"}
+       -> 200 {"registered": true, "push_ready", "push_level", "push_when"}
+          upsert by token (case-insensitive), tied to THIS app sign-in; 400 with a website cookie (app token only)
+DELETE /api/mobile/devices/{apns_token}  (Bearer)  -> 200 {"removed": true|false}   (only your own)
+PUT    /api/mobile/me/push  (Bearer)  {"push_level"?, "push_when"?}  -> Me          (422 on other values)
 ```
 
-Register on every launch (tokens change). `environment`: `sandbox` for Xcode debug builds, `production` for
-TestFlight / App Store.
+- Register on every launch (tokens change). `environment`: `sandbox` for Xcode builds (development APNs), `production`
+  for TestFlight / App Store. The server sends to api.sandbox.push.apple.com or api.push.apple.com per device.
+- A device is dropped when its app sign-in ends (Sign out, revoked on the website, Sign out everywhere, 30 days unused),
+  when the user is disabled or deleted, or when APNs answers 410 / BadDeviceToken / Unregistered / DeviceTokenNotForTopic.
+- Settings (Me, Account page "App notifications (iPhone)", Users page): `push_level` "off" | "critical" | "alarm"
+  (critical + alarm, **the default** until the person chooses) | "warning" (everything); `push_when` "raised" (default)
+  | "confirmed" | "both"; which sites = the same as their texts (`sms_sites`). Me also has `"push_ready"` (the server
+  has Apple's key).
 
-Push payloads the server will send:
+What is pushed, all with `"sound": "default"`, apns-push-type `alert`, `apns-expiration` = now + 1 h:
 
-```json
-{ "aps": { "alert": {"title": "CRITICAL · Warehouse East", "subtitle": "Front Gate PTZ",
-                      "body": "Panic button · 14:03:12"},
-           "sound": {"critical": 1, "name": "critical.caf", "volume": 1.0},
-           "interruption-level": "critical",
-           "thread-id": "alarm-1234", "category": "ALARM", "mutable-content": 1 },
-  "type": "alarm", "alarm_id": 1234, "level": "critical", "site_id": 3, "company_id": 1 }
-```
+| type | when (same as the text) | aps.alert | interruption-level | apns-collapse-id / priority | extra keys |
+|---|---|---|---|---|---|
+| `alarm` | a new alarm at their level | title `CRITICAL · <site>` / `ALARM · …` / `WARNING · …`, subtitle camera, body `<caption> · <time>` | time-sensitive (critical, alarm), active (warning) | `alarm-<id>` / 10 | `alarm_id`, `level`, `site_id` |
+| `alarm` + `"summary": true` | past the flood limit (Platform → Text messages, per 10 min): one summary when the window has room | title `N more alarms`, body the sites | time-sensitive | `alarm-summary` / 10 | `count`, `alarm_id` (newest), `level`, `site_id` |
+| `alarm` (title `CONFIRMED · <site>`) | Real event, to `confirmed`/`both` people (not whoever confirmed; guards who'll be auto-dispatched get `dispatch` instead) | body `<caption> · <time>[ · +N more] · by <name>` | time-sensitive | `alarm-<id>` / 10 | `confirmed_by` |
+| `call_ended` (title `STAND DOWN · <site>`) | Real event changed to False alarm / Dismissed, to those pushed CONFIRMED | body `<caption>: False alarm (by …)` | time-sensitive | `alarm-<id>` / 10 | `alarm_id`, `verdict` |
+| `dispatch` | they were dispatched | title `DISPATCH · <site>`, subtitle caption, body `<address>, <distance> away` | time-sensitive | `dispatch-<id>` / 10 | `alarm_id`, `link_token` (= the text's /a/ link), `level`, `site_id`, `auto` |
+| `call_ended` | the call ended (End call, or False alarm / Dismiss), to dispatched guards who haven't tapped Clear | title `CALL ENDED · <site>` or `STAND DOWN · <site>` | time-sensitive | `dispatch-<id>` / 10 | `alarm_id` |
+| `alarm_closed` | someone closed an alarm they were pushed (ack, bulk) | title `CLOSED · <site>`, body `<caption>: Real event / False alarm / Dismissed (by …)`, **no sound** | passive | `alarm-<id>` / 5 (replaces the alarm notification) | `alarm_id`, `verdict` |
+| `test` | Account page → Send a test notification | `TWG Alarm Portal` / `Test notification…` | active | `test` | |
 
-- `type`: `alarm` (new alarm), `alarm_closed` (someone closed it: remove its notification, `thread-id` matches),
-  `dispatch` (you were dispatched: also has `link_token`, below), `guard_update` (a guard on your active call changed
-  status or wrote a note), `call_ended`.
-- `interruption-level`: `critical` for critical alarms (when the entitlement is there), `time-sensitive` for
-  alarm-level and dispatch, `active` for warnings.
-- Categories with actions: `ALARM` → "Open", "False alarm" (asks for the note in the app, so it opens the app; never
-  closes an alarm from the lock screen without a confirmation); `DISPATCH` → "En route", "Open".
-- A Notification Service Extension may download `/media/alarms/{id}/snapshot.jpg` (Bearer) and attach it.
+`thread-id` is `alarm-<id>` on all of them (`alarm-summary` for summaries). No `category` and no `mutable-content` yet:
+tell the server when the app has categories / a Notification Service Extension, and they'll be added. Not built:
+`guard_update` pushes, Critical Alerts (`"interruption-level": "critical"` needs the entitlement first).
+
+Every push is logged and shows on the alarm's timeline ("App notification sent · to their iPhone (iOS …), accepted by
+Apple", or "NOT sent" + Apple's reason). APNs only says it accepted a push; there is no delivery report.
+
+Measured on the dev server (fake APNs): NX event → APNs request 34-89 ms (median 38 ms, 8 alarms); with APNs
+hanging, alarms reached the operator screen in 41-53 ms and the stuck pushes gave up after ~21 s (logged as failed).
 
 ### 6.3 Live stream (open while the app is in front)
 

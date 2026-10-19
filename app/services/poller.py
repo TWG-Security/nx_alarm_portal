@@ -455,6 +455,8 @@ class PollerManager:
             bus.publish(a.tenant_id, "alarm.new", alarm_dict(a))
             clips.schedule_prefetch(a)
         sms.notify(created)            # after the browsers have it; never waits (background texts)
+        from app import apns
+        apns.notify(created)           # the iPhone app's notifications, the same way (app/apns.py)
 
     async def ingest_pushed(self, rt: SiteRuntime, rows: list[dict]) -> list[Alarm]:
         """Rows pushed by NX over the JSON-RPC websocket: store and announce immediately."""

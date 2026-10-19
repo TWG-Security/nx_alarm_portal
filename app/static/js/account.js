@@ -172,7 +172,41 @@ $("tok-rows").addEventListener("click", async (e) => {
   catch (err) { toast(esc(err.message), { kind: "error" }); }
 });
 
+// ---------------------------------------------------------------- iPhone app notifications (app/apns.py)
+const ENV = { sandbox: "test build", production: "App Store / TestFlight" };
+async function loadPush() {
+  const r = await api("/api/account/push");
+  $("pu-level").value = r.push_level; $("pu-when").value = r.push_when;
+  $("pu-devices").innerHTML = (r.ready ? "" : '<div class="alert alert-warn">App notifications aren\'t switched on for the portal yet (the server needs Apple\'s key).</div>')
+    + (r.devices.length ? `<p>Signed in on ${r.devices.length} iPhone${r.devices.length === 1 ? "" : "s"}:</p><ul>${r.devices.map((d) => `<li>iOS ${esc(d.ios_version || "?")}, app ${esc(d.app_version || "?")} (${esc(ENV[d.environment] || d.environment)}),
+        added ${esc(relTime(d.created_at))}${d.last_push_at ? `, last notification ${esc(relTime(d.last_push_at))}` : ""}
+        <button class="btn btn-sm" type="button" data-pu-remove="${d.id}">Remove</button></li>`).join("")}</ul>`
+      : '<p class="muted">No iPhone yet: sign in to the TWG Alarms app and allow notifications.</p>');
+  $("pu-test").disabled = !r.ready || !r.devices.length;
+}
+$("pu-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try { await api("/api/account/push", { method: "PUT", body: { push_level: $("pu-level").value, push_when: $("pu-when").value } }); toast("Saved"); await loadPush(); }
+  catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+$("pu-test").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/account/push/test", { method: "POST" });
+    const ok = r.results.filter((x) => x.outcome === "sent").length;
+    toast(ok === r.results.length ? "Test notification sent: check your iPhone" : `Sent to ${ok} of ${r.results.length}: ${esc(r.results.find((x) => x.outcome !== "sent")?.reason || "")}`,
+      { kind: ok ? "" : "error" });
+    await loadPush();
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+$("pu-devices").addEventListener("click", async (e) => {
+  const id = e.target.dataset.puRemove;
+  if (!id || !confirm("Stop notifications on this iPhone? (Signing out of the app does the same.)")) return;
+  try { await api(`/api/account/push/devices/${id}`, { method: "DELETE" }); toast("Removed"); await loadPush(); }
+  catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+
 async function load() {
+  loadPush().catch((err) => toast(esc(err.message), { kind: "error" }));
   loadTokens().catch((err) => toast(esc(err.message), { kind: "error" }));
   me = await api("/api/account");
   $("acct-who").innerHTML = `${esc(me.display_name || me.email)} · ${esc(me.email)} · ${esc(me.company)} (${me.role === "admin" ? "admin" : "operator"})`;

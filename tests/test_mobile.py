@@ -182,6 +182,7 @@ from app import sms  # noqa: E402
 from app.services.bus import bus  # noqa: E402
 from tests.test_dispatch import track  # noqa: E402
 from tests.test_sms import TWILIO, body_of, fresh_sms, guards, nx_ok, texts_on, world  # noqa: E402,F401
+from app.models import SmsLog  # noqa: E402,F401
 
 
 @respx.mock
@@ -366,3 +367,247 @@ async def test_apple_app_site_association(client, monkeypatch):
     assert r.status_code == 200 and r.json() == {"webcredentials": {"apps": ["ABCDE12345.com.twgsecurity.alarms"]}}
     monkeypatch.setattr(get_settings(), "apple_team_id", "not-a-team")
     assert (await client.get("/.well-known/apple-app-site-association")).json()["webcredentials"]["apps"] == []
+
+
+# ---------------------------------------------------------------- push notifications (app/apns.py, brief 6.2)
+import asyncio  # noqa: E402
+import base64 as _b64  # noqa: E402
+import json as _json  # noqa: E402
+
+import pytest  # noqa: E402
+
+from app import apns  # noqa: E402
+from app.models import PushDevice, PushLog  # noqa: E402
+
+APNS_BASE = "https://apns.test"
+PHONE = "a" * 64
+
+
+@pytest.fixture
+def apns_on(tmp_path, monkeypatch):
+    """A real P-256 key (as Apple's .p8) and a fake APNs; returns the public key to check the JWT."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from app.config import get_settings
+    key = ec.generate_private_key(ec.SECP256R1())
+    path = tmp_path / "AuthKey_TEST123456.p8"
+    path.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    s = get_settings()
+    for k, v in {"apns_key_path": str(path), "apns_key_id": "TEST123456", "apns_team_id": "NY8H9358QD",
+                 "apns_topic": "com.twgsecurity.alarms", "apns_api_base": APNS_BASE}.items():
+        monkeypatch.setattr(s, k, v)
+    apns.reset()
+    yield key.public_key()
+    apns.reset()
+
+
+def apns_route(status=200, reason=""):
+    return respx.post(url__startswith=f"{APNS_BASE}/3/device/").mock(
+        return_value=httpx.Response(status, json={"reason": reason} if reason else None,
+                                    headers={"apns-id": "11111111-2222-3333-4444-555555555555"} if status == 200 else {}))
+
+
+async def phone_for(client, email, token=PHONE, env="sandbox"):
+    r = await app_login(client, email)
+    h = bearer(r.json()["token"])
+    r = await client.post("/api/mobile/devices", headers=h, json={"apns_token": token, "environment": env,
+                                                                  "app_version": "0.3", "ios_version": "27.0"})
+    assert r.status_code == 200, r.text
+    return h
+
+
+def sent(route):
+    return [(c.request.url.path.rsplit("/", 1)[-1], dict(c.request.headers), _json.loads(c.request.content)) for c in route.calls]
+
+
+@respx.mock
+async def test_register_settings_and_unregister(client, session, apns_on):
+    t, site, p = await world(session)
+    h = await phone_for(client, "admin@twgsecurity.com")
+    row = await session.scalar(select(PushDevice))
+    assert (row.apns_token, row.environment, row.app_version, row.ios_version) == (PHONE, "sandbox", "0.3", "27.0")
+    assert row.session_id == (await session.scalar(select(UserSession).where(UserSession.method == "mobile"))).id
+    me = (await client.get("/api/mobile/me", headers=h)).json()
+    assert (me["push_level"], me["push_when"], me["push_ready"]) == ("alarm", "raised", True)   # default: critical + alarm
+    me = (await client.put("/api/mobile/me/push", headers=h, json={"push_level": "warning", "push_when": "both"})).json()
+    assert (me["push_level"], me["push_when"]) == ("warning", "both")
+    assert (await client.put("/api/mobile/me/push", headers=h, json={"push_level": "loud"})).status_code == 422
+    # Registering again (new app version) updates the same row
+    await client.post("/api/mobile/devices", headers=h, json={"apns_token": PHONE.upper(), "environment": "production", "app_version": "0.4"})
+    session.expire_all()
+    rows = (await session.scalars(select(PushDevice))).all()
+    assert len(rows) == 1 and rows[0].environment == "production" and rows[0].app_version == "0.4"
+    assert (await client.delete(f"/api/mobile/devices/{PHONE}", headers=h)).json() == {"removed": True}
+    assert (await session.scalars(select(PushDevice))).all() == []
+    # Only the app's own token registers a phone
+    await login(client, "admin@twgsecurity.com")
+    assert (await client.post("/api/mobile/devices", json={"apns_token": PHONE, "environment": "sandbox"})).status_code == 400
+
+
+@respx.mock
+async def test_a_new_alarm_pushes_the_exact_payload_signed_es256(client, session, apns_on):
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature
+    t, site, p = await world(session)
+    route = apns_route()
+    await phone_for(client, "admin@twgsecurity.com")
+    alarm = await make_alarm(session, site, priority=1, caption="Panic button", event_ts_ms=now_ms())
+    apns.notify([alarm])
+    await sms.drain()
+    [(token, headers, body)] = sent(route)
+    assert token == PHONE and str(route.calls[0].request.url).startswith(f"{APNS_BASE}/3/device/")
+    assert body["aps"]["alert"]["title"] == "CRITICAL · TWG Security Office"
+    assert body["aps"]["alert"]["subtitle"] == "Front Door Cam" and body["aps"]["alert"]["body"].startswith("Panic button · ")
+    assert body["aps"]["sound"] == "default" and body["aps"]["interruption-level"] == "time-sensitive"
+    assert body["aps"]["thread-id"] == f"alarm-{alarm.id}"
+    assert {k: body[k] for k in ("type", "alarm_id", "level", "site_id")} == {"type": "alarm", "alarm_id": alarm.id, "level": "critical", "site_id": site.id}
+    assert headers["apns-push-type"] == "alert" and headers["apns-priority"] == "10"
+    assert headers["apns-collapse-id"] == f"alarm-{alarm.id}" and headers["apns-topic"] == "com.twgsecurity.alarms"
+    # The provider token: ES256 over header.claims, kid = key id, iss = team id; verifies with the key's public half
+    head, claims, sig = headers["authorization"].split(" ", 1)[1].split(".")
+    pad = lambda s: _b64.urlsafe_b64decode(s + "=" * (-len(s) % 4))  # noqa: E731
+    assert _json.loads(pad(head)) == {"alg": "ES256", "kid": "TEST123456"} and _json.loads(pad(claims))["iss"] == "NY8H9358QD"
+    raw = pad(sig)
+    apns_on.verify(encode_dss_signature(int.from_bytes(raw[:32], "big"), int.from_bytes(raw[32:], "big")),
+                   f"{head}.{claims}".encode(), ec.ECDSA(hashes.SHA256()))
+    log_row = await session.scalar(select(PushLog))
+    assert (log_row.outcome, log_row.purpose, log_row.alarm_id, log_row.status) == ("sent", "alarm", alarm.id, 200)
+    assert log_row.apns_id and log_row.delay_ms is not None
+    from app.services import report
+    rows = await report.timeline(session, await session.get(type(alarm), alarm.id))
+    assert any(r["what"] == "App notification sent" and r["kind"] == "text" and "accepted by Apple" in r["detail"] for r in rows)
+
+
+@respx.mock
+async def test_who_gets_pushed_levels_when_and_sites(client, session, apns_on):
+    t, site, p = await world(session)
+    route = apns_route()
+    h = await phone_for(client, "admin@twgsecurity.com")
+    warning = await make_alarm(session, site, priority=3, caption="Camera tamper")
+    apns.notify([warning])
+    await sms.drain()
+    assert route.call_count == 0                                         # default level: critical + alarm only
+    await client.put("/api/mobile/me/push", headers=h, json={"push_level": "warning"})
+    apns.notify([await make_alarm(session, site, priority=3)])
+    await sms.drain()
+    assert route.call_count == 1 and sent(route)[0][2]["aps"]["interruption-level"] == "active"
+    await client.put("/api/mobile/me/push", headers=h, json={"push_when": "confirmed"})
+    apns.notify([await make_alarm(session, site, priority=1)])
+    await sms.drain()
+    assert route.call_count == 1                                         # confirmed only: not on raise
+    await client.put("/api/mobile/me/push", headers=h, json={"push_when": "raised", "push_level": "off"})
+    apns.notify([await make_alarm(session, site, priority=1)])
+    await sms.drain()
+    assert route.call_count == 1
+    await client.put("/api/mobile/me/push", headers=h, json={"push_level": "critical"})
+    u = await session.scalar(select(User).where(User.email == "admin@twgsecurity.com"))
+    u.sms_sites = [site.id + 99]                                         # "Only these sites" is shared with texts
+    await session.commit()
+    apns.notify([await make_alarm(session, site, priority=1)])
+    await sms.drain()
+    assert route.call_count == 1
+    # Another company's alarm never reaches TWG's phones
+    from tests.conftest import make_site
+    other = await make_site(session, await session.get(type(t), p["acme"].tenant_id), name="Acme HQ")
+    apns.notify([await make_alarm(session, other, priority=1)])
+    await sms.drain()
+    assert route.call_count == 1
+
+
+@respx.mock
+async def test_flood_limit_then_one_summary_push(client, session, apns_on, monkeypatch):
+    from app.models import PlatformSettings
+    t, site, p = await world(session)
+    row = await session.get(PlatformSettings, 1) or PlatformSettings(id=1)
+    row.sms_max_per_10min = 2
+    session.add(row)
+    await session.commit()
+    monkeypatch.setattr(sms, "WINDOW_S", 0.5)
+    route = apns_route()
+    await phone_for(client, "admin@twgsecurity.com")
+    alarms = [await make_alarm(session, site, priority=2) for _ in range(4)]
+    apns.notify(alarms)
+    await sms.drain()
+    assert route.call_count == 2                                         # the limit
+    await asyncio.sleep(0.9)
+    await sms.drain()
+    bodies = [b for *_, b in sent(route)]
+    assert route.call_count == 3 and bodies[2]["summary"] is True and bodies[2]["count"] == 2
+    assert bodies[2]["aps"]["alert"]["title"] == "2 more alarms" and bodies[2]["alarm_id"] == max(a.id for a in alarms[2:])
+
+
+@respx.mock
+async def test_dead_token_is_removed_and_expired_provider_token_is_renewed(client, session, apns_on):
+    t, site, p = await world(session)
+    respx.post(url__startswith=f"{APNS_BASE}/3/device/").mock(side_effect=[
+        httpx.Response(403, json={"reason": "ExpiredProviderToken"}),
+        httpx.Response(200, headers={"apns-id": "x"}),
+        httpx.Response(410, json={"reason": "Unregistered"})])
+    await phone_for(client, "admin@twgsecurity.com")
+    apns.notify([await make_alarm(session, site)])
+    await sms.drain()
+    assert [r.outcome for r in (await session.scalars(select(PushLog))).all()] == ["sent"]      # renewed and retried
+    apns.notify([await make_alarm(session, site)])
+    await sms.drain()
+    session.expire_all()
+    assert [r.outcome for r in (await session.scalars(select(PushLog).order_by(PushLog.id))).all()] == ["sent", "dropped"]
+    assert (await session.scalars(select(PushDevice))).all() == []
+
+
+@respx.mock
+async def test_confirmed_closed_dispatch_and_call_ended_pushes(client, session, apns_on):
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMp"}))
+    route = apns_route()
+    guard_tracker = await track(session, t.id, "Guard 1", 400, g["guard"])
+    await phone_for(client, "admin@twgsecurity.com", token="b" * 64)      # gets alarm pushes
+    hg = await phone_for(client, "guard@twgsecurity.com", token="c" * 64)  # the guard
+    await client.put("/api/mobile/me/push", headers=hg, json={"push_when": "both"})
+    alarm = await make_alarm(session, site, priority=2, event_ts_ms=now_ms())
+    apns.notify([alarm])
+    await sms.drain()
+    by_token = lambda tok: [b for x, _, b in sent(route) if x == tok]  # noqa: E731
+    assert [b["type"] for b in by_token("b" * 64)] == ["alarm"]
+    # Mike (no phone) confirms Real event: the guard is auto-dispatched (DISPATCH push, not CONFIRMED); admin's alarm
+    # notification is replaced by a quiet CLOSED one (same collapse id)
+    await login(client, "mike@twgsecurity.com")
+    await client.post(f"/api/alarms/{alarm.id}/ack", json={"verdict": "real", "note": "seen"})
+    await sms.drain()
+    await sms.drain()
+    closed = [(h, b) for x, h, b in sent(route) if b["type"] == "alarm_closed"]
+    assert closed and closed[0][1]["alarm_id"] == alarm.id and closed[0][1]["aps"]["interruption-level"] == "passive"
+    assert closed[0][0]["apns-collapse-id"] == f"alarm-{alarm.id}"
+    types = [b["type"] for b in by_token("c" * 64)]
+    assert "dispatch" in types and "alarm" in types
+    d = next(b for b in by_token("c" * 64) if b["type"] == "dispatch")
+    assert d["aps"]["alert"]["title"] == "DISPATCH · TWG Security Office" and d["alarm_id"] == alarm.id
+    link = (await client.get("/api/mobile/dispatches", headers=hg)).json()
+    assert link and link[0]["link_token"] == d["link_token"]            # the same token as the text's /a/ link
+    await client.post(f"/api/alarms/{alarm.id}/end-call", json={"note": "clear"})
+    await sms.drain()
+    await sms.drain()
+    ended = [b for b in by_token("c" * 64) if b["type"] == "call_ended"]
+    assert ended and ended[-1]["alarm_id"] == alarm.id and ended[-1]["aps"]["alert"]["title"].startswith("CALL ENDED")
+
+
+async def test_signing_out_of_the_app_drops_its_phone(client, session, apns_on):
+    t, site, p = await world(session)
+    h = await phone_for(client, "admin@twgsecurity.com")
+    assert (await client.post("/api/mobile/logout", headers=h)).status_code == 200
+    assert (await session.scalars(select(PushDevice))).all() == []
+    h = await phone_for(client, "admin@twgsecurity.com", token="d" * 64)
+    await login(client, "admin@twgsecurity.com")
+    await client.post("/api/account/sign-out-everywhere")
+    session.expire_all()
+    assert (await session.scalars(select(PushDevice))).all() == []
+
+
+async def test_nothing_is_sent_when_apns_isnt_set_up(client, session):
+    t, site, p = await world(session)
+    apns.notify([await make_alarm(session, site, priority=1)])
+    await sms.drain()
+    assert (await session.scalars(select(PushLog))).all() == []

@@ -76,15 +76,17 @@ document.querySelectorAll(".sites-pick").forEach((box) => box.addEventListener("
 const sameSites = (a, b) => (a == null || b == null ? a == b : a.length === b.length && a.every((x, i) => x === b[i]));
 
 // Table cell: number, then what they get and whether they've opted in. Editing happens in the Edit dialog.
+const PUSH_WORD = { off: "off", critical: "Critical only", alarm: "Critical + Alarm", warning: "Everything" };
+const pushChip = (u) => (u.push_devices ? `<div class="chips"><span class="chip" title="TWG Alarms app on ${u.push_devices} iPhone${u.push_devices === 1 ? "" : "s"}${u.push_when !== "raised" ? `, ${WHEN[u.push_when] || u.push_when}` : ""}">App: ${esc(PUSH_WORD[u.push_level] || u.push_level)}</span></div>` : "");
 function textSummary(u) {
-  if (!u.phone) return '<span class="muted">No number</span>';
+  if (!u.phone) return '<span class="muted">No number</span>' + pushChip(u);
   const [cWord, cCls] = CONSENT[u.sms_consent] || CONSENT.none;
   return `<div class="nowrap">${esc(fmtPhone(u.phone))}</div>
     <div class="chips"><span class="chip">${u.sms_level !== "off" && u.sms_when === "confirmed" ? "Any level" : LEVEL[u.sms_level] || u.sms_level}</span>
       ${u.sms_level === "off" || !WHEN[u.sms_when] ? "" : `<span class="chip" title="Texted when an operator marks an alarm Real event">${WHEN[u.sms_when]}</span>`}
       ${u.sms_level === "off" ? "" : `<span class="chip" title="${esc(u.sms_sites == null ? "Every site, including ones added later" : u.sms_sites.map(siteName).join(", "))}">${esc(sitesLabel(u))}</span>`}
       <span class="chip ${cCls}" title="${esc(consentNote(u))}">${cWord}</span></div>
-    ${["failed", "undelivered"].includes(u.last_text?.outcome) ? lastText(u) : ""}`;
+    ${["failed", "undelivered"].includes(u.last_text?.outcome) ? lastText(u) : ""}${pushChip(u)}`;
 }
 
 function render() {
@@ -121,6 +123,9 @@ function openEdit(u) {
   $("ed-title").textContent = u.display_name || u.email;
   $("ed-email").textContent = u.email;
   $("ed-name").value = u.display_name; $("ed-role").value = u.role; $("ed-station").checked = !!u.monitoring_station;
+  $("ed-push-level").value = u.push_level || "alarm"; $("ed-push-when").value = u.push_when || "raised";
+  $("ed-push-note").textContent = u.push_devices ? `Signed in to the TWG Alarms app on ${u.push_devices} iPhone${u.push_devices === 1 ? "" : "s"}. Same sites as their texts.`
+    : "Not signed in to the TWG Alarms app on an iPhone yet: these apply once they are. Same sites as their texts.";
   $("ed-phone").value = fmtPhone(u.phone); $("ed-sms").value = u.sms_level; $("ed-when").value = u.sms_when || "raised";
   paintSites("ed", u.sms_sites);
   $("ed-link").innerHTML = "";
@@ -159,6 +164,8 @@ $("edit-form").addEventListener("submit", async (e) => {
   if ($("ed-name").value.trim() !== u.display_name) body.display_name = $("ed-name").value.trim();
   if ($("ed-role").value !== u.role) body.role = $("ed-role").value;
   if ($("ed-station").checked !== !!u.monitoring_station) body.monitoring_station = $("ed-station").checked;
+  if ($("ed-push-level").value !== (u.push_level || "alarm")) body.push_level = $("ed-push-level").value;
+  if ($("ed-push-when").value !== (u.push_when || "raised")) body.push_when = $("ed-push-when").value;
   if (phone !== fmtPhone(u.phone)) body.phone = phone;
   // A first number with "No texts" picked defaults to Critical + Alarm (that's why it was added).
   const lvl = !u.phone && phone && level === "off" ? "alarm" : level;

@@ -237,9 +237,30 @@ async def timeline(db: AsyncSession, alarm: Alarm) -> list[dict]:
             what = f"{label} not sent" + (" (texts off)" if t.outcome == "disabled" else "")
             detail = ", ".join(x for x in (to, t.error) if x)
         rows.append({"ts": _ms(t.ts), "what": what, "who": u.label if u else f"…{t.to[-4:]}", "kind": "text", "detail": detail})
+    # iPhone app notifications (app/apns.py): APNs says only that it accepted one; there's no delivery report.
+    from app.models import PushLog
+    pushes = (await db.execute(select(PushLog, User).join(User, User.id == PushLog.user_id, isouter=True)
+                               .where(PushLog.alarm_id == alarm.id).order_by(PushLog.id))).all()
+    for p, u in pushes:
+        label = PUSH_PURPOSE.get(p.purpose, f"Push ({p.purpose})")
+        if p.outcome == "sent":
+            what, detail = f"{label} sent", ", ".join(x for x in (f"to their iPhone ({p.device})" if p.device else "to their iPhone",
+                                                                 "accepted by Apple") if x)
+            if p.delay_ms is not None and p.purpose == "alarm":
+                detail += f" {p.delay_ms:,} ms after the alarm arrived"
+        else:
+            what = f"{label} NOT sent"
+            detail = ("the iPhone no longer has the app (removed)" if p.outcome == "dropped"
+                      else f"Apple answered {p.status or 'nothing'}{': ' + p.reason if p.reason else ''}")
+        rows.append({"ts": _ms(p.ts), "what": what, "who": u.label if u else "a removed user", "kind": "text", "detail": detail})
     for r in rows:
         r.setdefault("kind", "system")
     return sorted(rows, key=lambda r: r["ts"])
+
+
+PUSH_PURPOSE = {"alarm": "App notification", "summary": "App summary notification", "confirmed": "App notification (confirmed)",
+                "dispatch": "App dispatch notification", "call_ended": "App call-ended notification",
+                "stand_down": "App stand-down notification", "closed": "App notification (alarm closed)"}
 
 
 def _audit_row(a: AuditLog) -> dict:
