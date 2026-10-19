@@ -108,7 +108,7 @@ client wants the app. Build for that first:
 - Xcode 16 or newer, Swift 6, **SwiftUI**, iOS 17+ minimum. No third-party dependencies unless they clearly earn
   it (URLSession, MapKit, AVKit, CoreLocation and UserNotifications cover everything).
 - **Apple Developer Program** membership (paid; the user's TWG account). Needed for push, TestFlight and Critical Alerts.
-- Bundle ID suggestion: `com.twgsecurity.alarmportal` (confirm with the user).
+- Bundle ID: **`com.twgsecurity.alarms`**; Apple Team ID: **`NY8H9358QD`** (the user's paid team, active 2026-10-19).
 - Capabilities: Push Notifications; Background Modes → Remote notifications and Location updates; Time Sensitive
   Notifications; Critical Alerts (after Apple approves, section 8).
 - Info.plist usage strings: `NSLocationWhenInUseUsageDescription`, `NSLocationAlwaysAndWhenInUseUsageDescription`
@@ -177,9 +177,9 @@ sms_when: "raised"|"confirmed"|"both"}`.
 ### 6.1a Passkeys and saved passwords in the app (built 2026-10-19)
 
 - `GET https://alarmportal.twgsecurity.net/.well-known/apple-app-site-association` → 200, `application/json`, no
-  redirect, no sign-in: `{"webcredentials": {"apps": ["<TEAMID>.com.twgsecurity.alarmportal"]}}`. The Team ID comes
-  from `APPLE_TEAM_ID` in the server's `.env` (bundle id `APPLE_BUNDLE_ID`, default `com.twgsecurity.alarmportal`);
-  until it's set the list is empty (`"apps": []`). Apple's CDN caches the file: after the Team ID is set, delete and
+  redirect, no sign-in: `{"webcredentials": {"apps": ["NY8H9358QD.com.twgsecurity.alarms"]}}` (live since
+  2026-10-19). From `APPLE_TEAM_ID` / `APPLE_BUNDLE_ID` in the server's `.env` (code default bundle id
+  `com.twgsecurity.alarms`; with no valid Team ID the list is empty). Apple's CDN caches the file: after a change, delete and
   reinstall the app (or wait for Apple's refresh) so iOS reads the new one.
 - `POST /api/mobile/login` two-step answers now say whether passkeys work as the second factor:
   `{"step": "totp", "challenge", "expires_in_s": 300, "passkey": true}` (code or passkey), and, new,

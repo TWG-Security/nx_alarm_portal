@@ -357,10 +357,12 @@ async def test_passkey_only_two_step_when_required(client, session, twg):
 
 async def test_apple_app_site_association(client, monkeypatch):
     from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "apple_team_id", "")                 # independent of the machine's .env
+    monkeypatch.setattr(get_settings(), "apple_bundle_id", "com.twgsecurity.alarms")
     r = await client.get("/.well-known/apple-app-site-association")
     assert r.status_code == 200 and r.headers["content-type"] == "application/json" and r.json() == {"webcredentials": {"apps": []}}
     monkeypatch.setattr(get_settings(), "apple_team_id", "abcde12345")
     r = await client.get("/.well-known/apple-app-site-association", follow_redirects=False)
-    assert r.status_code == 200 and r.json() == {"webcredentials": {"apps": ["ABCDE12345.com.twgsecurity.alarmportal"]}}
+    assert r.status_code == 200 and r.json() == {"webcredentials": {"apps": ["ABCDE12345.com.twgsecurity.alarms"]}}
     monkeypatch.setattr(get_settings(), "apple_team_id", "not-a-team")
     assert (await client.get("/.well-known/apple-app-site-association")).json()["webcredentials"]["apps"] == []

@@ -86,7 +86,7 @@ class Settings(BaseSettings):
     # The iPhone app (docs/IOS_APP_BRIEF.md): served in /.well-known/apple-app-site-association so iOS offers the
     # portal's saved passwords and passkeys in the app. APPLE_TEAM_ID = the 10-character Apple Developer Team ID.
     apple_team_id: str = ""
-    apple_bundle_id: str = "com.twgsecurity.alarmportal"
+    apple_bundle_id: str = "com.twgsecurity.alarms"
     webauthn_rp_name: str = "TWG Alarm Portal"
     cookie_secure: bool = True           # set False only for plain-http local dev
     twilio_api_base: str = "https://api.twilio.com"   # text messages (app/sms.py); tests and dev point it at a fake
