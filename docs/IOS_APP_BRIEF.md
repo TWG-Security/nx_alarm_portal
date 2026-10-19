@@ -252,6 +252,22 @@ hanging, alarms reached the operator screen in 41-53 ms and the stuck pushes gav
   `POST /api/a/{token}/share`, created if they have none), for "On duty". Post positions to `/api/g/{token}/pos` as
   today. The same token comes back every time (until someone presses New link on the Sites page).
 
+### 6.2b Alarms during an active call join it (built 2026-10-19)
+
+While a site has an active call, a new alarm at that site **joins the call**: `alarm.call_id` = the call's alarm id.
+- Alarm- and warning-level security alarms join quietly: `state` "acknowledged" at once (`ack_note` "Joined the
+  active call (alarm N)"), no `alarm.new` on the stream, no feed card, no alarm text / alarm push of their own.
+- Critical alarms, NX forced-acknowledge events and system events (site offline, storage…) still raise normally
+  (`alarm.new`, pop-up, texts, pushes) and also carry `call_id`.
+- `GET /api/alarms?state=active` rows now have `"joined_count"` and `"joined_newest"`: `{id, caption, camera,
+  event_ts_ms, level}` or null. Every Alarm has `"call_id"` (null for most).
+- The call's timeline gets `{"what": "Alarm during the call", "kind": "joined", "detail": "<caption> · <camera>",
+  "joined_id"}`; the stream sends `alarm.timeline {alarm_id: <call>, guard: true}` (the website chimes and flashes the
+  Active calls card). The joined alarm's own timeline says "Joined the active call".
+- Dispatched guards who haven't tapped Clear are told: a text "TWG UPDATE: …" with a link, and a push
+  `{"type": "call_update", "alarm_id": <call>, "joined_alarm_id", "count", "level", "site_id"}`, title
+  `UPDATE · <site>`, body `<caption> · <time>`, time-sensitive, thread-id `alarm-<call>`, collapse id `update-<joined>`.
+
 ### 6.3 Live stream (open while the app is in front)
 
 `GET /api/events` (Bearer) → `text/event-stream`. Read it with `URLSession.bytes(for:)` and parse lines

@@ -123,3 +123,90 @@ async def _text_guards(alarm_id: int, by: str, verdict: str) -> None:
             sms._spawn(sms._send(cfg, u, body, "call_ended", alarm, time.time()))
     except Exception:  # noqa: BLE001
         log.exception("calls: texts for the end of alarm %s's call failed", alarm_id)
+
+
+# ---------------------------------------------------------------- alarms during an active call join it
+# The user, 2026-10-19: "when an active call is going on, put all subsequent alarms into that call", option "Join the
+# call": a new alarm at a site with an active call needs no acknowledgement of its own and adds no live-feed card; it's
+# on the call's timeline and report, the Active calls card flashes with the update chime (alarm.joined_call is a
+# GUARD_ACTION), and dispatched guards are told (text + app). Critical alarms, NX forced-acknowledge events and system
+# events (site offline, storage) still raise on their own as well (linked to the call), so nothing critical is quiet.
+def joins_quietly(alarm: Alarm) -> bool:
+    return alarm.priority >= 2 and alarm.category == "security" and not alarm.nx_ack_required
+
+
+async def join_active_call(db: AsyncSession, site_id: int, tenant_id: int, alarms: list[Alarm]) -> list[Alarm]:
+    """Link new alarms (state "new") at this site to its active call, if it has one; the quiet ones are closed into it.
+    Returns the alarms still to raise. The caller has flushed (ids exist) and commits."""
+    from sqlalchemy import select
+    if not alarms:
+        return alarms
+    ids = {a.id for a in alarms}
+    call = await db.scalar(select(Alarm).where(Alarm.site_id == site_id, Alarm.tenant_id == tenant_id,
+                                               Alarm.call_state == "active", Alarm.id.not_in(ids))
+                           .order_by(Alarm.id.desc()).limit(1))
+    if call is None:
+        return alarms
+    now, raise_, joined = datetime.now(timezone.utc), [], []
+    for a in alarms:
+        a.call_id = call.id
+        quiet = joins_quietly(a)
+        if quiet:
+            a.state, a.acked_at, a.ack_note = "acknowledged", now, f"Joined the active call (alarm {call.id})"
+        else:
+            raise_.append(a)
+        audit(db, tenant_id, "alarm.joined_call", site_id=site_id, alarm_id=call.id, joined_id=a.id, caption=a.caption,
+              camera=a.source_name or "", priority=a.priority, raised=not quiet)
+        audit(db, tenant_id, "alarm.added_to_call", site_id=site_id, alarm_id=a.id, call_id=a.call_id, raised=not quiet)
+        joined.append((a.id, quiet))
+    log.info("alarm call %s: joined %s", call.id, ", ".join(f"{i}{'' if q else ' (raised too)'}" for i, q in joined))
+    _after_join(db, call.id, [i for i, _ in joined])
+    return raise_
+
+
+def _after_join(db: AsyncSession, call_id: int, joined_ids: list[int]) -> None:
+    """Once committed: the joined alarms' new state to screens, and an update to the dispatched guards."""
+    from sqlalchemy import event
+    jobs = db.info.setdefault("call_joins", [])
+    jobs.append((call_id, joined_ids))
+    if len(jobs) == 1:
+        def _go(_session):
+            from app import sms
+            for cid, aids in db.info.pop("call_joins", []):
+                sms._spawn(_announce_joined(cid, aids))
+        event.listen(db.sync_session, "after_commit", _go, once=True)
+
+
+async def _announce_joined(call_id: int, joined_ids: list[int]) -> None:
+    from sqlalchemy import select
+    from app import apns, sms
+    from app.db import sessionmaker
+    from app.services import dispatch
+    from app.services.bus import bus
+    from app.services.serialize import alarm_dict
+    async with sessionmaker()() as db:
+        call = await db.get(Alarm, call_id)
+        joined = (await db.scalars(select(Alarm).where(Alarm.id.in_(joined_ids)))).unique().all()
+        for a in joined:
+            if a.state != "new":
+                bus.publish(a.tenant_id, "alarm.updated", alarm_dict(a))
+        if call is None or call.call_state != "active":
+            return
+        people = [d["user_id"] for d in await dispatch.dispatched(db, call_id) if d.get("user_id") and d["status"] != "clear"]
+        users = [u for u in [await db.get(User, uid) for uid in dict.fromkeys(people)] if u is not None and u.is_active]
+        newest = max(joined, key=lambda a: a.id) if joined else None
+        plan = []
+        if newest is not None:
+            cfg = await sms.config(db)
+            for u in users:
+                if cfg is not None and u.phone and u.sms_consent == "yes" and sms._allow(u.id, cfg.max_per_window):
+                    from app import alarm_links
+                    token = await alarm_links.mint(db, newest, u, cfg.link_hours)
+                    plan.append((u, sms.call_update_text(call, newest, len(joined), alarm_links.url(token))))
+            await db.commit()
+    if newest is None:
+        return
+    for u, body in plan:
+        sms._spawn(sms._send(cfg, u, body, "joined", newest, __import__("time").time()))
+    for u in users:
+        apns.call_update(call, newest, u.id, len(joined))

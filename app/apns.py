@@ -457,6 +457,19 @@ def dispatch(alarm: Alarm, user_id: int, link_token: str, distance: str, by: str
     _spawn(_send(user_id, "dispatch", p, _headers(f"dispatch-{alarm.id}"), alarm, time.time()))
 
 
+def call_update(call: Alarm, alarm: Alarm, user_id: int, count: int = 1) -> None:
+    """A new alarm joined the active call a guard was dispatched to (services/calls.py): tell their app."""
+    if not configured():
+        return
+    more = f" (+{count - 1} more)" if count > 1 else ""
+    p = {"aps": {"alert": {"title": f"UPDATE · {_site(call)}", "subtitle": alarm.source_name or "",
+                           "body": f"{alarm.caption}{more} · {_when(alarm)}"},
+                 "sound": "default", "interruption-level": "time-sensitive", "thread-id": f"alarm-{call.id}"},
+         "type": "call_update", "alarm_id": call.id, "joined_alarm_id": alarm.id, "count": count,
+         "level": {1: "critical", 2: "alarm"}.get(alarm.priority, "warning"), "site_id": call.site_id}
+    _spawn(_send(user_id, "call_update", p, _headers(f"update-{alarm.id}"), call, time.time()))
+
+
 def call_ended(alarm_id: int, by: str, verdict: str = "") -> None:
     """Beside the CALL ENDED / STAND DOWN texts (services/calls.py): dispatched guards who haven't tapped Clear."""
     if configured():

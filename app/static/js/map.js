@@ -1060,6 +1060,8 @@ function renderCalls() {
       <div class="feed-top"><span class="chip call-chip">Call</span>${a.verdict === "real" ? '<span class="chip p1">Real event</span>' : ""}${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
       <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b></div>
+      ${a.joined_count ? `<div class="call-joined"><b>+${a.joined_count} alarm${a.joined_count === 1 ? "" : "s"} during this call</b>${a.joined_newest
+        ? ` <span class="muted">· newest: ${esc(a.joined_newest.caption)}${a.joined_newest.camera ? ` (${esc(a.joined_newest.camera)})` : ""}</span>` : ""}</div>` : ""}
       ${callLatestHtml(callLatest.get(a.id))}
       <div class="feed-actions"><button class="btn btn-sm btn-primary" data-call-open="${a.id}">Open call</button></div>
     </li>`).join("");
@@ -1075,6 +1077,7 @@ function renderCalls() {
 // The guard's status (En route / On scene / Clear) stays on top; their newest other update (a note, opened the
 // link, sharing location) under it.
 function callLatestHtml(u) {
+  if (u) u = { ...u, last: [...(u.rows || [])].reverse().find((r) => r.kind === "guard") || null };   // joined alarms have their own line
   if (!u?.last) return "";
   const at = (r) => new Date(r.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
   const line = (r) => `<b>${esc(r.who)}: ${esc(r.what)}</b> <span class="muted">· ${esc(at(r))}</span>${r.detail && r.what === "Guard note" ? `<div class="muted small-print">“${esc(r.detail)}”</div>` : ""}`;

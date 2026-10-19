@@ -323,6 +323,16 @@ def call_ended_text(alarm: Alarm, by: str, verdict: str = "") -> str:
             + (f"\nNote: {note}" if note else "") + "\nReply STOP to opt out.")
 
 
+def call_update_text(call: Alarm, alarm: Alarm, count: int, link: str) -> str:
+    """To dispatched guards: a new alarm at the site they were sent to (it joined the active call)."""
+    site = call.site
+    more = f" (+{count - 1} more)" if count > 1 else ""
+    lines = [f"TWG UPDATE: {_ascii(alarm.caption, 120)}{more}", _ascii(site.name if site else "", 80),
+             f"{_ascii(alarm.source_name or 'Camera', 60)}, {_clock(alarm)}",
+             "New alarm at the site you were sent to (same call).", "", VIDEO_LABEL, f"{link} ", "", "Reply STOP to opt out."]
+    return "\n".join(lines)
+
+
 def locate_text(company: str, by: str, url: str) -> str:
     """Dispatch wants to see where a guard is, without an alarm (map → Guards → Locate)."""
     return (f"TWG: {_ascii(by, 40) or 'Dispatch'} at {_ascii(company, 60)} asks where you are. Open the link, tap "

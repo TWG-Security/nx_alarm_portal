@@ -407,6 +407,9 @@ class Alarm(Base):
     call_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     call_ended_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     call_end_note: Mapped[str] = mapped_column(Text, default="")
+    # An alarm that came in at the site while another alarm's call was active joined that call (migration 0028;
+    # services/calls.py join_active_call): this is the call's alarm id.
+    call_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id", ondelete="SET NULL"), nullable=True, index=True)
     call_ended_by: Mapped[User | None] = relationship(foreign_keys=[call_ended_by_id], lazy="joined")
 
 

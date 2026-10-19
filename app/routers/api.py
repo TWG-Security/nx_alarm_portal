@@ -723,7 +723,20 @@ async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depe
     if after_id:
         stmt = stmt.where(Alarm.id > after_id)
     rows = (await db.scalars(stmt.order_by(Alarm.id.asc() if order == "oldest" else Alarm.id.desc()).limit(limit))).unique().all()
-    return [alarm_dict(a) for a in rows]
+    out = [alarm_dict(a) for a in rows]
+    if state == "active" and rows:
+        # Calls: how many alarms joined each one since it started (services/calls.py join_active_call), and the newest.
+        counts = dict((await db.execute(select(Alarm.call_id, func.count()).where(Alarm.call_id.in_([a.id for a in rows]))
+                                        .group_by(Alarm.call_id))).all())
+        newest = {}
+        if counts:
+            last = select(Alarm.call_id, func.max(Alarm.id).label("id")).where(Alarm.call_id.in_(list(counts))).group_by(Alarm.call_id).subquery()
+            for a in (await db.scalars(select(Alarm).join(last, Alarm.id == last.c.id))).unique().all():
+                newest[a.call_id] = {"id": a.id, "caption": a.caption, "camera": a.source_name, "event_ts_ms": a.event_ts_ms,
+                                     "level": {1: "critical", 2: "alarm"}.get(a.priority, "warning")}
+        for d in out:
+            d["joined_count"], d["joined_newest"] = counts.get(d["id"], 0), newest.get(d["id"])
+    return out
 
 
 @router.post("/alarms/bulk")

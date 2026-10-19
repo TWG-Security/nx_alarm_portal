@@ -139,7 +139,10 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
         audit(db, site.tenant_id, "alarm.raised", site_id=site.id, alarm_id=a.id, reason="#24h rule while disarmed")
     for a in upgraded:
         bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
-    return [a for a in created if a.state == "new"] + promoted
+    # An active call at this site takes the new alarms in (services/calls.py join_active_call).
+    from app.services import calls
+    raised = await calls.join_active_call(db, site.id, site.tenant_id, [a for a in created if a.state == "new"])
+    return raised + promoted
 
 
 _SCOPE_IGNORE = {"type", "omitLogging"}

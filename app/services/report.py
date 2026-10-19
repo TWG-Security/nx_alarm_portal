@@ -189,7 +189,7 @@ async def gather(alarm: Alarm, pre: int, post: int, quality: str, need_clip: boo
 
 
 GUARD_STATUS = {"en_route": "En route", "on_scene": "On scene", "clear": "Clear"}
-TEXT_PURPOSE = {"alarm": "Alarm text", "alarm_gif": "Alarm GIF text", "confirmed": "Confirmed text", "dispatch": "Dispatch text",
+TEXT_PURPOSE = {"joined": "Call update text", "alarm": "Alarm text", "alarm_gif": "Alarm GIF text", "confirmed": "Confirmed text", "dispatch": "Dispatch text",
                 "stand_down": "Stand-down text", "summary": "Summary text", "call_ended": "Call-ended text"}
 
 
@@ -258,7 +258,7 @@ async def timeline(db: AsyncSession, alarm: Alarm) -> list[dict]:
     return sorted(rows, key=lambda r: r["ts"])
 
 
-PUSH_PURPOSE = {"alarm": "App notification", "summary": "App summary notification", "confirmed": "App notification (confirmed)",
+PUSH_PURPOSE = {"call_update": "App call-update notification", "alarm": "App notification", "summary": "App summary notification", "confirmed": "App notification (confirmed)",
                 "dispatch": "App dispatch notification", "call_ended": "App call-ended notification",
                 "stand_down": "App stand-down notification", "closed": "App notification (alarm closed)"}
 
@@ -283,6 +283,14 @@ def _audit_row(a: AuditLog) -> dict:
         away = f", {d['distance']} away" if d.get("distance") else (", position unknown" if "distance" in d else "")
         return {"ts": ts, "what": f"Dispatched {d.get('guard', '')}" + (" (automatic, on confirm)" if d.get("auto") else ""),
                 "who": who, "kind": "operator", "detail": f"text to {d.get('to', '')}{away}"}
+    if a.action == "alarm.joined_call":
+        cam = f" · {d['camera']}" if d.get("camera") else ""
+        return {"ts": ts, "what": "Alarm during the call", "who": d.get("camera") or "NX", "kind": "joined",
+                "detail": f"{d.get('caption', '')}{cam}" + (" (critical: also raised on its own)" if d.get("raised") else ""),
+                "joined_id": d.get("joined_id")}
+    if a.action == "alarm.added_to_call":
+        return {"ts": ts, "what": "Joined the active call", "who": "system", "kind": "system",
+                "detail": f"alarm {d.get('call_id')}" + ("; raised on its own too" if d.get("raised") else "; no separate acknowledgement needed")}
     if a.action == "alarm.call_started":
         return {"ts": ts, "what": "Call started", "who": who, "kind": "operator",
                 "detail": "Real event: stays in Active calls until someone ends the call"}

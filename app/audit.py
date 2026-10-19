@@ -14,7 +14,8 @@ from app.models import AuditLog
 QUIET = {"alarm.received"}           # every alarm has one; screens already get the alarm itself
 # What the guard did from their alarm link (report._audit_row kind "guard"): the event says {"guard": true}, so an
 # active call's dispatcher hears the update chime (the user, 2026-10-14: "if the guard says enroute it makes a noise").
-GUARD_ACTIONS = {"alarm.link_opened", "alarm.link_cameras", "tracker.share_from_alarm", "guard.status"}
+GUARD_ACTIONS = {"alarm.link_opened", "alarm.link_cameras", "tracker.share_from_alarm", "guard.status",
+                 "alarm.joined_call"}          # a new alarm joined an active call: the same update chime and card
 
 
 # Set while an MCP tool call runs (app/mcp_server.py): every audit row it causes says so, e.g. "MCP (Claude desk)".

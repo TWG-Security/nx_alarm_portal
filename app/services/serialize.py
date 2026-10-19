@@ -59,6 +59,7 @@ def alarm_dict(a: Alarm) -> dict:
         "call_ended_at": _iso(a.call_ended_at),
         "call_ended_by": a.call_ended_by.label if a.call_ended_by else None,
         "call_end_note": a.call_end_note or "",
+        "call_id": a.call_id,
     }
 
 

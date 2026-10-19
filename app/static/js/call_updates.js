@@ -16,7 +16,8 @@ const clock = (ms) => new Date(ms).toLocaleTimeString([], { hour: "numeric", min
 
 /** The guards' updates on an alarm: {status: newest En route / On scene / Clear row, last: newest guard row, rows}. */
 export async function guardUpdates(alarmId) {
-  const rows = (await api(`/api/alarms/${alarmId}/timeline`)).filter((r) => r.kind === "guard").sort((x, y) => x.ts - y.ts);
+  // Guards' updates, and alarms that joined the call (kind "joined": a new alarm at the site during the call).
+  const rows = (await api(`/api/alarms/${alarmId}/timeline`)).filter((r) => r.kind === "guard" || r.kind === "joined").sort((x, y) => x.ts - y.ts);
   return { status: rows.filter((r) => r.status).pop() || null, last: rows[rows.length - 1] || null, rows };
 }
 
@@ -33,7 +34,7 @@ async function check(alarmId) {
   if (isMine(a)) play("update");
   const open = () => { if (location.pathname === "/") emit("focus-alarm", a); else location.href = `/?alarm=${a.id}`; };
   toast(`<div class="call-toast-head">&#128222; <b>${esc(a.site_name)}</b> · ${esc(a.caption)}</div>
-    ${fresh.map((r) => `<div>${esc(r.who)}: <b>${esc(r.what)}</b>${r.detail && r.what === "Guard note" ? ` <span class="muted">“${esc(r.detail)}”</span>` : ""}
+    ${fresh.map((r) => `<div>${r.kind === "joined" ? `<b>New alarm during the call:</b> ${esc(r.detail)}` : `${esc(r.who)}: <b>${esc(r.what)}</b>`}${r.detail && r.what === "Guard note" ? ` <span class="muted">“${esc(r.detail)}”</span>` : ""}
       <span class="muted small-print">${esc(clock(r.ts))}</span></div>`).join("")}`,
   { kind: "call", timeout: 10000, onClick: open });
 }

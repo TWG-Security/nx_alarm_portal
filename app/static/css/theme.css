@@ -1141,3 +1141,7 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 /* NX rules: the rule a "delays repeat alarms" warning pointed at (map.js focusRules) */
 .rules-table tr.rule-focus > td { background: var(--warn-soft); }
 .rules-table tr.rule-focus > td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+
+/* Active calls: alarms that joined the call (services/calls.py join_active_call) */
+.call-joined { font-size: 12px; margin: 4px 0 2px; color: var(--red-text); }
+.call-joined .muted { color: var(--text-muted); }
