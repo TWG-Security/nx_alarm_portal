@@ -356,11 +356,7 @@ class Worker:
             cam = self.cams.get((site_id, dev))
             if cam is not None and not cam.busy and cam.request_seen != asked:
                 cam.request_seen = asked
-                cam.next_at = 0.0
-                if self.refs:                    # an accepted view changed the reference: forget cached ones
-                    for k in [k for k in self.refs if k[0] == site_id and k[1] == dev]:
-                        self.refs.pop(k)
-                cam.candidate = None
+                cam.next_at = 0.0               # (cached references follow their taken_at; a learning candidate stays)
 
     def _start(self, cam: Cam) -> None:
         cam.busy = True

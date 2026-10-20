@@ -420,3 +420,21 @@ def test_ptz_means_nx_can_steer_it():
     from app.camhealth.worker import is_ptz
     assert is_ptz({"name": "Lot", "ptz": {"capabilities": "continuousPanCapability|continuousTiltCapability"}})
     assert not is_ptz({"name": "Driveway PTZ", "ptz": {"capabilities": "none"}})     # the user tests with this one
+
+
+async def test_check_now_keeps_the_learning_candidate(session, tmp_path):
+    """Two "Check now" presses in a row must be able to learn the reference (a request used to drop the candidate)."""
+    tenant, _ = await make_tenant_user(session)
+    site = await make_site(session, tenant)
+    site.lat = site.lng = None
+    await session.commit()
+    w, nx = await _worker(session, site, tmp_path)
+    cam = w.cams[(site.id, "cam-rec")]
+    for _ in range(2):
+        row = await _row(session, site, "cam-rec")
+        row.check_requested_at = datetime.now(timezone.utc)
+        await session.commit()
+        await w.requests()
+        assert cam.next_at == 0.0
+        await w.check(cam)
+    assert not (await _row(session, site, "cam-rec")).learning
