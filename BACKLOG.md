@@ -1,5 +1,45 @@
 # Programming backlog
 
+# To do: camera image health (GPU) — design agreed 2026-10-20, not built yet
+The user (2026-10-20): "build a image health monitoring", "bounding boxes around the affected area also add scene change".
+**Decisions (asked):** problems show on a **Camera Health page + amber/red camera icons only**: never in the live alarm
+feed, no sounds, no texts (can't bury real alarms). **Build now on CPU**; GPU AI checks plug in when the card is in.
+The user is adding a GPU (VM shut down for it, 2026-10-20 ~17:00 UTC).
+
+**Facts measured 2026-10-20 (read-only probe):** site 1 has 33 devices (deviceType Camera / MultisensorCamera /
+HornSpeaker; status Online / Recording / Offline / Unauthorized), site 2 has 7, SITE - 63 has 0.
+`/rest/v4/devices/{id}/image?timestampMs=-1&size=1280x0&format=jpg`: 80-150 KB, 137-461 ms; 1920x0: 145-280 KB,
+150-850 ms. `ptz.capabilities` is "none" even on site 2's "Driveway PTZ", so PTZ can't be told from that field.
+
+**Design**
+- Separate compose service **`vision`** (same image now, own CUDA image later), `cpus` limit + nice, own NX
+  logins (like rule_catalog), DB pool 2. Never touches the alarm pipeline. `tools/deploy.sh` must build/restart it too.
+- One frame per camera every 5 min (`CAMHEALTH_INTERVAL_S`), spread out, ≤1 fetch per site at a time, 1280 wide.
+  Offline / Unauthorized cameras → shown as NX says, not fetched.
+- Per camera a **reference picture per mode** (day = colour, night = IR mono, told apart by saturation), learned
+  from the first good frame; **Accept current view** replaces it.
+- Checks on a 960 px copy, 40 px cell grid, compared with the reference after aligning to it (ORB +
+  estimateAffinePartial2D): **moved** (shift / rotation / zoom past limits; draw where the reference view now sits),
+  **scene change** (per-cell lighting-proof NCC, connected cells → boxes tightened by the pixel diff),
+  **obstructed** (flat cells that had detail), **blurry** (sharpness ratio, coarse structure kept), **too dark**,
+  **glare**, **frozen** (identical frames 3×), **no picture**, **IR in daylight** (sun elevation from site lat/lng).
+  Boxes stored normalised (0..1), drawn by the browser over the exact analysed frame.
+- Only raised after 2-3 checks in a row (scene change: boxes must overlap), cleared after 2 clean checks.
+- Tables (migration 0029): `camera_health` (state, issues JSON with boxes, streaks, muted_until), `camera_health_images`
+  (last frame + references, in the DB so references are backed up), `camera_health_events` (raised/cleared history).
+- App: polls the table every ~15 s and publishes `camera.health` (add to `EVENTS` in common.js); page `/health`
+  (grid, Reference | Now with boxes, Accept view, Check now, Mute 24 h / 7 d, history); site panel one-line summary;
+  camera icons in top-down / 3D amber/red. Tenancy: every endpoint scoped, added to `tests/test_tenancy.py`.
+- **GPU stage:** DINOv2-style patch features in place of NCC for scene change (shadows, weather), plus a lens dirt /
+  water drop / spider web classifier, both returning boxes through the same issue format.
+- Tests: synthetic scenes for every check, persistence logic, fake NX defect modes, e2e with alarm latency measured
+  while the worker runs.
+
+**After the GPU is in (VMware ESXi 8, VM hardware 20, UEFI):** `lspci | grep -i nvidia`, install the NVIDIA driver +
+`nvidia-container-toolkit`, `nvidia-smi` inside a container, then the normal post-boot checks in CLAUDE.md "Deploy".
+
+---
+
 ## To do: other VMSs (UniFi Protect, Avigilon Alta, Verkada, Avigilon Unity)
 Added 2026-10-14 at the user's request ("add to do to list" after the assessment in CLAUDE.md item 14j). **Not started.**
 Order: groundwork → Verkada → Alta → UniFi Protect → Unity (only once Avigilon grants access). Effort figures are
