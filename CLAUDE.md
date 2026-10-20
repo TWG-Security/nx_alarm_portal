@@ -25,6 +25,7 @@ watch the incident clip, acknowledge with a note, and every step is audit-logged
 - They run TWG's systems and want progress, not questionnaires. Pick sensible defaults and state them; ask only real blockers.
 - When they have to do something (GitHub settings, NX config, sudo), give **numbered, click-level steps**, including exactly where to type commands.
 - **Delayed or silently missed alarms are unacceptable. Their words: "NEVER, this is going to be critical".** Every change must keep sub-second delivery and loud failure modes. **Test failure paths end to end and measure the latency** before saying something works. Never claim timing you haven't measured.
+- **Restarting only the camera health worker: `docker compose build vision && docker compose up -d --no-deps vision`.** Never `docker compose up -d --build vision`: Compose rebuilds and recreates `app` as its dependency (it restarted the portal unannounced at 2026-10-20 21:22:41 UTC, ~13 s down).
 - **Deploys: no need to ask (the user said so on 2026-10-02), but always say in the reply that you're deploying, and when it's back.** A restart once landed on their test press. Back up first (`tools/backup.sh`), then check health and "live push connected" for every site.
 
 ## Current production state (2026-10-02)

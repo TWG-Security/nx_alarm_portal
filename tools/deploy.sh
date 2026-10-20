@@ -50,7 +50,9 @@ fi
 echo "healthy after $(( $(date +%s) - t0 )) s"
 
 echo "== camera health worker"
-if docker compose up -d --build vision 2>&1 | tail -2; then
+# --no-deps: never let Compose rebuild / recreate `app` as vision's dependency (2026-10-20: a vision-only
+# `docker compose up -d --build vision` rebuilt the app image and restarted the portal without warning).
+if docker compose build vision 2>&1 | tail -1 && docker compose up -d --no-deps vision 2>&1 | tail -2; then
   sleep 5
   docker compose logs vision --since "$since" 2>&1 | grep -E "camera health worker|GPU|no GPU|Traceback" | tail -3 | sed 's/^vision-1  | //'
 else
