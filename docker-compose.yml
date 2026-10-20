@@ -48,7 +48,7 @@ services:
     volumes:
       - camhealth:/app/camhealth-data   # per-time-of-day frame library (relearns by itself: not in the backups)
     cpus: 1.5
-    mem_limit: 3g
+    mem_limit: 4g                       # measured 1.9 GB with the three models loaded (2026-10-20)
     deploy:
       resources:
         reservations:

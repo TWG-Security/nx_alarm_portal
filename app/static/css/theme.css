@@ -1247,5 +1247,5 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 .hp-tables { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px; margin-top: 12px; }
 .hp-tables caption { text-align: left; font-weight: 700; padding: 4px 0; }
 .hp-tables td, .hp-tables th { font-size: 12px; }
-.hp-gpu { white-space: nowrap; }
+.hp-gpu, .hp-nw { white-space: nowrap; }
 @media (max-width: 900px) { .hp-charts, .hp-tables { grid-template-columns: 1fr; } }

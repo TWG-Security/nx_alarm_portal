@@ -17,7 +17,8 @@ let reloadTimer = null;
 const STATUS = { problem: "Problem", warning: "Warning", ok: "OK", offline: "Offline in NX", pending: "Not checked yet" };
 const key = (c) => `${c.site_id}:${c.device_id}`;
 const imgUrl = (c, kind, t) => `/media/camera-health/${c.site_id}/${encodeURIComponent(c.device_id)}/${kind}.jpg?t=${t || 0}`;
-const shown = (c) => (c.muted && (c.status === "problem" || c.status === "warning") ? "muted" : c.status);
+const shown = (c) => (c.settings?.skip ? "off" : c.muted && (c.status === "problem" || c.status === "warning") ? "muted" : c.status);
+const statusText = (c) => (c.settings?.skip ? "Checks off" : STATUS[c.status] || c.status);
 
 // Boxes and the "moved" outline over a picture: percentages, so they follow the picture at any size.
 function overlay(issues) {
@@ -48,7 +49,7 @@ function card(c) {
   const chips = (c.issues || []).map((i) => `<span class="chip hc-chip--${i.severity}">${esc(i.title)}</span>`).join("")
     || (c.status === "ok" ? `<span class="chip hc-chip--ok">${c.learning ? "OK · learning its reference" : "OK"}</span>` : "");
   return `<article class="hc hc--${st}" data-key="${esc(key(c))}" tabindex="0" role="button" aria-label="${esc(c.name)}: ${esc(STATUS[c.status] || c.status)}">
-    <div class="hc-media">${media(c)}<span class="hc-state">${st === "muted" ? "Muted" : esc(STATUS[c.status] || c.status)}</span></div>
+    <div class="hc-media">${media(c)}<span class="hc-state">${st === "muted" ? "Muted" : esc(statusText(c))}</span></div>
     <div class="hc-body">
       <div class="hc-name">${tenantTag(c)}${esc(c.name)}</div>
       <div class="muted hc-sub">${esc(c.site_name)} · ${c.checked_at ? `checked ${relTime(c.checked_at)}` : "not checked yet"}${c.mode === "night" ? " · night (IR)" : ""}</div>
@@ -64,7 +65,7 @@ function filtered() {
     const st = shown(c);
     if (show === "attention") return st === "problem" || st === "warning";
     if (show === "muted") return st === "muted";
-    if (show === "offline") return st === "offline";
+    if (show === "offline") return st === "offline" || st === "off";
     return true;
   });
 }
@@ -98,7 +99,7 @@ async function openCamera(siteId, deviceId, show = true) {
   open = { site_id: siteId, device_id: deviceId };
   const c = await api(`/api/camera-health/${siteId}/${encodeURIComponent(deviceId)}`);
   document.getElementById("hcd-title").textContent = c.name;
-  document.getElementById("hcd-sub").innerHTML = `${esc(c.site_name)} · ${esc(STATUS[c.status] || c.status)}${c.muted ? ` · muted until ${esc(fmtTime(c.muted_until))}` : ""}`
+  document.getElementById("hcd-sub").innerHTML = `${esc(c.site_name)} · ${esc(statusText(c))}${c.muted ? ` · muted until ${esc(fmtTime(c.muted_until))}` : ""}`
     + ` · NX: ${esc(c.nx_status || "?")}${c.mode ? ` · ${c.mode === "night" ? "night (IR)" : "day"}` : ""}${c.ai ? " · AI checked" : ""}`;
   const admin = CFG.isAdmin, pending = c.settings.retake;
   document.getElementById("hcd-refs").innerHTML = ["day", "night"].map((mode) => {
@@ -262,10 +263,10 @@ async function loadProcessing() {
   document.getElementById("hp-models").innerHTML = Object.values(d.models || {}).map((m) =>
     `<tr><td>${esc(m.model)}</td><td>${m.calls}</td><td>${ms(m.avg_ms)}</td><td>${ms(m.p95_ms)}</td></tr>`).join("")
     || `<tr><td colspan="4" class="muted">${d.ai ? "No model calls in the last hour" : "AI off: CPU checks only"}</td></tr>`;
-  document.getElementById("hp-recent").innerHTML = (d.recent || []).slice(0, 15).map((c) => {
+  document.getElementById("hp-recent").innerHTML = (d.recent || []).slice(0, 12).map((c) => {
     const gp = Object.entries(c.gpu_ms || {}).map(([k, v]) => `${k} ${ms(v)}`).join(" · ");
-    return `<tr><td>${esc(new Date(c.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</td>
-      <td>${esc(c.camera)}</td><td>${esc(c.how)} ${ms(c.fetch_ms)}</td><td class="hp-gpu">${esc(gp || "—")}</td><td>${ms(c.total_ms)}</td>
+    return `<tr><td class="hp-nw">${esc(new Date(c.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</td>
+      <td>${esc(c.camera)}</td><td class="hp-nw">${esc(c.how)} ${ms(c.fetch_ms)}</td><td class="hp-gpu">${esc(gp || "—")}</td><td class="hp-nw">${ms(c.total_ms)}</td>
       <td>${c.error ? `<span class="hc-t--problem">${esc(c.error)}</span>` : c.issues?.length ? `<span class="hc-t--${c.status}">${esc(c.issues.join(", "))}</span>` : "OK"}${c.library != null ? ` <span class="muted">· ${c.library} same-time frames</span>` : ""}</td></tr>`;
   }).join("") || `<tr><td colspan="6" class="muted">No checks yet</td></tr>`;
 }
