@@ -9,6 +9,9 @@ Next / open:
       analyze.py from real false positives (lawns with moving tree shadows were the worst in the CPU-only replay)
 - [ ] 3D view camera icons (the top-down view has them)
 - [ ] Lens dirt / water / spider web: needs a model trained on real examples (CLIP zero-shot failed: 13/29 false)
+- [ ] Watch the first night: night references, IR switch-over, colour-at-night cameras, dusk skip
+- [ ] Scene change recall: 23/27 in the worst case; small objects on busy texture are the misses. Ideas: segmentation at
+      full 960 width, a change-detection model (e.g. a Siamese / zero-shot SAM-based detector) if the GPU allows
 - [ ] Optional: a daily summary email of camera problems (the user chose no alarms / texts for now)
 
 ---
