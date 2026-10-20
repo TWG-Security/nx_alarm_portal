@@ -1,6 +1,7 @@
 // Alarm detail drawer: the recorded clip and live video side by side, details, acknowledge with a
-// verdict (real event / false alarm / dismissed), the closest guards with Dispatch, and Next (the next open
-// alarm in the feed's order: most urgent first, oldest first). Used on every page.
+// verdict (Real event / False alarm right under the title; Dismiss small, further down), the closest guards with Dispatch once
+// it's verified (Real event), and Next (the next open alarm in the feed's order: most urgent first, oldest
+// first). Used on every page.
 
 import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
 import { freshness } from "./guards.js";
@@ -16,6 +17,27 @@ const backdrop = document.getElementById("drawer-backdrop");
 let current = null, player = null, live = null, notes = [];
 let where = null;    // { map, plan, site }: the top-down map of where the alarm's camera is
 let guardsTimer = null, guardsFor = null, lastGuards = null;     // lastGuards: { alarmId, r } from /guards
+
+// On the map page (wide screens) the details fill only the map's middle pane: the site panel (left) and the live
+// alarms (right) stay in view and clickable (the user, 2026-10-14: "keep the live alarms in view and the site info
+// on the left, i am not sure i like the full screen"). Narrow screens and the other pages keep the full screen.
+const mapPane = document.querySelector(".map-canvas");
+const DOCK_MIN_WIDTH = 1100;           // below this theme.css stacks the map page's columns
+function dock() {
+  const on = !!mapPane && !drawer.hidden && innerWidth > DOCK_MIN_WIDTH;
+  drawer.classList.toggle("drawer--docked", on);
+  backdrop.hidden = drawer.hidden || on;
+  if (!on) return;
+  const r = mapPane.getBoundingClientRect();
+  drawer.style.setProperty("--dock-left", `${Math.round(r.left)}px`);
+  drawer.style.setProperty("--dock-width", `${Math.round(r.width)}px`);
+  drawer.style.setProperty("--dock-top", `${Math.max(0, Math.round(r.top))}px`);
+}
+if (mapPane) {
+  new ResizeObserver(dock).observe(mapPane);
+  addEventListener("resize", dock);
+  addEventListener("scroll", dock, { passive: true });
+}
 
 // ---------------------------------------------------------------- Next: the next open alarm in working order
 function nextAlarm(a) {
@@ -38,10 +60,18 @@ on("store", () => { if (current && !drawer.hidden) paintNext(); });
 
 // ---------------------------------------------------------------- guards: closest first, Dispatch
 function stopGuards() { clearInterval(guardsTimer); guardsTimer = null; guardsFor = null; }
-// The two closest guards that can be texted, as big Dispatch buttons right under the title (phones see them first).
+// Dispatch is offered only once the alarm is verified (the user, 2026-10-14: "only have the dispatch option
+// appear when its verified, i want to do less scrolling"). The API still accepts a dispatch either way.
+const verified = (a) => a.verdict === "real";
+// The two closest guards that can be texted, as big Dispatch buttons right under the verdict buttons (phones see
+// them first). Before Real event: only a line saying Real event texts the closest guard by itself.
 function quickHtml(a) {
   const g = lastGuards?.alarmId === a.id ? lastGuards.r : null;
   if (!g || !g.texts_ready || !(isMine(a) || can("platform.support"))) return "";
+  if (!verified(a)) {
+    return g.auto && a.state === "new" && g.guards.some((c) => c.can_text)
+      ? '<p class="muted small-print ack-auto-hint"><b>Real event</b> texts the closest guard automatically; Dispatch buttons appear once it\'s marked real.</p>' : "";
+  }
   const pick = g.guards.filter((c) => c.can_text).slice(0, 2);
   if (!pick.length) return "";
   const sent = new Set(g.dispatched.map((d) => d.to));
@@ -80,6 +110,11 @@ async function loadGuards(a) {
   lastGuards = { alarmId: a.id, r };
   paintQuick();
   if (!r.guards.length && !r.dispatched.length) { box.hidden = true; return; }
+  if (!verified(a)) {                 // not verified: no guard list / Dispatch; still show anyone already sent
+    box.hidden = !r.dispatched.length;
+    box.innerHTML = r.dispatched.length ? `<div class="media-label">Dispatched <span class="muted">live status from their phones</span></div>${boardHtml(r.dispatched)}` : "";
+    return;
+  }
   if (chosenFor !== a.id) { chosen = new Set(); chosenFor = a.id; }
   box.hidden = false;
   const write = isMine(a) || can("platform.support");
@@ -100,8 +135,7 @@ async function loadGuards(a) {
           <span class="muted small-print">${esc(where)}${f === "offline" ? " · OFFLINE" : f === "stale" ? ` · last seen ${esc(relTime(c.fix_at))}` : ""}${c.person && c.person !== c.name ? ` · ${esc(c.person)}` : ""}</span>
           ${block ? `<span class="muted small-print">${esc(block)}</span>` : ""}</span>
         ${write ? `<button type="button" class="btn btn-sm ${c.closest ? "btn-primary" : ""}" data-dispatch="${c.tracker_id}" data-name="${esc(c.name)}" ${block ? "disabled" : ""}>Dispatch</button>` : ""}</li>`;
-    }).join("")}</ul>
-    ${r.auto && a.state === "new" && r.texts_ready ? '<p class="muted small-print">Marking it <b>Real event</b> texts the closest guard automatically.</p>' : ""}`;
+    }).join("")}</ul>`;
 }
 
 // ---------------------------------------------------------------- timeline: everything, live (also in the report)
@@ -125,7 +159,7 @@ on("alarm.timeline", ({ alarm_id }) => {
     loadTimeline(current); loadGuards(current);
     try {
       const a = await api(`/api/alarms/${alarm_id}`);
-      if (current?.id === alarm_id && (a.call_state !== current.call_state || a.state !== current.state)) {
+      if (current?.id === alarm_id && (a.call_state !== current.call_state || a.state !== current.state || a.verdict !== current.verdict)) {
         const keep = drawer.querySelector("#call-note")?.value || "";
         current = a; render(a);
         if (keep && drawer.querySelector("#call-note")) drawer.querySelector("#call-note").value = keep;
@@ -205,6 +239,7 @@ function render(a) {
   drawer.querySelector(".drawer-top").innerHTML = `
     <div class="drawer-head">
       <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
+        ${acked || disarmed ? ` ${verdictChip(a)}` : ""}
         ${a.call_state === "active" ? ' <span class="chip call-chip">Call in progress</span>' : a.call_state === "ended" ? ' <span class="chip">Call ended</span>' : ""}
         <h1 style="margin-top:8px">${esc(a.caption)}</h1>
         ${isMine(a) ? "" : `<div><span class="chip tenant-chip">${esc(a.tenant_name || "Another company")}</span></div>`}
@@ -213,6 +248,12 @@ function render(a) {
       <div class="drawer-head-actions"><span class="drawer-next-slot">${nextHtml(a)}</span>
         <button class="btn btn-sm drawer-back" id="drawer-close" aria-label="Close">← ${location.pathname === "/" ? "Back to map" : "Back"}</button></div>
     </div>
+    ${acked || disarmed ? "" : `<div class="ack-top">
+      <div class="verdict-buttons"><span class="muted ack-as">Acknowledge as</span>
+        <button class="btn btn-verdict-real" data-ack="real">Real event</button>
+        <button class="btn btn-verdict-false" data-ack="false">False alarm</button></div>
+      <textarea id="drawer-note" maxlength="4000" rows="1" aria-label="Disposition note" placeholder="Disposition note (optional, saved when you acknowledge): what did you see / do?"></textarea>
+    </div>`}
     <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
     <dl class="kv">
@@ -237,13 +278,7 @@ function render(a) {
           ${verdictRow}
           <dt>Disposition</dt><dd style="white-space:pre-wrap">${esc(a.ack_note || "—")}</dd>
           <dt>NX write-back</dt><dd>${nx ? (nx.ok ? `<span class="chip acked">${esc(nx.method)}</span>` : `<span class="chip offline">failed</span> ${esc(nx.error || "")}`) : "—"}</dd>
-        </dl>` : `
-        <div class="field"><label for="drawer-note">Disposition note <span class="muted">(saved when you acknowledge)</span></label>
-          <textarea id="drawer-note" maxlength="4000" placeholder="What did you see / do?"></textarea></div>
-        <div class="verdict-buttons"><span class="muted ack-as">Acknowledge as</span>
-          <button class="btn btn-verdict-real" data-ack="real">Real event</button>
-          <button class="btn btn-verdict-false" data-ack="false">False alarm</button>
-          <button class="btn btn-verdict-dismissed" data-ack="dismissed" title="Close it without a verdict or an NX bookmark">Dismiss</button></div>`}
+        </dl>` : ""}
       <div class="notes-box">
         <h3>Notes</h3>
         <ul class="notes-list"></ul>
@@ -252,6 +287,8 @@ function render(a) {
           <button class="btn" id="note-add" type="button">Add note</button>
         </div>
       </div>
+      ${acked || disarmed ? "" : `<button class="btn btn-sm btn-verdict-dismissed" data-ack="dismissed"
+        title="Close it without a verdict or an NX bookmark (use Real event or False alarm when you can)">Dismiss (no verdict)</button>`}
       <a class="btn btn-sm" href="/audit?alarm_id=${a.id}">Audit trail</a>
       <button class="btn btn-sm" id="drawer-export" title="Incident report PDF, or PDF + video clip + stills">Export report / clip…</button>
     </div>`;
@@ -341,17 +378,42 @@ export async function openDrawer(id, fallback) {
   render(a);
   player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
   if (a.device_id) live = mountLive(drawer.querySelector(".live-mount"), a);
+  addBigButtons();
   mountWhere(a).catch((err) => console.error("top-down map in the alarm details failed", err));
   api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
   startGuards(a);
   loadTimeline(a);
+  api(`/api/alarms/${a.id}/viewed`, { method: "POST" }).catch(() => {});     // "Viewed the alarm" on the timeline
   drawer.hidden = false;
-  backdrop.hidden = false;
+  dock();
   drawer.querySelector("#drawer-close").focus();
 }
 
+// The videos are kept small so the details fit without scrolling (the user, 2026-10-14: "make the video smaller so
+// it can have more information on one page without scrolling"); ⤢ or a double-click shows one full screen, boxes and
+// all (the stage is what goes full screen, so player.js keeps drawing the boxes over it).
+function addBigButtons() {
+  for (const stage of drawer.querySelectorAll(".drawer-media .player-stage, .drawer-media .live-stage")) {
+    stage.insertAdjacentHTML("beforeend", '<button type="button" class="vid-big" data-big title="Full screen (double-click the video; Esc to come back)" aria-label="Show this video full screen">⤢</button>');
+  }
+}
+function toggleBig(stage) {
+  if (document.fullscreenElement) return document.exitFullscreen().catch(() => {});
+  stage.requestFullscreen?.().catch((err) => toast(esc(`Full screen isn't available here (${err.message})`), { kind: "error" }));
+}
+// A new alarm or a lost connection always comes back out of full screen, so its pop-up, feed card and banner show.
+const leaveBig = () => { if (document.fullscreenElement && drawer.contains(document.fullscreenElement)) document.exitFullscreen().catch(() => {}); };
+on("alarm.arrived", leaveBig);
+on("connection", (c) => { if (c.down) leaveBig(); });
+drawer.addEventListener("dblclick", (e) => {
+  const stage = e.target.closest(".drawer-media .player-stage, .drawer-media .live-stage");
+  if (stage && !e.target.closest("button, input, select, a")) toggleBig(stage);
+});
+
 drawer.addEventListener("click", async (e) => {
   if (e.target.closest("#drawer-close")) return closeDrawer();
+  const big = e.target.closest("[data-big]");
+  if (big) return toggleBig(big.closest(".player-stage, .live-stage"));
   if (e.target.id === "call-end") return endCall(e.target);
   const next = e.target.closest("[data-next]");
   if (next) { const a = openAlarms.get(Number(next.dataset.next)); return openDrawer(Number(next.dataset.next), a); }
@@ -367,6 +429,9 @@ drawer.addEventListener("click", async (e) => {
   const verdict = e.target.dataset.ack;
   if (verdict) {
     const updated = await acknowledge(current.id, drawer.querySelector("#drawer-note").value, e.target, verdict);
+    // False alarm: nothing more to do here, so the details close (the user, 2026-10-14: "when false alarm is click
+    // close that alarm"); the toast confirms it. Real event stays open for Dispatch.
+    if (updated && verdict === "false") return closeDrawer();
     if (updated) { current = updated; render(updated); loadGuards(updated); loadTimeline(updated); }
     return;
   }
@@ -378,7 +443,7 @@ drawer.addEventListener("click", async (e) => {
     try {
       await api("/api/alarms/bulk", { method: "POST", body: { ids: [current.id], verdict: override, note: why } });
       const updated = await api(`/api/alarms/${current.id}`);
-      current = updated; applyAlarm(updated); render(updated);
+      current = updated; applyAlarm(updated); render(updated); loadGuards(updated);
       toast(`Verdict changed to ${VERDICT[override].toLowerCase()}`);
     } catch (err) { toast(esc(err.message), { kind: "error" }); e.target.disabled = false; }
   }
@@ -452,7 +517,7 @@ document.getElementById("export-form").addEventListener("submit", async (e) => {
     expStatus.innerHTML = `<div class="alert alert-error"><b>Export failed:</b> ${esc(err.message)}</div>`;
   } finally { btn.disabled = false; }
 });
-document.addEventListener("keydown", (e) => { if (e.key === "Escape" && current && !document.querySelector("dialog[open]")) closeDrawer(); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && current && !document.querySelector("dialog[open]") && !document.fullscreenElement) closeDrawer(); });
 
 // Someone else acknowledged the alarm we're looking at.
 on("store", ({ alarm, alarms } = {}) => {

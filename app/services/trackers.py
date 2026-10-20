@@ -1,6 +1,8 @@
 """Live guard / patrol-vehicle locations: polls Peplink InControl2 for each tracker's GPS position and pushes
 moves to browsers (bus event "tracker.moved"). Guards without a router share their phone's location from a web page
-instead (app/routers/share.py → phone_fix / phone_stop here).
+instead (app/routers/share.py → phone_fix / phone_stop here). Fleet vehicles come from a company's Fleetio account
+(app/fleetio.py): one vehicle list per round gives every van's last known position; each Fleetio vehicle becomes a
+tracker (source "fleetio", ext_id = its Fleetio id) the first time it's seen.
 
 Alarm safety: this is one background task with timeouts on every call; it never holds a DB connection while
 waiting on InControl2 (fetch first, then one short write), and a failing or slow InControl2 only marks the
@@ -17,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import delete, select
 
-from app import peplink
+from app import fleetio, peplink
 from app.db import sessionmaker
 from app.models import Tracker, TrackerPoint, TrackerSource
 from app.security import decrypt
@@ -185,7 +187,8 @@ async def _store(results: list[dict]) -> None:
                     _move(db, t, fix)
             if (t.error, t.fix_at, t.name, t.online) != before:
                 moved.append(t)
-        for src in (await db.scalars(select(TrackerSource).where(TrackerSource.tenant_id.in_(list(counts))))).all():
+        for src in (await db.scalars(select(TrackerSource).where(TrackerSource.tenant_id.in_(list(counts)),
+                                                                 TrackerSource.kind == "peplink"))).all():
             errs = errors.get(src.tenant_id, [])
             if errs and len(errs) == counts[src.tenant_id]:          # every one of its trackers failed: the account's problem
                 src.last_error, src.last_error_at = errs[0][:500], now
@@ -221,10 +224,17 @@ async def refresh_one(tracker_id: int) -> dict | None:
         t = await db.get(Tracker, tracker_id)
         if t is None:
             return None
+        fleet = (t.tenant_id, t.ext_id) if t.source == "fleetio" else None
         src = await db.scalar(select(TrackerSource).where(TrackerSource.tenant_id == t.tenant_id, TrackerSource.kind == "peplink"))
         client = client_for(src) if src and src.enabled else None
         row = {"id": t.id, "tenant": t.tenant_id, "org": t.ic2_org, "group": t.ic2_group, "device": t.ic2_device, "tz": t.tz}
         current = tracker_dict(t)
+    if fleet:                                            # a Fleetio vehicle: ask Fleetio for that one vehicle now
+        if time.monotonic() - _refreshed_at.get(tracker_id, -1e9) >= REFRESH_MIN_S:
+            _refreshed_at[tracker_id] = time.monotonic()
+            await refresh_fleetio_one(*fleet)
+        async with sessionmaker()() as db:
+            return tracker_dict(await db.get(Tracker, tracker_id))
     if client is None:
         raise peplink.PeplinkError("Tracking is switched off for this company (Sites → Guards & vehicles)")
     if time.monotonic() - _refreshed_at.get(tracker_id, -1e9) < REFRESH_MIN_S:
@@ -236,6 +246,147 @@ async def refresh_one(tracker_id: int) -> dict | None:
     await _store([result])
     async with sessionmaker()() as db:
         return tracker_dict(await db.get(Tracker, tracker_id))
+
+
+# ---------------------------------------------------------------- Fleetio (fleet vehicles)
+FLEETIO_POLL_MIN_S = 30
+FLEETIO_POLL_DEFAULT_S = 60
+FLEETIO_HISTORY_PER_ROUND = 20   # vehicles whose path between two reads is fetched each round (one call each)
+FLEETIO_BACKFILL_MIN = 60        # a vehicle seen for the first time: its last hour, so the trail starts drawn
+_fleetio_clients: dict[int, tuple[tuple[str, str], fleetio.Client]] = {}
+_fleetio_due: dict[int, float] = {}          # source id -> monotonic time of its next round
+fleetio_transport = None                     # tests: an httpx transport for the Fleetio client
+
+
+def fleetio_client_for(src: TrackerSource) -> fleetio.Client | None:
+    if not (src.client_id and src.secret_enc):
+        return None
+    key = (src.client_id, src.secret_enc)
+    old = _fleetio_clients.get(src.id)
+    if old is None or old[0] != key:
+        if old is not None:
+            asyncio.create_task(old[1].close())
+        _fleetio_clients[src.id] = (key, fleetio.Client(src.client_id, decrypt(src.secret_enc), transport=fleetio_transport))
+    return _fleetio_clients[src.id][1]
+
+
+async def poll_fleetio(force_tenant: int | None = None) -> float:
+    """One Fleetio vehicle list for every company whose Fleetio is on and due (or force_tenant now). Returns seconds
+    until the next one is due. Like InControl2: fetch first with no DB connection held, then one short write."""
+    async with sessionmaker()() as db:
+        sources = (await db.scalars(select(TrackerSource).where(TrackerSource.enabled.is_(True),
+                                                                TrackerSource.kind == "fleetio"))).all()
+        work = [(s.id, s.tenant_id, max(FLEETIO_POLL_MIN_S, s.poll_s or FLEETIO_POLL_DEFAULT_S), fleetio_client_for(s))
+                for s in sources]
+    now = time.monotonic()
+    for sid in [k for k in _fleetio_due if k not in {w[0] for w in work}]:
+        del _fleetio_due[sid]
+    for sid, tenant_id, every, client in work:
+        if client is None or (now < _fleetio_due.get(sid, 0) and tenant_id != force_tenant):
+            continue
+        _fleetio_due[sid] = now + every
+        try:
+            vehicles = await client.vehicles()
+        except fleetio.FleetioError as e:
+            if e.retry_after_s:
+                _fleetio_due[sid] = time.monotonic() + max(every, e.retry_after_s)
+            await _fleetio_failed(sid, str(e))
+            continue
+        history = await _fleetio_history(client, tenant_id, vehicles, every)
+        await _store_fleetio(sid, tenant_id, vehicles, complete=True, history=history)
+    now = time.monotonic()
+    return max(1.0, min((_fleetio_due[w[0]] - now for w in work if w[0] in _fleetio_due), default=300.0))
+
+
+async def _fleetio_history(client: fleetio.Client, tenant_id: int, vehicles: list[fleetio.Vehicle],
+                           every: float) -> dict[str, list]:
+    """Where each moved vehicle was between its last two reads (Fleetio's location history), for the map's trail. Only
+    when a gap could hide positions (longer than the read interval) or the vehicle is new; never fails the round."""
+    async with sessionmaker()() as db:
+        held = dict((await db.execute(select(Tracker.ext_id, Tracker.fix_at).where(
+            Tracker.tenant_id == tenant_id, Tracker.source == "fleetio"))).all())
+    now, out, asked = utcnow(), {}, 0
+    for v in vehicles:
+        if v.at is None or asked >= FLEETIO_HISTORY_PER_ROUND:
+            continue
+        prev = aware(held.get(v.id)) if v.id in held else None
+        if prev is not None and (v.at <= prev or (v.at - prev).total_seconds() <= every + 30):
+            continue
+        since = prev or max(now - timedelta(minutes=FLEETIO_BACKFILL_MIN), v.at - timedelta(minutes=FLEETIO_BACKFILL_MIN))
+        asked += 1
+        try:
+            out[v.id] = [h for h in await client.history(v.id, since) if h[0] < v.at]
+        except fleetio.FleetioError as e:
+            log.info("Fleetio: history of vehicle %s: %s", v.id, e)
+            if e.retry_after_s:
+                break
+    return out
+
+
+async def _fleetio_failed(source_id: int, error: str) -> None:
+    log.info("Fleetio source %s: %s", source_id, error)
+    async with sessionmaker()() as db:
+        src = await db.get(TrackerSource, source_id)
+        if src is not None:
+            src.last_error, src.last_error_at = error[:500], utcnow()
+            await db.commit()
+
+
+async def _store_fleetio(source_id: int, tenant_id: int, vehicles: list[fleetio.Vehicle], complete: bool,
+                        history: dict[str, list] | None = None) -> None:
+    """Fleetio's vehicles -> trackers: new vehicles are added (on the map at once), positions newer than the one held
+    move the marker. complete: the whole list, so a tracker whose vehicle is gone (archived) says so."""
+    now, changed = utcnow(), []
+    async with sessionmaker()() as db:
+        have = {t.ext_id: t for t in (await db.scalars(select(Tracker).where(
+            Tracker.tenant_id == tenant_id, Tracker.source == "fleetio"))).all()}
+        for v in vehicles:
+            t = have.pop(v.id, None)
+            if t is None:
+                t = Tracker(tenant_id=tenant_id, name=v.name, kind="vehicle", source="fleetio", ext_id=v.id, enabled=True)
+                db.add(t)
+                await db.flush()
+                log.info("Fleetio: new vehicle %s %r -> tracker %s", v.id, v.name, t.id)
+            before = (t.error, t.fix_at, t.device_name, t.id)
+            t.checked_at, t.device_name, t.serial = now, v.describe, v.plate
+            if v.lat is None or v.at is None:
+                t.error = "Fleetio has no position for this vehicle yet"
+            else:
+                t.error = ""
+                if t.fix_at is None or v.at > aware(t.fix_at):
+                    for at, lat, lng in (history or {}).get(v.id, []):      # the path since the last read: trail points
+                        if t.fix_at is None or at > aware(t.fix_at):
+                            _move(db, t, peplink.Fix(lat=lat, lng=lng, at=at, speed=None, alt=None))
+                    _move(db, t, peplink.Fix(lat=v.lat, lng=v.lng, at=v.at, speed=None, alt=None))
+            if (t.error, t.fix_at, t.device_name) != before[:3] or before[3] is None:
+                changed.append(t)
+        if complete:
+            for t in have.values():
+                if t.error != "Not in Fleetio any more (archived or deleted there)":
+                    t.error = "Not in Fleetio any more (archived or deleted there)"
+                    changed.append(t)
+        src = await db.get(TrackerSource, source_id)
+        if src is not None and complete:
+            src.last_ok_at, src.last_error, src.last_error_at = now, "", None
+        await db.commit()
+        out = [tracker_dict(t) for t in changed]
+    for data in out:
+        bus.publish(tenant_id, "tracker.moved", data)
+
+
+async def refresh_fleetio_one(tenant_id: int, ext_id: str) -> None:
+    async with sessionmaker()() as db:
+        src = await db.scalar(select(TrackerSource).where(TrackerSource.tenant_id == tenant_id, TrackerSource.kind == "fleetio"))
+        client = fleetio_client_for(src) if src and src.enabled else None
+        source_id = src.id if src else None
+    if client is None:
+        raise peplink.PeplinkError("Fleetio is switched off for this company (Sites → Guards & vehicles)")
+    try:
+        v = await client.vehicle(ext_id)
+    except fleetio.FleetioError as e:
+        raise peplink.PeplinkError(str(e)) from None
+    if v is not None:
+        await _store_fleetio(source_id, tenant_id, [v], complete=False)
 
 
 # ---------------------------------------------------------------- phones (browser location sharing)
@@ -310,6 +461,7 @@ async def run() -> None:
         try:
             await _phones_quiet()
             wait = await poll_once()
+            wait = min(wait, await poll_fleetio())
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - keep tracking alive whatever happens

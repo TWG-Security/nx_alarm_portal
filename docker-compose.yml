@@ -26,6 +26,7 @@ services:
       - tilecache:/app/tile-cache
       - mediacache:/app/media-cache
       - sitemodels:/app/site-models     # uploaded 3D models + their 3D Tiles (not in tools/backup.sh: re-upload)
+      - ./secrets:/app/secrets:ro       # Apple's APNs key (tools/install_apns_key.sh): not in git, not in the backups
     depends_on:
       db:
         condition: service_healthy

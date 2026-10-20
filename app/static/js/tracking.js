@@ -31,7 +31,7 @@ function paint() {
   $("gt-secret").placeholder = data.secret_set ? "Saved (type to replace)" : "";
   $("gt-secret-hint").textContent = data.secret_set ? "Leave blank to keep the saved secret." : "";
   const ok = data.last_ok_at && (!data.last_error_at || data.last_ok_at > data.last_error_at);
-  const routers = data.trackers.filter((t) => t.source !== "phone");
+  const routers = data.trackers.filter((t) => (t.source || "peplink") === "peplink");
   $("gt-status").innerHTML = !data.enabled ? (routers.length
       ? '<div class="alert alert-error"><b>Router tracking is off</b>, so the routers below get no positions. Tick <b>Track guards</b> and <b>Save</b>.</div>'
       : '<div class="alert">Router tracking (InControl2) is off. Guards tracked by phone work without it.</div>')
@@ -41,15 +41,16 @@ function paint() {
   $("gt-trackers").innerHTML = data.trackers.map((t) => `<tr data-id="${t.id}">
     <td>${MANAGE ? `<input type="text" value="${esc(t.name)}" maxlength="100" data-f="name" aria-label="Name">` : `<b>${esc(t.name)}</b>`}
       ${MANAGE ? `<select data-f="kind" aria-label="Kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${k === t.kind ? "selected" : ""}>${v}</option>`).join("")}</select>` : `<div class="muted small-print">${KIND[t.kind]}</div>`}</td>
-    <td>${t.source === "phone" ? `<b>Phone (browser)</b>${linkState(t)}` : `${esc(t.device_name || "")}<div class="muted small-print mono">${esc(t.serial)}</div>`}
+    <td>${t.source === "phone" ? `<b>Phone (browser)</b>${linkState(t)}` : `${t.source === "fleetio" ? '<span class="chip">Fleetio</span> ' : ""}${esc(t.device_name || "")}<div class="muted small-print mono">${esc(t.source === "fleetio" ? "" : t.serial)}</div>`}
       ${MANAGE ? `<label class="small-print" style="display:block;margin-top:4px">Texts go to <select data-f="user_id" aria-label="Texts go to">${personOptions(t.user_id)}</select></label>` : ""}
       ${t.online === false ? `<div class="small-print guard-offline-text">OFFLINE since ${esc(relTime(t.offline_since))}</div>` : ""}</td>
     <td>${t.fix_at ? `${esc(relTime(t.fix_at))}<div class="muted small-print">${t.lat.toFixed(5)}, ${t.lng.toFixed(5)}</div>` : '<span class="muted">none yet</span>'}
       ${t.error ? `<div class="alert alert-error small-print" style="margin:4px 0 0">${esc(t.error)}</div>` : ""}</td>
-    <td class="actions">${MANAGE ? `${t.source === "phone" ? "" : '<button class="btn btn-sm" type="button" data-refresh title="Get its position from InControl2 now">↻ Refresh</button>'}
+    <td class="actions">${MANAGE ? `${t.source === "phone" ? "" : `<button class="btn btn-sm" type="button" data-refresh title="Get its position from ${t.source === "fleetio" ? "Fleetio" : "InControl2"} now">↻ Refresh</button>`}
       <label class="check" style="margin:0"><input type="checkbox" data-f="enabled" ${t.enabled ? "checked" : ""}> On</label>
       <button class="btn btn-sm btn-danger" type="button" data-remove>Remove</button>` : ""}</td></tr>`).join("")
     || '<tr><td colspan="4" class="empty">Nothing tracked yet. Add a router or a phone below.</td></tr>';
+  paintFleetio();
   $("gt-auto").checked = data.auto_dispatch;
   const keep = $("gt-person").value;
   $("gt-person").innerHTML = personOptions(Number(keep) || null, true);
@@ -104,6 +105,47 @@ $("gt-test").addEventListener("click", async () => {
   try {
     const r = await api("/api/tracking/test", { method: "POST" });
     out.innerHTML = r.ok ? `<span style="color:var(--ok)">Connected ✓ ${r.organizations.length} organization${r.organizations.length === 1 ? "" : "s"}: ${esc(r.organizations.slice(0, 6).join(", "))}${r.organizations.length > 6 ? "…" : ""}</span>`
+      : `<span class="text-failed">${esc(r.error)}</span>`;
+  } catch (err) { out.innerHTML = `<span class="text-failed">${esc(err.message)}</span>`; }
+});
+
+// ---- Fleetio: every vehicle in the account on the map
+function paintFleetio() {
+  const f = data.fleetio;
+  $("fl-enabled").checked = f.enabled;
+  $("fl-token").value = f.account_token;
+  $("fl-poll").value = f.poll_s;
+  $("fl-key").value = "";
+  $("fl-key").placeholder = f.api_key_set ? "Saved (type to replace)" : "";
+  $("fl-key-hint").textContent = f.api_key_set ? "Leave blank to keep the saved key." : "";
+  const vans = data.trackers.filter((t) => t.source === "fleetio");
+  const ok = f.last_ok_at && (!f.last_error_at || f.last_ok_at > f.last_error_at);
+  $("fl-status").innerHTML = !f.enabled ? '<div class="alert">Fleetio is off.</div>'
+    : ok ? `<div class="alert alert-ok">Working: ${vans.length} vehicle${vans.length === 1 ? "" : "s"}, last read from Fleetio ${esc(relTime(f.last_ok_at))}.</div>`
+    : f.last_error ? `<div class="alert alert-error">Fleetio problem ${esc(relTime(f.last_error_at))}: ${esc(f.last_error)}</div>`
+    : '<div class="alert">On. Waiting for the first read.</div>';
+}
+$("fl-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = { enabled: $("fl-enabled").checked, account_token: $("fl-token").value.trim(), poll_s: Number($("fl-poll").value) || 60 };
+  if ($("fl-key").value.trim()) body.api_key = $("fl-key").value.trim();
+  const btn = e.submitter; if (btn) btn.disabled = true;
+  try {
+    data = await api("/api/tracking/fleetio", { method: "PUT", body });
+    $("fl-error").innerHTML = "";
+    paint();
+    toast("Saved");
+  } catch (err) { $("fl-error").innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`; }
+  finally { if (btn) btn.disabled = false; }
+});
+$("fl-test").addEventListener("click", async () => {
+  const out = $("fl-test-result");
+  out.textContent = "Testing…";
+  try {
+    const r = await api("/api/tracking/fleetio/test", { method: "POST" });
+    out.innerHTML = r.ok ? `<span style="color:var(--ok)">Connected ✓ ${r.vehicles} vehicle${r.vehicles === 1 ? "" : "s"}, ${r.with_position} with a position${r.newest_position_at ? ` (newest ${esc(relTime(r.newest_position_at))}, oldest ${esc(relTime(r.oldest_position_at))})` : ""}</span>
+      ${r.why_none ? `<div class="text-failed small-print">${esc(r.why_none)}</div>` : ""}
+      ${r.detail ? `<div class="muted small-print">From Fleetio: ${r.detail.entry_in_list} with a location in the list, ${r.detail.entry_id_only} with a location id only (${r.detail.looked_up} read, ${r.detail.lookup_failed} refused), ${r.detail.no_entry} without a location${r.detail.field_missing ? `, ${r.detail.field_missing} without the location fields` : ""}.</div>` : ""}`
       : `<span class="text-failed">${esc(r.error)}</span>`;
   } catch (err) { out.innerHTML = `<span class="text-failed">${esc(err.message)}</span>`; }
 });

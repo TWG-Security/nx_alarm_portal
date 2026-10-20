@@ -49,6 +49,12 @@ calling a source done.
 
 ---
 
+# Done: map site panel cleanup (2026-10-14)
+Built and tested 2026-10-14: fixed sections, Map / Top-down / 3D switcher, one-line NX rules status, compact arming,
+line-icon actions; alarm details now fill only the map's middle pane. Details: CLAUDE.md item 14n.
+
+---
+
 # Done: account security and Platform settings (port from MCP-Control-Platform)
 
 > **Status 2026-10-02: all 4 phases built and deployed (`857d825`).** What's left is in CLAUDE.md "Open items"

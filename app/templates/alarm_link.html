@@ -21,6 +21,13 @@
     <div id="link-share-state" class="share-line">Lets dispatch see where you are while this page is open.</div>
     <div id="link-share-facts" class="muted small-print"></div>
     {% include "_location_help.html" %}
+  </div>
+  <div class="card link-card link-notes" id="link-notes">
+    <h2>Notes to dispatch</h2>
+    <ul class="link-notes-list" id="link-notes-list"></ul>
+    <textarea id="link-note-text" aria-label="Note to dispatch" rows="3" maxlength="2000" placeholder="What you see / did (e.g. gate open, no one on site, police called)"></textarea>
+    <div class="row" style="margin:8px 0 0"><button class="btn btn-primary" type="button" id="link-note-send">Send note</button>
+      <span id="link-note-state" class="muted small-print" role="status" aria-live="polite"></span></div>
   </div>{% endif %}
   <div class="card link-card" id="link-alarm">
     <div class="link-title">
@@ -76,5 +83,5 @@
 </div>
 {% endblock %}
 {% block scripts %}{% if state == "ok" %}
-<script>window.PORTAL = {{ {"clip": clip_config, "alarm": alarm, "token": token, "canShare": sent_to != "", "status": guard_status} | tojson }};</script>
+<script>window.PORTAL = {{ {"clip": clip_config, "alarm": alarm, "token": token, "canShare": sent_to != "", "status": guard_status, "notes": guard_notes} | tojson }};</script>
 <script type="module" src="{{ asset('js/alarm_link.js') }}"></script>{% endif %}{% endblock %}

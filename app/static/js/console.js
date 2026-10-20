@@ -4,6 +4,7 @@ import "./sound.js";
 import "./clock.js";
 import "./critical.js";
 import "./drawer.js";
+import "./call_updates.js";
 
 const badge = document.getElementById("nav-alarm-count");
 on("store", () => {

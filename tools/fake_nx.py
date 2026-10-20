@@ -255,23 +255,26 @@ async def state(): return {"acks": ACKS, "bookmarks": BOOKMARKS, "events": len(E
 @app.post("/_inject/{kind}")
 async def inject(kind: str, rule_id: str = ""):
     """rule_id: log the event as fired by that rule (e.g. one made in the portal's rule editor)."""
-    ts = int(time.time()*1000); aid = str(uuid.uuid4()); FRAMES["last_inject"] = time.time()
+    # Real NX stamps events in µs; ms * 1000 made fast injections share a timestamp, and the portal (rightly) took
+    # same-camera same-µs events as one (dismiss e2e: 600 injected, ~490 stored). Unique µs per injection.
+    us = max(time.time_ns() // 1000, FRAMES.get("last_us", 0) + 1); FRAMES["last_us"] = us
+    ts = us // 1000; aid = str(uuid.uuid4()); FRAMES["last_inject"] = time.time()
     rid = rule_id or RULES.get(kind, RULES["line" if kind == "axis" else "panic"])["id"]
     base = {"timestampMs": ts, "ruleId": rid, "flags": "noFlags", "aggregatedInfo": {"total": 1}}
     dev = DEV[0]["id"] if kind != "dock" else DEV[1]["id"]
     if kind in ("panic", "panic24"):
-        ev = {"type": "softTrigger", "state": "instant", "deviceId": dev, "userId": "{u-1}", "triggerName": "", "timestamp": str(ts*1000)}
+        ev = {"type": "softTrigger", "state": "instant", "deviceId": dev, "userId": "{u-1}", "triggerName": "", "timestamp": str(us)}
         act = {"id": aid, "type": "desktopNotification", "acknowledge": False, "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     elif kind == "axis":                                    # AXIS Object Analytics scenario ("zone") event, as NX 6.1 logs it
         ev = {"type": "analytics", "state": "started", "deviceId": dev, "caption": "", "description": "Front Lot started",
-              "engineId": AXIS_ENGINE, "eventTypeId": AXIS_SCENARIO, "timestamp": str(ts*1000),
+              "engineId": AXIS_ENGINE, "eventTypeId": AXIS_SCENARIO, "timestamp": str(us),
               "key": "tnsaxis:CameraApplicationPlatform/ObjectAnalytics/Device1Scenario1"}
         act = {"id": aid, "type": "desktopNotification", "caption": "AXIS Object Analytics", "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     elif kind == "line":
-        ev = {"type": "analytics", "state": "instant", "deviceId": dev, "caption": "Rule Engine: Line Detector - Crossed", "eventTypeId": "nx.onvif.RuleEngine.LineDetector.Crossed", "timestamp": str(ts*1000)}
+        ev = {"type": "analytics", "state": "instant", "deviceId": dev, "caption": "Rule Engine: Line Detector - Crossed", "eventTypeId": "nx.onvif.RuleEngine.LineDetector.Crossed", "timestamp": str(us)}
         act = {"id": aid, "type": "bookmark", "serverId": "{srv-1}", "sourceName": "Front Gate PTZ", "deviceIds": [dev]}
     else:
-        ev = {"type": "deviceDisconnected", "state": "instant", "deviceId": DEV[1]["id"], "timestamp": str(ts*1000)}
+        ev = {"type": "deviceDisconnected", "state": "instant", "deviceId": DEV[1]["id"], "timestamp": str(us)}
         act = {"id": aid, "type": "desktopNotification", "serverId": "{srv-1}", "sourceName": "Loading Dock", "deviceIds": [DEV[1]["id"]]}
     TRACKS.append({"id": str(uuid.uuid4()), "deviceId": dev.strip("{}"), "objectTypeId": "nx.base.Person",
                    "startTimeMs": ts - 2000, "endTimeMs": ts + 4000, "attributes": [{"name": "Clothing", "value": "Dark jacket"}]})
@@ -451,3 +454,146 @@ async def ic2_group_loc(org: str, group: int, request: Request):
     rows = [{**d, "group_time": _ic2_local(time.time()), "is_gps_tracking_disabled": False}
             for d in _ic2_devices(org_wide=False) if d["group_id"] == group]
     return await _ic2_gate(request) or _ok(rows)
+
+# ---------------------------------------------------------------- fake Fleetio (app/fleetio.py)
+# dev_up.sh points FLEETIO_API_BASE at /_fleetio. Account Token "dev-account", API key "dev-key". Shapes from Fleetio's
+# OpenAPI spec 2025-05-05 (VehicleSummary + current_location_entry). Three vans around Harrisburg (one moves each read,
+# one has no position yet, one 2 h old) and a sample-data vehicle (left out); pages of 2 to exercise next_cursor.
+# POST /_fleetio/mode/{ok|unauthorized|ratelimit|fail}; POST /_fleetio/archive/{id} drops a vehicle from the list.
+from datetime import timedelta as _td
+FLEET = {"mode": "ok", "reads": 0, "archived": set()}
+
+def _fleet_iso(ts: float) -> str:
+    return _dt.fromtimestamp(ts, _tz.utc).astimezone(_tz(_td(hours=-4))).isoformat()
+
+def _fleet_vehicles() -> list[dict]:
+    now, step = time.time(), FLEET["reads"]
+    loc = lambda lat, lng, ts: {"id": 900 + int(ts) % 97, "date": _fleet_iso(ts), "address": "Harrisburg, PA", "is_current": True,
+                                "item_type": "Vehicle", "geolocation": {"latitude": lat, "longitude": lng},
+                                "location": f"POINT ({lng} {lat})"}
+    rows = [
+        {"id": 501, "name": "Van 12", "year": 2022, "make": "Ford", "model": "Transit 250", "license_plate": "ZKT-4412", "is_sample": False,
+         "current_location_entry": loc(40.2700 + step * 0.0004, -76.8800 + step * 0.0003, now - 40)},
+        {"id": 502, "name": "Van 7", "year": 2019, "make": "Ram", "model": "ProMaster", "license_plate": "LMN-2207", "is_sample": False,
+         "current_location_entry": loc(40.2590, -76.8925, now - 7200)},
+        {"id": 503, "name": "Service Truck 3", "year": 2021, "make": "Chevrolet", "model": "Silverado", "license_plate": "", "is_sample": False,
+         "current_location_entry": None},
+        {"id": 599, "name": "Sample Vehicle", "is_sample": True, "current_location_entry": loc(33.5, -86.8, now)},
+        # only the id of its last location (read from /vehicles/504/location_entries/7001)
+        {"id": 504, "name": "Van 20", "year": 2025, "make": "Ford", "model": "Transit 150", "license_plate": "TWG-0020", "is_sample": False,
+         "current_location_entry_id": 7001},
+    ]
+    return [r for r in rows if r["id"] not in FLEET["archived"]]
+
+def _fleet_gate(request: Request):
+    FLEET["version"] = request.headers.get("x-api-version")
+    if request.headers.get("authorization") != "Token dev-key" or request.headers.get("account-token") != "dev-account" \
+            or FLEET["mode"] == "unauthorized":
+        return JSONResponse({"errors": ["Unauthorized"]}, status_code=401)
+    if FLEET["mode"] == "ratelimit":
+        return JSONResponse({"error": "Too many requests detected from your account token. Please try again later..."},
+                            status_code=429, headers={"Retry-After": "40"})
+    if FLEET["mode"] == "fail":
+        return JSONResponse({"error": "boom"}, status_code=500)
+    return None
+
+@app.get("/_fleetio/vehicles")
+async def fleet_list(request: Request, per_page: int = 50, start_cursor: str = ""):
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["reads"] += 1 if not start_cursor else 0
+    rows, page = _fleet_vehicles(), min(per_page, 2)
+    start = int(start_cursor or 0)
+    nxt = str(start + page) if start + page < len(rows) else None
+    return {"start_cursor": start_cursor or None, "next_cursor": nxt, "per_page": page, "records": rows[start:start + page]}
+
+@app.get("/_fleetio/vehicles/{vid}")
+async def fleet_one(vid: int, request: Request):
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["reads"] += 1                       # Van 12 moves on every read, a single-vehicle one too
+    found = next((r for r in _fleet_vehicles() if r["id"] == vid), None)
+    return found or JSONResponse({"error": "not found"}, status_code=404)
+
+@app.get("/_fleetio/vehicles/{vid}/location_entries")
+async def fleet_history(vid: int, request: Request):
+    """Van 12's last few positions (every 20 s behind the current one, on its line of travel); others: none."""
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["history_reads"] = FLEET.get("history_reads", 0) + 1
+    gt = request.query_params.get("filter[created_at][gt]")
+    since = _dt.fromisoformat(gt).timestamp() if gt else 0
+    if vid != 501:
+        return {"next_cursor": None, "records": []}
+    now, step = time.time(), FLEET["reads"]
+    rows = []
+    for k in range(1, 6):
+        ts = now - 40 - 20 * k
+        if ts > since:
+            lat, lng = 40.2700 + step * 0.0004 - k * 0.0002, -76.8800 + step * 0.0003 - k * 0.00015
+            rows.append({"id": 8000 + k, "date": _fleet_iso(ts), "created_at": _fleet_iso(ts), "item_type": "Vehicle",
+                         "geolocation": {"latitude": lat, "longitude": lng}})
+    return {"next_cursor": None, "records": rows}
+
+
+@app.get("/_fleetio/vehicles/{vid}/location_entries/{eid}")
+async def fleet_entry(vid: int, eid: int, request: Request):
+    if (bad := _fleet_gate(request)) is not None:
+        return bad
+    FLEET["entry_reads"] = FLEET.get("entry_reads", 0) + 1
+    if (vid, eid) != (504, 7001):
+        return JSONResponse({"error": "not found"}, status_code=404)
+    return {"id": 7001, "vehicle_id": 504, "item_type": "Vehicle", "is_current": True, "date": _fleet_iso(time.time() - 300),
+            "address": "Camp Hill, PA", "location": "POINT (-76.9197 40.2398)", "geolocation": {"latitude": 40.2398, "longitude": -76.9197}}
+
+@app.post("/_fleetio/mode/{mode}")
+async def fleet_mode(mode: str):
+    FLEET["mode"] = mode
+    return {"mode": mode}
+
+@app.post("/_fleetio/archive/{vid}")
+async def fleet_archive(vid: int):
+    FLEET["archived"].add(vid)
+    return {"ok": True}
+
+# ---------------------------------------------------------------- fake APNs (app/apns.py)
+# dev_up.sh points APNS_API_BASE at /_apns (HTTP/1.1 here; Apple's is HTTP/2). Records every push with its arrival
+# time, checks the provider token's shape and the topic. POST /_apns/mode/{ok|gone|bad|fail|hang}; GET /_apns/log.
+APNS = {"mode": "ok", "log": []}
+
+
+@app.post("/_apns/3/device/{token}")
+async def fake_apns(token: str, request: Request):
+    import asyncio as _aio
+    body = await request.json()
+    auth = request.headers.get("authorization", "")
+    APNS["log"].append({"t": time.time(), "token": token, "payload": body, "topic": request.headers.get("apns-topic"),
+                        "headers": {k: v for k, v in request.headers.items() if k.startswith("apns-")},
+                        "jwt_parts": len(auth.split(" ", 1)[-1].split(".")) if auth.startswith("bearer ") else 0})
+    mode = APNS["mode"]
+    if mode == "hang":
+        await _aio.sleep(30)
+    if mode == "gone":
+        return JSONResponse({"reason": "Unregistered", "timestamp": int(time.time() * 1000)}, status_code=410)
+    if mode == "bad":
+        return JSONResponse({"reason": "BadDeviceToken"}, status_code=400)
+    if mode == "fail":
+        return JSONResponse({"reason": "InternalServerError"}, status_code=500)
+    return Response(status_code=200, headers={"apns-id": f"00000000-0000-0000-0000-{len(APNS['log']):012d}"})
+
+
+@app.get("/_apns/log")
+async def fake_apns_log():
+    return APNS["log"]
+
+
+@app.post("/_apns/mode/{mode}")
+async def fake_apns_mode(mode: str):
+    APNS["mode"] = mode
+    return {"mode": mode}
+
+
+@app.post("/_apns/clear")
+async def fake_apns_clear():
+    APNS["log"].clear()
+    return {"cleared": True}

@@ -44,8 +44,13 @@
     <div class="cam-panel cam-hover" id="cam-hover" hidden aria-hidden="true"></div>
     <div class="cam-place" id="cam-place" hidden></div>
     <div class="cam-place model-panel" id="model-panel" hidden></div>
-    <div class="globe-bar" id="globe-bar" hidden>
-      <button class="btn btn-sm" type="button" id="globe-close" title="Back to the flat map">2D map</button>
+    <div class="globe-bar" id="globe-bar">
+      <div class="seg" role="group" aria-label="View" id="view-seg">
+        <button type="button" id="globe-close" data-view="map" title="Street map, without the cameras">Map</button>
+        <button type="button" data-view="plan" title="Aerial view from straight above, with the cameras">Top-down</button>
+        <button type="button" data-view="3d" title="3D aerial view">3D</button>
+      </div>
+      <button class="btn btn-sm" type="button" id="globe-all" title="God's eye: every site at once, from above">&#128065; God's eye</button>
       <div class="seg" role="group" aria-label="Imagery">
         <button type="button" data-imagery="sat" class="active" id="imagery-3d">Satellite</button>
         <button type="button" data-imagery="street">Street</button>

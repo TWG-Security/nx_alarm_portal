@@ -193,7 +193,7 @@ tr:last-child td { border-bottom: 0; }
 .empty { padding: 36px 16px; text-align: center; color: var(--text-muted); }
 
 /* ---------- map page ---------- */
-.map-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr) 380px; height: calc(100vh - var(--topbar-h)); }
+.map-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr) 380px; height: calc(100vh - var(--topbar-h) - var(--banner-h, 0px)); }
 .map-side { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
 .map-side-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
@@ -520,7 +520,12 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 .toast.warn { border-left-color: var(--warn); cursor: pointer; }
 
 /* ---------- critical pop-up ---------- */
-.critical-dialog { width: min(640px, calc(100vw - 24px)); padding: 0; border: 2px solid var(--red); overflow: hidden; }
+/* The buttons sit in a footer that never scrolls away: the body (picture, video, note) scrolls between the red bar and
+   the footer, inside a dialog no taller than what's visible (dvh: a phone's 100vh reaches under its toolbar). The user,
+   2026-10-14: "a critical alarm comes up. It's not scrollable to go down and dismiss the alarm". */
+.critical-dialog { width: min(640px, calc(100vw - 24px)); max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px);
+  padding: 0; border: 2px solid var(--red); overflow: hidden; }
+.critical-dialog[open] { display: flex; flex-direction: column; }
 .critical-dialog::backdrop { background: rgba(80, 0, 0, .55); }
 .crit-head {
   display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 18px;
@@ -530,12 +535,16 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 .crit-dot { width: 12px; height: 12px; border-radius: 50%; background: #fff; animation: crit-blink 1s steps(2, start) infinite; }
 @keyframes crit-blink { to { visibility: hidden; } }
 .crit-timer .timer { background: rgba(0, 0, 0, .25); font-size: 15px; }
-.crit-body { padding: 16px 18px 18px; max-height: calc(100vh - 120px); overflow-y: auto; }
+.crit-head, .crit-foot { flex: none; }
+.crit-body { flex: 1 1 auto; min-height: 0; padding: 16px 18px 8px; overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.crit-foot { padding: 10px 18px 14px; border-top: 1px solid var(--border); background: var(--surface); }
+.crit-player .player-stage { max-height: max(140px, 34vh); max-height: max(140px, 34dvh); }
 .crit-body h1 { font-size: 22px; margin-bottom: 4px; }
 .crit-where { font-size: 15px; margin-bottom: 2px; }
 .crit-snap { margin: 12px 0; }
-.crit-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.crit-pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 14px; color: var(--text-muted); }
+.crit-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+@media (max-width: 560px) { .crit-foot .btn { padding: 6px 10px; } .crit-foot .ack-as { flex-basis: 100%; } }
+.crit-pager { display: flex; justify-content: center; align-items: center; gap: 12px; margin-top: 10px; color: var(--text-muted); }
 
 /* ---------- settings ---------- */
 .level-legend { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; margin-bottom: 16px; }
@@ -543,6 +552,7 @@ dialog::backdrop { background: rgba(0, 0, 0, .55); }
 code { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; background: var(--surface-3); padding: 1px 5px; border-radius: 4px; }
 .check { display: flex; align-items: center; gap: 8px; font-weight: 400; margin: 0 0 12px; }
 .check input { width: 16px; height: 16px; accent-color: var(--orange); }
+.check--top { align-items: flex-start; } .check--top input { margin-top: 2px; flex-shrink: 0; }
 
 @media (max-width: 1280px) {
   .map-layout { grid-template-columns: 260px minmax(0, 1fr) 340px; }
@@ -1012,3 +1022,126 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .rx-sources ul { margin: 6px 0 0; padding-left: 18px; }
 .linkish { border: 0; background: none; padding: 0; color: inherit; font: inherit; text-decoration: underline; cursor: pointer; }
 @media (max-width: 700px) { .rx-grid { grid-template-columns: minmax(0, 1fr); } .rx-cam-list { grid-template-columns: minmax(0, 1fr); } }
+/* Alarm details: Real event / False alarm / Dismiss right under the title, Dispatch only once it's real
+   (the user, 2026-10-14: "add the real event false alarm on the top ... i want to do less scrolling") */
+.ack-top { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -4px 0 12px; }
+.ack-top .verdict-buttons { margin: 0; }
+#drawer .ack-top .verdict-buttons .btn { height: 48px; font-size: 16px; font-weight: 600; padding: 0 20px; }
+.ack-top textarea { flex: 1 1 260px; min-width: 0; height: 48px; min-height: 48px; resize: vertical; }
+.ack-auto-hint { margin: -6px 0 12px; }
+@media (max-width: 600px) {
+  .ack-top .verdict-buttons { width: 100%; }
+  .ack-top .ack-as { width: 100%; }
+  #drawer .ack-top .verdict-buttons .btn { flex: 1 1 0; padding: 0 6px; font-size: 15px; }
+  .ack-top textarea { flex-basis: 100%; }
+}
+@media (max-width: 600px) {            /* phones: Next + Back to map wrap under the title instead of widening the page */
+  #drawer .drawer-head { flex-wrap: wrap; }
+  #drawer .drawer-head > div:first-child { min-width: 0; flex: 1 1 100%; }
+  #drawer .drawer-head-actions { flex: 1 1 100%; flex-wrap: wrap; justify-content: space-between; }
+}
+
+/* ---------- map: site panel (the user, 2026-10-14: "clean nice efficient and more professional") ---------- */
+#site-detail { display: flex; flex-direction: column; gap: 12px; }
+#site-detail[hidden] { display: none; }
+.sp-head { display: flex; align-items: flex-start; gap: 10px; }
+.sp-head > .dot { margin-top: 8px; flex: 0 0 auto; }
+.sp-title { flex: 1 1 auto; min-width: 0; }
+.sp-title h2 { margin: 0 0 2px; font-size: 18px; line-height: 1.25; overflow-wrap: anywhere; }
+.sp-title .muted { font-size: 13px; }
+.sp-company { font-size: 12px; font-weight: 700; color: var(--orange); }
+.sp-close { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex: 0 0 auto; padding: 0;
+  border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-muted); cursor: pointer; }
+.sp-close:hover, .sp-close:focus-visible { color: var(--text); border-color: var(--orange); }
+.sp-facts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; }
+.sp-fact { display: inline-flex; align-items: center; gap: 4px; color: var(--text-muted); white-space: nowrap; }
+.sp-fact svg { width: 14px; height: 14px; }
+.sp-detail { font-size: 12px; color: var(--text-muted); margin-top: -6px; }
+.sp-detail.bad { color: var(--red-text); }
+.sp-views { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; }
+.sp-views button { height: 32px; padding: 0 6px; }
+.sp-views button + button { border-left: 1px solid var(--border); }
+.sp-views button.active { background: var(--orange); color: var(--on-orange); }
+#site-detail .arm-card { margin: 0; padding: 10px 12px; }
+#site-detail .arm-card-head { margin-bottom: 0; }
+#site-detail .arm-card-head svg { width: 20px; height: 20px; }
+#site-detail .arm-card-state { font-size: 14px; }
+#site-detail .arm-card-line:first-of-type { margin-top: 4px; }
+.arm-card-btn-sm { margin-left: auto; }
+.sp-status { font-size: 13px; border-radius: 6px; }
+.sp-status svg { width: 16px; height: 16px; flex: 0 0 auto; }
+div.sp-status { display: flex; align-items: center; gap: 8px; color: var(--ok); padding: 0 2px; }
+details.sp-status { border: 1px solid var(--warn); background: var(--warn-soft); }
+details.sp-status summary { display: flex; align-items: center; gap: 8px; padding: 8px 10px; cursor: pointer; list-style: none; color: var(--warn); font-weight: 600; }
+details.sp-status summary::-webkit-details-marker { display: none; }
+details.sp-status summary span:first-of-type { flex: 1 1 auto; color: var(--text); }
+.sp-status-more { font-size: 12px; color: var(--warn); }
+details.sp-status summary > svg:last-child { width: 14px; height: 14px; transition: transform .15s; }
+details.sp-status[open] summary > svg:last-child { transform: rotate(90deg); }
+details.sp-status > :not(summary) { margin: 0 10px 10px; }
+details.sp-status ul { padding-left: 18px; }
+details.sp-status li, details.sp-status p { font-size: 12px; line-height: 1.45; }
+.sp-kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+.sp-kv dt { color: var(--text-muted); }
+.sp-kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.sp-notes { white-space: pre-wrap; }
+.sp-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sp-actions .btn { justify-content: flex-start; gap: 6px; height: 32px; padding: 0 8px; min-width: 0; }
+.sp-actions .btn span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sp-actions .btn svg { flex: 0 0 auto; color: var(--text-muted); }
+
+/* Alarm details on the map page: the middle pane only, so the site panel (left) and live alarms (right) stay in
+   view (the user, 2026-10-14: "keep the live alarms in view and the site info on the left"). drawer.js sets the
+   pane's position; narrower screens and other pages keep the full screen. */
+.drawer { container-type: inline-size; }
+.drawer.drawer--docked { left: var(--dock-left); top: var(--dock-top); bottom: 0; right: auto; width: var(--dock-width) !important;
+  border-left: 1px solid var(--border); border-right: 1px solid var(--border); box-shadow: none; z-index: 30; }
+@container (max-width: 700px) { .drawer-media { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 820px) { .drawer-lower { grid-template-columns: minmax(0, 1fr); } }
+/* the map pane's own toolbars sit under the details; the top-down bar is wider than a narrow pane and peeked out */
+body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hidden; }
+
+/* Alarm details: smaller videos so the details fit without scrolling (the user, 2026-10-14: "make the video smaller so
+   it can have more information on one page without scrolling"). Each video is at most --vid-h tall (about a fifth
+   of the screen); ⤢ / double-click shows one full screen. Side by side down to a phone-width pane. */
+.drawer { --vid-h: clamp(130px, 20vh, 220px); --vid-w: calc(var(--vid-h) * 16 / 9); }
+.drawer .drawer-media { grid-template-columns: repeat(2, minmax(0, var(--vid-w))); justify-content: start; gap: 12px; max-width: none; }
+.drawer .drawer-media.single { grid-template-columns: minmax(0, var(--vid-w)); }
+.drawer .drawer-media .player, .drawer .drawer-media .live-pane { margin-bottom: 0; }
+.drawer .drawer-lower { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); margin-top: 10px; }
+.drawer-where .where-mount { height: max(var(--vid-h), 200px); }
+.drawer .drawer-details .kv { grid-template-columns: 96px minmax(0, 1fr); }
+@container (max-width: 560px) { .drawer .drawer-media { grid-template-columns: minmax(0, 1fr); } }
+@container (max-width: 640px) { .drawer .drawer-lower { grid-template-columns: minmax(0, 1fr); } }
+.vid-big { position: absolute; right: 6px; bottom: 6px; z-index: 3; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px;
+  background: rgba(0, 0, 0, .6); color: #fff; font: 700 17px/30px var(--font); cursor: pointer; }
+.vid-big:hover, .vid-big:focus-visible { background: rgba(0, 0, 0, .85); outline: 2px solid #E08A30; }
+.player-stage:fullscreen, .live-stage:fullscreen { border-radius: 0; aspect-ratio: auto; }
+
+/* Guard's alarm page: notes to dispatch (the user, 2026-10-14) */
+.link-notes h2 { margin: 0 0 8px; font-size: 17px; }
+.link-notes textarea { width: 100%; font-size: 16px; }          /* 16 px: iPhones don't zoom in on focus */
+.link-notes #link-note-send { min-height: 44px; padding: 0 18px; font-size: 16px; }
+.link-notes .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.link-notes-list { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 6px; }
+.link-notes-list:empty { display: none; }
+.link-notes-list li { border-left: 3px solid #E08A30; padding: 4px 0 4px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Guard updates on an active call (call_updates.js): a toast and the latest update on the Active calls card */
+.toast.call { border-left-color: #1f6feb; cursor: pointer; }
+.call-toast-head { margin-bottom: 2px; }
+.call-latest { margin-top: 4px; font-size: 13px; }
+.call-latest .muted { font-size: 12px; }
+.call-item.call-flash { animation: call-flash 2.4s ease-out 2; }
+@keyframes call-flash { 0% { background: rgba(31, 111, 235, .35); border-color: #1f6feb; } }
+@media (prefers-reduced-motion: reduce) { .call-item.call-flash { animation: none; outline: 2px solid #1f6feb; } }
+.call-latest-more { margin-top: 2px; font-size: 12px; }
+.call-latest-more b { font-weight: 600; }
+
+/* NX rules: the rule a "delays repeat alarms" warning pointed at (map.js focusRules) */
+.rules-table tr.rule-focus > td { background: var(--warn-soft); }
+.rules-table tr.rule-focus > td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+
+/* Active calls: alarms that joined the call (services/calls.py join_active_call) */
+.call-joined { font-size: 12px; margin: 4px 0 2px; color: var(--red-text); }
+.call-joined .muted { color: var(--text-muted); }

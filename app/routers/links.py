@@ -1,14 +1,16 @@
 """The no-sign-in alarm page a text message links to (app/alarm_links.py, app/sms.py).
 
 - GET /a/{token}                               the page: one alarm's details, clip and live video
+- GET /api/a/{token}                            the page's data as JSON (the iPhone app's guard screen)
 - GET /api/a/{token}/clip, /objects            clip status and analytics boxes (same as the signed-in ones)
-- GET /media/a/{token}/snapshot.jpg, alarm.jpg (frame + boxes: the MMS picture), live.jpg, live.webm, clips/{name}.mp4
+- GET /media/a/{token}/snapshot.jpg, alarm.jpg (frame + boxes: the MMS picture), alarm.gif (the moving one, Confirmed / Dispatch texts), live.jpg, live.webm, clips/{name}.mp4
 - GET /api/a/{token}/cameras, /media/a/{token}/cameras/{device}/live.jpg|live.webm   the site's other cameras, live
 - POST /twilio/sms                            replies to our number (YES / STOP / HELP), Twilio-signed
 - GET /sms-terms                              the public text-message terms (carriers and Twilio ask for it)
 - POST /api/a/{token}/share                   "Share my location now": the texted person's location-link token
 - POST /api/a/{token}/diag                    "Request location": what the phone's browser answered (troubleshooting)
 - POST /api/a/{token}/status                  En route / On scene / Clear (an MDT's status buttons), logged on the timeline
+- POST /api/a/{token}/note                    a note from the guard (the alarm's notes + timeline; dispatch hears a chime)
 
 Everything is limited to the link's one alarm and the live view of its site's cameras. An unknown token is recorded as a failed sign-in
 (kind "alarm_link"), so an address that guesses gets banned (BanGate guards these paths). Opening the
@@ -79,9 +81,51 @@ async def alarm_page(token: str, request: Request, db: AsyncSession = Depends(ge
     response = render(request, "alarm_link.html", state="ok", alarm=data, token=token,
                       sent_to=who.label if who else "", expires_at=link.expires_at.isoformat(),
                       directions=sms.directions_url(alarm.site),
-                      guard_status=await _guard_status(db, alarm.id, link.user_id) if who else "")
+                      guard_status=await _guard_status(db, alarm.id, link.user_id) if who else "",
+                      guard_notes=await _guard_notes(db, alarm.id, link.user_id) if who else [])
     response.headers.update(PRIVATE)
     return response
+
+
+APP_OPEN_AGAIN_S = 300     # the app re-reading the same link within 5 min isn't logged as another open
+
+
+@router.get("/api/a/{token}")
+async def alarm_link_json(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """What the /a/{token} page shows, as JSON for the iPhone app's guard screen (docs/IOS_APP_BRIEF.md 6.7). Same
+    checks (unknown tokens count as failed sign-ins) and the same "Opened the alarm link" audit, but an app re-reading
+    the link within APP_OPEN_AGAIN_S isn't logged again (it would chime the dispatcher on every refresh)."""
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.models import AuditLog
+    from app.services import dispatch
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(410 if status == "expired" else 404,
+                            "This alarm link has expired" if status == "expired" else "Not found")
+    now = utcnow()
+    recent = await db.scalar(select(AuditLog.id).where(
+        AuditLog.alarm_id == alarm.id, AuditLog.action == "alarm.link_opened",
+        AuditLog.user_id == link.user_id if link.user_id else AuditLog.user_id.is_(None),
+        AuditLog.ts >= now - timedelta(seconds=APP_OPEN_AGAIN_S)).limit(1))
+    if recent is None:
+        link.opened_at = link.opened_at or now
+        link.open_count += 1
+        audit(db, alarm.tenant_id, "alarm.link_opened", user_id=link.user_id, site_id=alarm.site_id, alarm_id=alarm.id,
+              ip=client_ip(request), opens=link.open_count, app=True)
+        await db.commit()
+    who = await db.get(User, link.user_id) if link.user_id else None
+    data = alarm_dict(alarm)
+    data.pop("nx_ack_result", None)
+    where = dispatch.target(alarm)
+    return JSONResponse({
+        "alarm": data, "sent_to": who.label if who else "",
+        "expires_at": link.expires_at.replace(tzinfo=link.expires_at.tzinfo or now.tzinfo).isoformat(),
+        "guard_status": await _guard_status(db, alarm.id, link.user_id) if who else "",
+        "guard_notes": await _guard_notes(db, alarm.id, link.user_id) if who else [],
+        "lat": where[0] if where else None, "lng": where[1] if where else None,
+        "position_from": where[2] if where else None,
+    }, headers=PRIVATE)
 
 
 @router.get("/api/a/{token}/clip")
@@ -157,6 +201,25 @@ async def link_picture(token: str, request: Request, db: AsyncSession = Depends(
     log.info("alarm %s picture: %s from %s, %d bytes in %d ms (%s)", alarm.id, request.method, client_ip(request),
              len(pic), took, (request.headers.get("user-agent") or "")[:60])
     return Response(pic, media_type="image/jpeg", headers=PRIVATE)
+
+
+@router.api_route("/media/a/{token}/alarm.gif", methods=["GET", "HEAD"])
+async def link_gif(token: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """The seconds around the alarm with its boxes: the moving picture in the Confirmed / Dispatch MMS."""
+    from app.services import alarm_gif
+    t0 = time.monotonic()
+    alarm = await _alarm(request, db, token)
+    if not alarm.device_id:
+        raise HTTPException(404)
+    await db.commit()
+    gif = await alarm_gif.alarm_gif(alarm, budget_s=20)
+    took = int((time.monotonic() - t0) * 1000)
+    if gif is None:
+        log.warning("alarm %s gif: %s from %s got none after %d ms", alarm.id, request.method, client_ip(request), took)
+        raise HTTPException(502, "The alarm video isn't available")
+    log.info("alarm %s gif: %s from %s, %d bytes in %d ms (%s)", alarm.id, request.method, client_ip(request),
+             len(gif), took, (request.headers.get("user-agent") or "")[:60])
+    return Response(gif, media_type="image/gif", headers=PRIVATE)
 
 
 @router.get("/media/a/{token}/live.jpg")
@@ -297,17 +360,7 @@ async def link_share_location(token: str, request: Request, db: AsyncSession = D
     if link.user_id is None:
         raise HTTPException(400, "This link wasn't sent to a person")
     who = await db.get(User, link.user_id)
-    t = await db.scalar(select(Tracker).where(Tracker.tenant_id == alarm.tenant_id, Tracker.user_id == who.id,
-                                              Tracker.source == "phone"))
-    created = t is None
-    if created:
-        other = await db.scalar(select(Tracker.id).where(Tracker.tenant_id == alarm.tenant_id, Tracker.user_id == who.id))
-        t = Tracker(tenant_id=alarm.tenant_id, name=(f"{who.label} (phone)" if other else who.label)[:100], kind="guard",
-                    source="phone", user_id=who.id)
-        db.add(t)
-        await db.flush()
-    elif not t.enabled:
-        t.enabled = True
+    t, created = await guard_share.phone_tracker(db, who, alarm.tenant_id)
     url = guard_share.share_url(t)
     audit(db, alarm.tenant_id, "tracker.share_from_alarm", user_id=who.id, site_id=alarm.site_id, alarm_id=alarm.id,
           ip=client_ip(request), name=t.name, created=created)
@@ -358,6 +411,56 @@ async def link_guard_status(token: str, body: StatusIn, request: Request, db: As
     await db.commit()
     return {"ok": True, "status": body.status, "position": bool(where)}
 
+
+
+GUARD_NOTES_MAX = 50        # per person per alarm: plenty for a call, and a cap on a leaked link
+
+
+async def _guard_notes(db: AsyncSession, alarm_id: int, user_id: int) -> list[dict]:
+    """The notes this person wrote from their link (not the operators' internal notes)."""
+    from sqlalchemy import select
+    from app.models import AlarmNote
+    from app.services.serialize import note_dict
+    rows = (await db.scalars(select(AlarmNote).where(AlarmNote.alarm_id == alarm_id, AlarmNote.user_id == user_id)
+                             .order_by(AlarmNote.id))).all()
+    return [note_dict(n) for n in rows]
+
+
+class GuardNoteIn(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+
+
+@router.post("/api/a/{token}/note")
+async def link_guard_note(token: str, body: GuardNoteIn, request: Request, db: AsyncSession = Depends(get_db)):
+    """A note from the guard's alarm page (the user, 2026-10-14: "on the dispatch URL for it to have a note section for
+    the guard to put notes in"): one of the alarm's notes under their name, on its timeline as a guard update (so an
+    active call's dispatcher hears the update chime) and in the incident report."""
+    from sqlalchemy import func, select
+    from app.models import AlarmNote
+    from app.services.bus import bus
+    from app.services.serialize import note_dict
+    status, link, alarm = await _resolve(request, db, token)
+    if status != "ok":
+        raise HTTPException(404 if status == "invalid" else 410)
+    if link.user_id is None:
+        raise HTTPException(400, "This link wasn't sent to a person")
+    text = body.text.strip()
+    if not text:
+        raise HTTPException(422, "Write a note first")
+    count = await db.scalar(select(func.count()).select_from(AlarmNote).where(AlarmNote.alarm_id == alarm.id,
+                                                                               AlarmNote.user_id == link.user_id))
+    if count >= GUARD_NOTES_MAX:
+        raise HTTPException(429, f"That's {GUARD_NOTES_MAX} notes on this alarm already. Call dispatch instead.")
+    note = AlarmNote(tenant_id=alarm.tenant_id, alarm_id=alarm.id, user_id=link.user_id, text=text)
+    note.user = await db.get(User, link.user_id)
+    db.add(note)
+    await db.flush()
+    audit(db, alarm.tenant_id, "alarm.note", user_id=link.user_id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), note_id=note.id, text=text, guard=True)
+    await db.commit()
+    data = note_dict(note)
+    bus.publish(alarm.tenant_id, "alarm.note", data)
+    return data
 
 
 @router.post("/api/a/{token}/diag")

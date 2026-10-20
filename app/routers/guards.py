@@ -20,9 +20,12 @@
   POST   /api/tracking/phones              a guard without a router: tracked by their phone's browser (texts the link)
   POST   /api/tracking/trackers/{id}/share text (or renew) a phone guard's location link
   PUT    /api/tracking/dispatch            auto-dispatch the closest guard on confirm (company setting)
+  PUT    /api/tracking/fleetio             Fleetio Account Token / API key / on-off / interval (every vehicle shows on the map)
+  POST   /api/tracking/fleetio/test        read the vehicle list once: how many, how many with a position, the newest
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -30,7 +33,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import guard_share, peplink, platform_settings, sms
+from app import fleetio, guard_share, peplink, platform_settings, sms
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, require_admin
@@ -42,6 +45,7 @@ from app.services import trackers as svc
 from app.services.bus import bus
 
 router = APIRouter(dependencies=[Depends(csrf_protect)])
+log = logging.getLogger(__name__)
 TRAIL_DEFAULT_MIN = 30
 TRAIL_MAX_POINTS = 5000
 
@@ -208,10 +212,10 @@ def _company(scope: Scope) -> Tenant:
     return _one_company(scope)
 
 
-async def _source(db: AsyncSession, tenant_id: int, create: bool = False) -> TrackerSource | None:
-    src = await db.scalar(select(TrackerSource).where(TrackerSource.tenant_id == tenant_id, TrackerSource.kind == "peplink"))
+async def _source(db: AsyncSession, tenant_id: int, create: bool = False, kind: str = "peplink") -> TrackerSource | None:
+    src = await db.scalar(select(TrackerSource).where(TrackerSource.tenant_id == tenant_id, TrackerSource.kind == kind))
     if src is None and create:
-        src = TrackerSource(tenant_id=tenant_id, kind="peplink")
+        src = TrackerSource(tenant_id=tenant_id, kind=kind, poll_s=svc.FLEETIO_POLL_DEFAULT_S if kind == "fleetio" else 30)
         db.add(src)
         await db.flush()
     return src
@@ -226,6 +230,7 @@ def _share_state(t: Tracker) -> dict:
 
 async def _view(db: AsyncSession, tenant: Tenant) -> dict:
     src = await _source(db, tenant.id)
+    fl = await _source(db, tenant.id, kind="fleetio")
     trackers = (await db.scalars(select(Tracker).where(Tracker.tenant_id == tenant.id).order_by(Tracker.name))).all()
     people = (await db.scalars(select(User).where(User.tenant_id == tenant.id, User.deleted_at.is_(None),
                                                   User.is_active.is_(True)).order_by(User.email))).all()
@@ -234,6 +239,10 @@ async def _view(db: AsyncSession, tenant: Tenant) -> dict:
             "secret_set": bool(src and src.secret_enc), "poll_s": src.poll_s if src else 30,
             "last_ok_at": iso(src.last_ok_at) if src else None, "last_error": src.last_error if src else "",
             "last_error_at": iso(src.last_error_at) if src else None,
+            "fleetio": {"enabled": bool(fl and fl.enabled), "account_token": fl.client_id if fl else "",
+                        "api_key_set": bool(fl and fl.secret_enc), "poll_s": fl.poll_s if fl else svc.FLEETIO_POLL_DEFAULT_S,
+                        "last_ok_at": iso(fl.last_ok_at) if fl else None, "last_error": fl.last_error if fl else "",
+                        "last_error_at": iso(fl.last_error_at) if fl else None},
             "auto_dispatch": dispatch_svc.auto_on(tenant), "texts_ready": platform_settings.current().sms_ready,
             "people": [{"id": u.id, "name": u.label, "phone": sms.masked(u.phone) if u.phone else "", "consent": u.sms_consent}
                        for u in people],
@@ -296,6 +305,72 @@ async def test_source(user: User = Depends(require_admin), scope: Scope = Depend
     except peplink.PeplinkError as e:
         return {"ok": False, "error": str(e)}
     return {"ok": True, "organizations": [o["name"] for o in orgs]}
+
+
+class FleetioIn(BaseModel):
+    enabled: bool
+    account_token: str = Field(default="", max_length=200)
+    api_key: str | None = Field(default=None, max_length=500)      # None = keep; "" = remove
+    poll_s: int = Field(default=svc.FLEETIO_POLL_DEFAULT_S, ge=svc.FLEETIO_POLL_MIN_S, le=3600)
+
+
+@router.put("/api/tracking/fleetio")
+async def put_fleetio(body: FleetioIn, request: Request, user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                      db: AsyncSession = Depends(get_db)):
+    """Fleetio on the map (the user, 2026-10-14: "we use that here at TWG and want to see all the vans on the map"):
+    every vehicle in the account shows as a tracker, refreshed every poll_s."""
+    tenant = await db.get(Tenant, scope.write_tenant())
+    src = await _source(db, tenant.id, create=True, kind="fleetio")
+    token = body.account_token.strip()
+    key_set = bool(src.secret_enc) if body.api_key is None else bool(body.api_key.strip())
+    if body.enabled and not (token and key_set):
+        raise HTTPException(400, "Enter the Fleetio Account Token and API key before switching Fleetio on.")
+    changed = []
+    for k, v in (("enabled", body.enabled), ("client_id", token), ("poll_s", body.poll_s)):
+        if getattr(src, k) != v:
+            setattr(src, k, v)
+            changed.append({"client_id": "account_token"}.get(k, k))
+    if body.api_key is not None:
+        src.secret_enc = encrypt(body.api_key.strip()) if body.api_key.strip() else ""
+        changed.append("api_key")
+    if {"account_token", "api_key"} & set(changed):
+        src.last_ok_at, src.last_error, src.last_error_at = None, "", None
+    if changed:
+        audit(db, tenant.id, "tracking.fleetio_settings", user_id=user.id, ip=client_ip(request), fields=changed)   # names, never values
+    await db.commit()
+    if src.enabled:
+        await svc.poll_fleetio(force_tenant=tenant.id)        # the vans show at once, not after the next interval
+        await db.refresh(src)                                 # its status was written by the poll's own session
+    return await _view(db, tenant)
+
+
+@router.post("/api/tracking/fleetio/test")
+async def test_fleetio(user: User = Depends(require_admin), scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    src = await _source(db, scope.write_tenant(), kind="fleetio")
+    client = svc.fleetio_client_for(src) if src else None
+    await db.commit()
+    if client is None:
+        raise HTTPException(400, "Save your Fleetio Account Token and API key first.")
+    try:
+        vehicles = await client.vehicles()
+    except fleetio.FleetioError as e:
+        return {"ok": False, "error": str(e)}
+    placed = [v for v in vehicles if v.at is not None]
+    newest = max((v.at for v in placed), default=None)
+    st = client.stats
+    log.info("Fleetio test for company %s: %s", scope.write_tenant(), st)     # counts only, never ids or keys
+    if placed:
+        why = ""
+    elif st.get("field_missing") == st.get("vehicles"):
+        why = "Fleetio's vehicle list has no location fields at all (an older API version or a key without access to locations)."
+    elif st.get("entry_id_only") and st.get("lookup_failed"):
+        why = "Fleetio lists a last location for some vehicles but wouldn't let this key read it (check the key's permissions)."
+    else:
+        why = "Fleetio has no location for any of these vehicles: is a GPS / telematics integration connected in Fleetio?"
+    return {"ok": True, "vehicles": len(vehicles), "with_position": len(placed),
+            "newest_position_at": newest.isoformat() if newest else None,
+            "oldest_position_at": min(v.at for v in placed).isoformat() if placed else None,
+            "detail": st, "why_none": why}
 
 
 ORG_ID = r"^[A-Za-z0-9_-]{1,32}$"            # goes into IC2 URLs
@@ -421,6 +496,10 @@ async def delete_tracker(tracker_id: int, request: Request, user: User = Depends
                          db: AsyncSession = Depends(get_db)):
     t = await _tracker(db, scope, tracker_id)
     tenant_id = t.tenant_id
+    src = await _source(db, tenant_id, kind="fleetio") if t.source == "fleetio" else None
+    if src is not None and src.enabled and t.error != "Not in Fleetio any more (archived or deleted there)":
+        raise HTTPException(400, f"{t.name} is in Fleetio, so it would come straight back. Switch it off here to hide it, "
+                                 "or archive it in Fleetio.")
     await db.execute(TrackerPoint.__table__.delete().where(TrackerPoint.tracker_id == t.id))
     audit(db, tenant_id, "tracker.removed", user_id=user.id, ip=client_ip(request), name=t.name, serial=t.serial)
     await db.delete(t)

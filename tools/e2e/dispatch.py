@@ -80,8 +80,14 @@ API = """async ([url, method, body]) => { const t = document.querySelector('meta
     return [r.status, await r.json()]; }"""
 
 with sync_playwright() as p:
-    b = getattr(p, os.environ.get("E2E_BROWSER", "chromium")).launch()      # E2E_BROWSER=webkit: Safari's engine
+    engine = os.environ.get("E2E_BROWSER", "chromium")
+    b = getattr(p, engine).launch(**({"args": ["--autoplay-policy=no-user-gesture-required"]} if engine == "chromium" else {}))   # E2E_BROWSER=webkit: Safari's engine
     ctx = b.new_context(viewport={"width": 1500, "height": 950})
+    # every tone the operator's page plays (sound.js), by frequency: the guard-update chime is 1319 then 1760 Hz
+    ctx.add_init_script("""(() => { window.__tones = []; const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+      const make = AC.prototype.createOscillator; AC.prototype.createOscillator = function () { const o = make.call(this);
+        const set = o.frequency.setValueAtTime.bind(o.frequency); o.frequency.setValueAtTime = (v, t) => { window.__tones.push(Math.round(v)); return set(v, t); };
+        return o; }; })();""")
     pg = ctx.new_page()
     errors = []
     pg.on("pageerror", lambda e: errors.append(f"operator: {e}"))
@@ -150,22 +156,56 @@ with sync_playwright() as p:
     pg.wait_for_selector("#drawer:not([hidden]) #drawer-next", timeout=5000)
     check("2 more open" in pg.inner_text("#drawer-next"), "Next shows how many more are open")
 
-    # ---- 4. Guards closest first in the alarm details; Dispatch texts the closest
-    pg.wait_for_selector(".drawer-dispatch:not([hidden]) .dispatch-list li", timeout=8000)
-    rows = pg.eval_on_selector_all(".dispatch-list li", "els => els.map(e => e.innerText)")
-    check(rows[0].startswith("Ana Near") and "Closest" in rows[0] and "Ben Far" in rows[1], f"guards closest first: {rows}")
-    pg.wait_for_selector(".dispatch-quick .dispatch-big", timeout=8000)
-    big = pg.eval_on_selector_all(".dispatch-quick .dispatch-big", "els => els.map(e => [e.innerText, e.getBoundingClientRect().height])")
-    check(len(big) == 2 and big[0][0].startswith("Dispatch Ana Near") and "closest" in big[0][0] and big[1][0].startswith("Dispatch Ben Far")
-          and big[0][1] >= 44, f"two big Dispatch buttons under the title: {big}")
-    pg.screenshot(path=f"{out}/dispatch3-drawer-guards.png")
+    # ---- 4. Real event / False alarm / Dismiss under the title; no Dispatch until it's verified
+    pg.wait_for_selector(".ack-auto-hint", timeout=8000)
+    tops = pg.evaluate("""() => ['[data-ack=real]', '.drawer-media'].map(q => document.querySelector('#drawer ' + q).getBoundingClientRect().top)""")
+    check(tops[0] < tops[1] and tops[0] < 300, f"verdict buttons at the top, above the video ({tops[0]:.0f} px < {tops[1]:.0f} px)")
+    check(pg.locator("#drawer [data-dispatch]").count() == 0 and pg.locator(".drawer-dispatch:not([hidden])").count() == 0,
+          "not verified: no Dispatch buttons and no guard list")
+    pg.screenshot(path=f"{out}/dispatch3-drawer-unverified.png")
+    # Real event: the closest guard is texted automatically, then the guards and Dispatch buttons appear.
     n0 = len(texts())
     t0 = time.time()
-    pg.click(".dispatch-quick .dispatch-big.btn-primary")
+    pg.click('#drawer [data-ack="real"]')
     t = wait_texts(n0 + 1)
     took = (time.time() - t0) * 1000
     body = t[-1]["body"]
-    check(t[-1]["to"] == GUARDS["near"][0] and body.startswith("TWG DISPATCH:"), f"Dispatch text reached Twilio {took:.0f} ms after the click")
+    check(t[-1]["to"] == GUARDS["near"][0] and body.startswith("TWG DISPATCH:"), f"Real event: closest guard's dispatch text at Twilio {took:.0f} ms after the click")
+    # The dispatch MMS carries the moving picture (GIF with the analytics boxes), not the still.
+    media = t[-1]["media"]
+    check(media.endswith("/alarm.gif"), f"dispatch text is an MMS with the alarm GIF ({media[-30:]!r})")
+    if media.endswith("/alarm.gif"):
+        from PIL import Image
+        import io
+        t1 = time.time()
+        gif = urllib.request.urlopen(media).read()
+        g = Image.open(io.BytesIO(gif))
+        n_frames, size = getattr(g, "n_frames", 1), g.size
+        orange = 0
+        for i in range(n_frames):
+            g.seek(i)
+            px = g.convert("RGB").resize((160, round(160 * size[1] / size[0])))
+            orange += any(abs(r - 224) < 40 and abs(gg - 138) < 40 and b_ < 90 for r, gg, b_ in px.getdata())
+        check(gif[:6] == b"GIF89a" and len(gif) <= 600_000 and n_frames >= 8,
+              f"GIF: {n_frames} frames, {size[0]}x{size[1]}, {len(gif) // 1024} KB, fetched in {(time.time() - t1) * 1000:.0f} ms")
+        check(orange >= n_frames // 2, f"GIF: the orange analytics box is drawn ({orange} of {n_frames} frames)")
+        open(f"{out}/dispatch-alarm.gif", "wb").write(gif)
+    ms = alarm_on_screen(pg, "line")
+    check(ms < 1000, f"alarm on screen in {ms:.0f} ms right after a GIF was made")
+    pg.wait_for_selector(".drawer-dispatch:not([hidden]) .dispatch-list li", timeout=8000)
+    rows = pg.eval_on_selector_all(".dispatch-list li", "els => els.map(e => e.innerText)")
+    check(rows[0].startswith("Ana Near") and "Closest" in rows[0] and "Ben Far" in rows[1], f"verified: guards closest first: {rows}")
+    pg.wait_for_selector(".dispatch-quick .dispatch-big", timeout=8000)
+    big = pg.eval_on_selector_all(".dispatch-quick .dispatch-big", "els => els.map(e => [e.innerText, e.getBoundingClientRect().height])")
+    check(len(big) == 2 and big[0][0].startswith("Dispatch Ana Near") and "closest" in big[0][0] and big[1][0].startswith("Dispatch Ben Far")
+          and big[0][1] >= 44, f"verified: two big Dispatch buttons under the title: {big}")
+    pg.screenshot(path=f"{out}/dispatch3-drawer-guards.png")
+    n0 = len(texts())
+    t0 = time.time()
+    pg.click(".dispatch-quick .dispatch-big:not(.btn-primary)")
+    t = wait_texts(n0 + 1)
+    took = (time.time() - t0) * 1000
+    check(t[-1]["to"] == GUARDS["far"][0] and t[-1]["body"].startswith("TWG DISPATCH:"), f"Dispatch Ben Far: text reached Twilio {took:.0f} ms after the click")
     check("away)" in body and "SHARE YOUR LOCATION" in body and "MAP (directions to the site):" in body,
           "dispatch text: distance, directions, the location link again")
     print("      text:", repr(body))
@@ -183,18 +223,48 @@ with sync_playwright() as p:
     check(True, "dispatcher sees Ana opened the link (live)")
 
     # MDT: En route (also starts sharing), then On scene; the dispatcher's board and timeline follow live.
+    chimes = lambda: pg.evaluate("(() => { const t = window.__tones; let n = 0; for (let i = 0; i + 1 < t.length; i++) if (t[i] === 1319 && t[i + 1] === 1760) n++; return n; })()")
     for st, word in (("en_route", "En route"), ("on_scene", "On scene")):
+        c0 = chimes()
         t0 = time.time()
         alarm_page.click(f".mdt-btn[data-status='{st}']")
         pg.wait_for_selector(f".mdt-board .mdt-chip--{st}", timeout=8000)
         ms_live = (time.time() - t0) * 1000
         check(ms_live < 3000, f"Ana taps {word}: on the dispatcher's board in {ms_live:.0f} ms")
+        # an active call: the update chime (not an alarm sound), a toast at the bottom right, the Active calls card
+        pg.wait_for_function(f"document.querySelector('#calls-list .call-latest')?.innerText.includes('{word}')", timeout=8000)
+        ms_card = (time.time() - t0) * 1000
+        pg.wait_for_function(f"(() => {{ const t = window.__tones; let n = 0; for (let i = 0; i + 1 < t.length; i++) if (t[i] === 1319 && t[i + 1] === 1760) n++; return n; }})() > {c0}", timeout=5000)
+        ms_chime = (time.time() - t0) * 1000
+        toast_txt = "\n".join(pg.eval_on_selector_all(".toast.call", "ts => ts.map(t => t.innerText)"))   # one toast may list several updates
+        check(f"Ana Near: {word}" in toast_txt, f"{word}: update chime {ms_chime:.0f} ms, Active calls card {ms_card:.0f} ms, in a toast")
+    pg.screenshot(path=f"{out}/dispatch7-call-update.png")
+    # The operator's own note: on the timeline, but no chime (only guards' updates chime).
+    c0 = chimes()
+    pg.fill("#note-text", "Keyholder called")
+    pg.click("#note-add")
+    pg.wait_for_function("document.querySelector('.drawer-timeline').innerText.includes('Keyholder called')", timeout=8000)
+    pg.wait_for_timeout(1200)
+    check(chimes() == c0, "the operator's own note: no chime")
+    # Ana writes a note from her alarm page: chime, toast, card and the alarm's notes + timeline.
+    alarm_page.fill("#link-note-text", "Gate chained, nobody on site")
+    t0 = time.time()
+    alarm_page.click("#link-note-send")
+    pg.wait_for_function("document.querySelector('#calls-list .call-latest')?.innerText.includes('Gate chained')", timeout=8000)
+    ms_card = (time.time() - t0) * 1000
+    pg.wait_for_function(f"(() => {{ const t = window.__tones; let n = 0; for (let i = 0; i + 1 < t.length; i++) if (t[i] === 1319 && t[i + 1] === 1760) n++; return n; }})() > {c0}", timeout=5000)
+    pg.wait_for_function("document.querySelector('.drawer .notes-list').innerText.includes('Gate chained')", timeout=5000)
+    alarm_page.wait_for_function("document.getElementById('link-notes-list').innerText.includes('Gate chained')", timeout=5000)
+    check("Guard note" in pg.inner_text(".toast.call >> nth=-1") and "Guard note" in pg.inner_text(".drawer-timeline")
+          and alarm_page.input_value("#link-note-text") == "",
+          f"Ana's note: on the dispatcher's card in {ms_card:.0f} ms with the chime; in the alarm's notes and timeline; listed on her page")
+    alarm_page.screenshot(path=f"{out}/dispatch7-phone-note.png", full_page=True)
     alarm_page.wait_for_function("document.getElementById('link-share-state').textContent.includes('Sharing your location')", timeout=10000)
     check(True, "En route started sharing her location")
     alarm_page.screenshot(path=f"{out}/dispatch6-phone-alarm-share.png")       # left open: it shares too
     tl = pg.inner_text(".drawer-timeline")
     check(all(w in tl for w in ("Dispatched Ana Near", "Dispatch text", "Opened the alarm link", "En route", "On scene")),
-          "timeline: dispatched, text, opened, en route, on scene")
+          f"timeline: dispatched, text, opened, en route, on scene {'' if all(w in tl for w in ('Dispatched Ana Near', 'Dispatch text', 'Opened the alarm link', 'En route', 'On scene')) else tl[:1500]!r}")
     pg.screenshot(path=f"{out}/dispatch8-board-timeline.png", full_page=True)
 
     # All guards: tick "All guards", Dispatch selected.
@@ -212,21 +282,49 @@ with sync_playwright() as p:
     mp.goto(f"{PORTAL}/login")
     mp.fill("#email", "admin@twgsecurity.com"); mp.fill("#password", "Smoke-test-password-123!")
     mp.click("button[type=submit]"); mp.wait_for_url(f"{PORTAL}/")
-    mp.wait_for_selector(f".feed-item[data-id='{first_line}'] [data-detail]", state="attached", timeout=10000)
-    mp.evaluate("id => document.querySelector(`.feed-item[data-id='${id}'] [data-detail]`).click()", first_line)
+    mp.wait_for_selector(f"[data-call-open='{first_line}']", state="attached", timeout=10000)
+    mp.evaluate("id => document.querySelector(`[data-call-open='${id}']`).click()", first_line)
     mp.wait_for_selector(".dispatch-quick .dispatch-big", timeout=10000)
     box = mp.eval_on_selector(".dispatch-quick .dispatch-big", "e => { const r = e.getBoundingClientRect(); return [r.top, r.width, r.height]; }")
     check(box[0] < 844 and box[1] > 300 and box[2] >= 44, f"phone: a full-width Dispatch button on the first screen {box}")
     mp.screenshot(path=f"{out}/dispatch7-phone-operator.png")
     mob.close()
+    # Phone, an open alarm: the three verdict buttons fit side by side on the first screen.
+    mob = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
+    mp = mob.new_page()
+    mp.goto(f"{PORTAL}/login")
+    mp.fill("#email", "admin@twgsecurity.com"); mp.fill("#password", "Smoke-test-password-123!")
+    mp.click("button[type=submit]"); mp.wait_for_url(f"{PORTAL}/")
+    mp.wait_for_selector(".feed-item:not(.p1) [data-detail]", state="attached", timeout=10000)
+    mp.wait_for_timeout(1000)
+    while mp.locator("#critical-dialog[open]").count():      # the open critical pops up on a fresh screen
+        mp.keyboard.press("Escape"); mp.wait_for_timeout(300)
+    mp.evaluate("document.querySelector('.feed-item:not(.p1) [data-detail]').click()")
+    mp.wait_for_selector("#drawer [data-ack=real]", timeout=10000)
+    vb = mp.eval_on_selector_all("#drawer .ack-top [data-ack]", "els => els.map(e => { const r = e.getBoundingClientRect(); return [r.top, r.right, r.height]; })")
+    mp.wait_for_timeout(1500)
+    over = mp.evaluate("document.getElementById('drawer').scrollWidth - document.getElementById('drawer').clientWidth")
+    if over > 1:
+        print("      wide:", mp.evaluate("""() => { const d = document.getElementById('drawer'); return [...d.querySelectorAll('*')].filter(e => e.getBoundingClientRect().right > d.clientWidth + 1 && !e.closest('.leaflet-container')).slice(0, 8).map(e => e.tagName + '.' + e.className + ' ' + Math.round(e.getBoundingClientRect().right)); }"""))
+    check(len(vb) == 2 and all(v[0] < 400 and v[1] <= 391 and v[2] >= 44 for v in vb) and len({round(v[0]) for v in vb}) == 1 and over <= 1,
+          f"phone: Real event / False alarm side by side near the top {vb}, overflow {over}")
+    dis = mp.eval_on_selector("#drawer [data-ack=dismissed]", "e => [e.closest('.ack-top') === null, e.getBoundingClientRect().height]")
+    check(dis[0] and dis[1] < 40, f"Dismiss: small and further down, not with the verdict buttons {dis}")
+    mp.screenshot(path=f"{out}/dispatch7b-phone-verdicts.png")
+    mob.close()
 
-    # Next: the newer line alarm, then (end of the queue) back to the critical.
-    pg.click("#drawer-next")
-    pg.wait_for_function(f"document.querySelector('#drawer-next') && !document.querySelector('.dispatched-row')", timeout=5000)
-    second = pg.evaluate("document.querySelector('#drawer h1').textContent")
+    # End the first call so Active calls holds only the critical's later.
+    n0 = len(texts())
+    pg.fill("#call-note", "Checked, all clear")
+    pg.click("#call-end")
+    pg.wait_for_function("!document.querySelector('#call-end')", timeout=8000)
+    wait_texts(n0 + 1)
+    time.sleep(1.5)
+
+    # Next from a handled alarm: the most urgent open one (the critical) first.
     pg.click("#drawer-next")
     pg.wait_for_function("document.querySelector('#drawer .chip.p1')", timeout=5000)
-    check(True, f"Next walks the queue ({second!r} → the critical)")
+    check(pg.locator("#drawer [data-dispatch]").count() == 0, "Next → the critical; not verified, so no Dispatch yet")
 
     # ---- 5. Real event on the critical: only the closest guard is texted, automatically
     n0 = len(texts())
@@ -240,8 +338,11 @@ with sync_playwright() as p:
           f"confirming texts only the closest guard, automatically ({took:.0f} ms after the click) {[(x['to'], x['body'][:20]) for x in new]}")
     # Real event + a dispatched guard: the alarm stays open as an active call until End call.
     pg.wait_for_selector("#drawer .call-box #call-end", timeout=8000)
-    w = pg.evaluate("[document.getElementById('drawer').getBoundingClientRect().width, innerWidth]")
-    check(abs(w[0] - w[1]) < 2 and "Back to map" in pg.inner_text("#drawer-close"), f"alarm details full screen with Back to map {w}")
+    # The details fill the map's middle pane: site panel (left) and live alarms (right) stay in view (2026-10-14).
+    w = pg.evaluate("""() => { const d = document.getElementById('drawer').getBoundingClientRect(), m = document.querySelector('.map-canvas').getBoundingClientRect();
+        return [Math.round(d.left - m.left), Math.round(d.right - m.right), getComputedStyle(document.querySelector('.feed')).visibility, document.getElementById('drawer-backdrop').hidden]; }""")
+    check(abs(w[0]) < 2 and abs(w[1]) < 2 and w[2] == "visible" and w[3] and "Back to map" in pg.inner_text("#drawer-close"),
+          f"alarm details in the map pane, live alarms and site panel still in view, Back to map {w}")
     crit_id = pg.evaluate("Number(document.querySelector('#drawer [data-dispatch]')?.closest('#drawer') && 0) || null")
     pg.click("#drawer-close")
     pg.wait_for_selector("#calls:not([hidden]) .call-item", timeout=8000)
@@ -260,7 +361,7 @@ with sync_playwright() as p:
     t = wait_texts(n0 + 1)
     check(t[-1]["to"] == GUARDS["near"][0] and t[-1]["body"].startswith("TWG CALL ENDED:") and "Police took over" in t[-1]["body"],
           "End call: the dispatched guard gets CALL ENDED with the note")
-    pg.wait_for_function("document.querySelector('.timeline .tl b')?.textContent === 'Call-ended text' || document.querySelector('.timeline .tl b')?.textContent === 'Call ended'", timeout=8000)
+    pg.wait_for_function("document.querySelector('.timeline .tl b')?.textContent.startsWith('Call-ended text') || document.querySelector('.timeline .tl b')?.textContent === 'Call ended'", timeout=8000)
     check(True, "timeline: Call ended at the top")
     pg.click("#drawer-close")
     pg.wait_for_selector("#calls", state="hidden", timeout=8000)

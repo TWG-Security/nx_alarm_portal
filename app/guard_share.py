@@ -62,3 +62,22 @@ async def look_up(db: AsyncSession, token: str) -> tuple[str, Tracker | None]:
     if t.share_expires_at is None or _aware(t.share_expires_at) <= utcnow():
         return "expired", t
     return "ok", t
+
+
+async def phone_tracker(db, user, tenant_id: int):
+    """(tracker, created): this person's phone tracker in their company, made on the spot if they have none (named
+    "<name> (phone)" when they already have a router), switched back on if it was off. The caller commits.
+    Used by "Share my location now" on a texted alarm page and by the iPhone app's "On duty"."""
+    from sqlalchemy import select
+    t = await db.scalar(select(Tracker).where(Tracker.tenant_id == tenant_id, Tracker.user_id == user.id,
+                                              Tracker.source == "phone"))
+    created = t is None
+    if created:
+        other = await db.scalar(select(Tracker.id).where(Tracker.tenant_id == tenant_id, Tracker.user_id == user.id))
+        t = Tracker(tenant_id=tenant_id, name=(f"{user.label} (phone)" if other else user.label)[:100], kind="guard",
+                    source="phone", user_id=user.id)
+        db.add(t)
+        await db.flush()
+    elif not t.enabled:
+        t.enabled = True
+    return t, created

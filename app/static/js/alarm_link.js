@@ -63,6 +63,33 @@ if (CFG.canShare && $("link-share-start")) {
     finally { document.querySelectorAll(".mdt-btn").forEach((x) => { x.disabled = false; }); }
   });
   $("link-share-stop").addEventListener("click", () => sharer?.stop());
+
+  // Notes to dispatch: each goes on the alarm's notes and timeline at once (dispatch hears a chime on an active call).
+  const notes = [...(CFG.notes || [])];
+  const paintNotes = () => {
+    $("link-notes-list").innerHTML = notes.map((n) => `<li><span class="muted small-print">${esc(fmtTime(n.at))}</span><div>${esc(n.text)}</div></li>`).join("");
+  };
+  paintNotes();
+  async function sendNote() {
+    const box = $("link-note-text"), text = box.value.trim(), btn = $("link-note-send");
+    if (!text) { box.focus(); return; }
+    btn.disabled = true; $("link-note-state").textContent = "Sending…";
+    try {
+      const r = await fetch(`/api/a/${token}/note`, { method: "POST", credentials: "omit",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      if (!r.ok) {
+        let why = r.status === 410 ? "This alarm link has expired" : "Couldn't reach dispatch. Try again.";
+        try { const d = await r.json(); if (r.status === 429 && d.detail) why = d.detail; } catch { /* keep */ }
+        throw new Error(why);
+      }
+      notes.push(await r.json()); paintNotes();
+      box.value = "";
+      $("link-note-state").textContent = `Sent to dispatch ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    } catch (err) { $("link-note-state").textContent = err.message; }   // the text stays in the box to try again
+    finally { btn.disabled = false; }
+  }
+  $("link-note-send").addEventListener("click", sendNote);
+  $("link-note-text").addEventListener("keydown", (e) => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendNote(); } });
   if (isIOS()) document.querySelector(".ios-tip").hidden = false;
   mountLocationTest(`/api/a/${token}/diag`);
   (async () => {

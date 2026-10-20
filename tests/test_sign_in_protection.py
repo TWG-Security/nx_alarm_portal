@@ -424,3 +424,39 @@ async def test_ban_check_fails_open(monkeypatch, client, twg):
         raise RuntimeError("database down")
     monkeypatch.setattr(guard, "sessionmaker", broken)
     assert (await client.get("/login", headers=via(ATTACKER))).status_code == 200
+
+
+async def test_the_iphone_app_sign_in_counts_toward_bans_and_is_refused_once_banned(client, session, twg):
+    """/api/mobile/login and /api/mobile/passkey/* (app/routers/mobile.py) record every failure like the website, so
+    guessing from the app bans the address; a banned address is refused by BanGate before the sign-in runs."""
+    from tests.test_two_factor import add_passkey, soft_key
+    ip = "203.0.113.61"
+    key = soft_key()
+    await login(client, twg[1].email)
+    await add_passkey(client, key)
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    statuses = []
+    for i in range(6):
+        if i % 2:
+            r = await client.post("/api/mobile/login", headers=via(ip),
+                                  json={"email": "nobody@example.com", "password": "wrong", "device_name": "x"})
+        else:
+            o = (await client.post("/api/mobile/passkey/options", headers=via(ip), json={})).json()
+            if "challenge_id" not in o:
+                statuses.append(403)
+                break
+            r = await client.post("/api/mobile/passkey/verify", headers=via(ip),
+                                  json={"challenge_id": o["challenge_id"], "credential": soft_key().sign(o["options"])})
+        statuses.append(r.status_code)
+        if r.status_code == 403:
+            break
+    assert statuses[-1] == 403, statuses
+    assert await session.scalar(select(IpBan).where(IpBan.ip == ip))
+    kinds = {e.kind for e in (await session.scalars(select(AuthEvent).where(AuthEvent.ip == ip, AuthEvent.outcome == "failure"))).all()}
+    assert kinds == {"login", "passkey"}
+    # Banned: even a good passkey and the right password are refused
+    r = await client.post("/api/mobile/login", headers=via(ip), json={"email": twg[1].email, "password": PASSWORD, "device_name": "x"})
+    assert r.status_code == 403
+    r = await client.post("/api/mobile/passkey/options", headers=via(ip), json={})
+    assert r.status_code == 403

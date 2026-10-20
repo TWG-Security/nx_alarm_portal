@@ -28,6 +28,9 @@ from app.services.sites import describe_http_error
 router = APIRouter()
 
 KEEPALIVE_S = 5      # the page reconnects if it hears nothing for 12 s
+# Events for one person (the dispatched guard's iPhone app): the bus carries "user_ids"; only those people's streams
+# get the event, without that key. They carry a link token, which must never reach anyone else in the company.
+PERSONAL_EVENTS = {"dispatch", "call_ended"}
 
 
 @router.get("/api/events")
@@ -37,10 +40,13 @@ async def events(request: Request, scope: Scope = Depends(get_scope), db: AsyncS
     await db.commit()          # release the DB connection: an open stream mustn't pin one
     sub = bus.subscribe(ids)
     uid, sid, tv = request.session.get("uid"), request.session.get("sid"), request.session.get("tv")
+    if request.scope.get("twg_mobile"):                  # the iPhone app: its device row, revoked like a browser's
+        uid, sid, tv = scope.user.id, request.scope["twg_mobile"]["sid"], request.scope["twg_mobile"]["tv"]
 
     async def gen():
         try:
             yield "retry: 3000\n\n"
+            yield "event: ping\ndata: {}\n\n"         # at once: a client knows it's receiving without waiting 5 s
             while not await request.is_disconnected():
                 if sessions.stream_revoked(uid, sid, tv):
                     # Signed out elsewhere: tell the page (it goes loudly "SIGNED OUT"), then stop.
@@ -53,6 +59,10 @@ async def events(request: Request, scope: Scope = Depends(get_scope), db: AsyncS
                     continue
                 if event == "session.revoked":           # internal wake-up: the check at the loop top decides
                     continue
+                if event in PERSONAL_EVENTS:
+                    if uid not in (data.get("user_ids") or ()):
+                        continue
+                    data = {k: v for k, v in data.items() if k != "user_ids"}
                 yield f"event: {event}\ndata: {json.dumps(data)}\n\n"
         finally:
             bus.unsubscribe(sub)

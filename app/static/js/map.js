@@ -1,9 +1,10 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, ruleHealthHtml, inView, tenantTag, multiCompany } from "./common.js";
-import { openDrawer } from "./drawer.js";
+import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
 import { openRuleEditor } from "./rule_editor.js";
+import { guardUpdates } from "./call_updates.js";
 
 const sites = new Map();     // id -> site
 const markers = new Map();   // site id -> Leaflet marker
@@ -69,35 +70,101 @@ function renderSites() {
     </li>`).join("");
 }
 
+// The site panel (the user, 2026-10-14: "clean nice efficient and more professional"): fixed sections in a fixed
+// order. Header (state dot, name, address, close), facts row, view switcher, arming, one NX-rules status line
+// (details fold out), a few facts, then the actions. Line icons like the Guards panel.
+const ico = (d) => `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ICON = {
+  close: ico('<path d="M6 6l12 12M18 6 6 18"/>'),
+  camera: ico('<path d="M3 7h11a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H3z"/><path d="m16 10 5-3v10l-5-3"/>'),
+  pulse: ico('<path d="M3 12h4l3-7 4 14 3-7h4"/>'),
+  check: ico('<path d="M3 12a9 9 0 1 0 18 0 9 9 0 1 0-18 0"/><path d="m8.5 12 2.5 2.5 4.5-5"/>'),
+  warn: ico('<path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.01"/>'),
+  refresh: ico('<path d="M20 12a8 8 0 1 1-2.3-5.7L20 8.5"/><path d="M20 3.5v5h-5"/>'),
+  rules: ico('<path d="M9 6h11M9 12h11M9 18h11"/><path d="M4 6h.01M4 12h.01M4 18h.01"/>'),
+  history: ico('<path d="M3 12a9 9 0 1 0 2.7-6.4L3 8"/><path d="M3 3v5h5"/><path d="M12 7.5V12l3 2"/>'),
+  edit: ico('<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/>'),
+  chevron: ico('<path d="M9 6l6 6-6 6"/>'),
+};
+const MARKER_TXT = { ok: "Normal", warn: "Warnings open", alarm: "Alarms open", offline: "Offline" };
+const durTxt = (s) => (s >= 3600 ? `${+(s / 3600).toFixed(1)} h` : s >= 60 ? `${+(s / 60).toFixed(1)} min` : `${s} s`);
+let rulesLineOpen = false;     // the NX rules warning stays folded out across re-renders (they come with every alarm)
+
+// NX rules health in one line; the detail folds out (it used to fill half the panel).
+function rulesLineHtml(s) {
+  const d = s.rule_delays || [], sys = s.system_delays || { count: 0 };
+  const btn = '<button type="button" class="btn btn-sm" data-rules-open>Open NX rules</button>';
+  if (s.rules_readable === false) {
+    return `<details class="sp-status warn" ${rulesLineOpen ? "open" : ""}><summary>${ICON.warn}<span>Can't read NX rules</span>${ICON.chevron}</summary>
+      <p>The portal's NX account needs rule-read rights (e.g. Power Users) for #tags, #24h and the repeat-delay check to work.</p>${btn}</details>`;
+  }
+  if (s.rules_readable == null) return "";
+  const sysTxt = sys.count ? `System events (${sys.count} types): repeats held up to ${durTxt(sys.max_s)}${sys.worst ? ` (${sys.worst})` : ""} by NX's default notification rules. Usually fine.` : "";
+  if (!d.length) {
+    return `<div class="sp-status ok" title="${esc(sysTxt)}">${ICON.check}<span>Security alarms on time</span></div>`;
+  }
+  // Each flagged rule opens that rule (the user, 2026-10-16: "when the system flags a delayed alarm and i click open
+  // rules it should open that rule"): its editor for administrators, its row picked out for everyone else.
+  const one = d.length === 1 && d[0].id;
+  return `<details class="sp-status warn" ${rulesLineOpen ? "open" : ""}><summary>${ICON.warn}
+      <span>${d.length} NX rule${d.length === 1 ? "" : "s"} delay${d.length === 1 ? "s" : ""} repeat alarms</span><span class="sp-status-more">Review</span>${ICON.chevron}</summary>
+    <ul>${d.slice(0, 8).map((r) => `<li>${r.id ? `<button type="button" class="linkish" data-rules-open data-rule="${esc(r.id)}" title="Open this rule">${esc(r.name)}</button>` : esc(r.name)}: repeats up to <b>${durTxt(r.interval_s)}</b> late</li>`).join("")}
+      ${d.length > 8 ? `<li>…and ${d.length - 8} more</li>` : ""}</ul>
+    <p><b>Fix:</b> set the rule's <b>Interval of action</b> to 0, or in NX add a rule for the same event with action <b>Write to log</b> and Interval of action off. Existing notification rules can keep their limits.</p>
+    ${sysTxt ? `<p class="muted">${esc(sysTxt)}</p>` : ""}${one
+      ? `<button type="button" class="btn btn-sm" data-rules-open data-rule="${esc(d[0].id)}">Open this rule</button>`
+      : `<button type="button" class="btn btn-sm" data-rules-open data-rules-delayed>Open NX rules</button>`}</details>`;
+}
+
+// Which camera view the map pane shows: the switcher marks it.
+const currentView = () => (globe || globeOpening ? "3d" : plan ? "plan" : "map");
+
 function renderDetail() {
   const box = document.getElementById("site-detail");
   const s = sites.get(selectedId);
   if (!s) { box.hidden = true; return; }
   box.hidden = false;
+  const { c, marker } = stateOf(s);
+  const open = c[1] + c[2], warns = c[3], v = currentView();
+  const viewBtn = (key, attr, label, title) =>
+    `<button type="button" ${attr} class="${v === key ? "active" : ""}" aria-pressed="${v === key}" title="${title}">${label}</button>`;
   box.innerHTML = `
-    <div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start">
-      <div><h2 style="margin-bottom:2px">${esc(s.name)}</h2>${multiCompany ? `<div><b>${esc(s.tenant_name)}</b></div>` : ""}<div class="muted">${esc(s.address || "No address")}</div></div>
-      <button class="btn btn-sm" id="close-detail" aria-label="Close">✕</button>
+    <div class="sp-head">
+      <span class="dot dot--${marker}" title="${MARKER_TXT[marker]}"></span>
+      <div class="sp-title">
+        <h2>${esc(s.name)}</h2>
+        ${multiCompany ? `<div class="sp-company">${esc(s.tenant_name)}</div>` : ""}
+        <div class="muted">${esc(s.address || "No address")}</div>
+      </div>
+      <button type="button" class="sp-close" id="close-detail" aria-label="Close" title="Back to all sites">${ICON.close}</button>
     </div>
+    <div class="sp-facts">
+      <span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : '<span class="chip">Disabled</span>'}
+      ${open ? `<span class="chip p2">${open} open</span>` : ""}${warns ? `<span class="chip p3">${warns} warning${warns === 1 ? "" : "s"}</span>` : ""}
+      <span class="sp-fact" title="Cameras">${ICON.camera}${s.camera_count}</span>
+      <span class="sp-fact" title="Last contact with NX${s.push ? " · alarms arrive by live push" : s.push === false ? " · polling only (5 s)" : ""}">${ICON.pulse}${relTime(s.last_seen_at)}${s.push === false ? " · polling" : ""}</span>
+    </div>
+    ${s.status_detail ? `<div class="sp-detail ${s.status === "online" ? "" : "bad"}">${esc(s.status_detail)}</div>` : ""}
+    ${s.lat != null ? `<div class="seg sp-views" role="group" aria-label="View">
+      ${viewBtn("map", "data-view-map", "Map", "Street map around this site")}
+      ${viewBtn("plan", "data-plan", "Top-down", "Aerial view from straight above, with this site's cameras")}
+      ${viewBtn("3d", "data-globe", "3D", "Fly into a 3D aerial view of this site")}</div>` : ""}
     ${armCardHtml(s)}
-    <dl class="kv">
-      <dt>Status</dt><dd><span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : ' <span class="chip">disabled</span>'}</dd>
-      ${s.status_detail ? `<dt>Detail</dt><dd>${esc(s.status_detail)}</dd>` : ""}
-      <dt>Last contact</dt><dd>${relTime(s.last_seen_at)}</dd>
-      <dt>Alarm feed</dt><dd>${s.push ? '<span class="chip online">Live push</span>' : s.push === false ? '<span class="chip">Polling only (5 s)</span>' : "—"}</dd>
-      <dt>NX rules</dt><dd>${ruleHealthHtml(s)} <button type="button" class="btn btn-sm" data-rules title="Every NX rule the portal read for this site, and what it does here">View NX rules</button></dd>
-      <dt>NX</dt><dd>${esc(s.nx_site_name || "—")} ${s.nx_version ? `<span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
-      <dt>Cameras</dt><dd>${s.camera_count}</dd>
-      ${s.notes ? `<dt>Notes</dt><dd style="white-space:pre-wrap">${esc(s.notes)}</dd>` : ""}
+    ${rulesLineHtml(s)}
+    <dl class="sp-kv">
+      <dt>NX</dt><dd>${esc(s.nx_site_name || "—")}${s.nx_version ? ` <span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
+      ${s.notes ? `<dt>Notes</dt><dd class="sp-notes">${esc(s.notes)}</dd>` : ""}
     </dl>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
-      ${s.lat != null ? `<button class="btn btn-sm btn-primary" type="button" data-plan title="Aerial view from straight above, with this site's cameras">Top-down view</button>
-        <button class="btn btn-sm" type="button" data-globe title="Fly into a 3D aerial view of this site">3D view</button>` : ""}
-      <button class="btn btn-sm" type="button" data-check title="Ask NX now: status, cameras, rules and new events (instead of waiting for the next refresh)">Check now</button>
-      <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all">Alarm history</a>
-      ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">Edit site</a>` : ""}
+    <div class="sp-actions">
+      <button class="btn btn-sm" type="button" data-check title="Ask NX now: status, cameras, rules and new events (instead of waiting for the next refresh)">${ICON.refresh}<span>Check now</span></button>
+      <button class="btn btn-sm" type="button" data-rules title="Every NX rule the portal read for this site, and what it does here">${ICON.rules}<span>NX rules</span></button>
+      <a class="btn btn-sm" href="/alarms?site_id=${s.id}&state=all" title="Every alarm from this site">${ICON.history}<span>History</span></a>
+      ${CFG.isAdmin ? `<a class="btn btn-sm" href="/sites/${s.id}/edit">${ICON.edit}<span>Edit site</span></a>` : ""}
     </div>`;
 }
+document.getElementById("site-detail").addEventListener("toggle", (e) => {
+  if (e.target.matches?.(".sp-status")) rulesLineOpen = e.target.open;
+}, true);
 
 // ---------------------------------------------------------------- site check + NX rules list
 const LEVEL_CHIP = { critical: '<span class="chip p1">Critical</span>', alarm: '<span class="chip p2">Alarm</span>',
@@ -155,7 +222,9 @@ function paintRules(s, v, error = "") {
         ${editingRule === r.id ? editorRow(r) : ""}`).join("")}
       </tbody></table></div>` : `<p class="muted">${v.readable === false ? "" : rulesFilter === "tagged" && v.rules.length ? "No tagged rules on this site." : "No rules read yet. Press Check now."}</p>`}`;
 }
-async function openRules(siteId, check = false) {
+// focus: a rule id to open (administrators: its editor; others: its row, picked out), or "delayed" (every rule that
+// holds repeats back, picked out).
+async function openRules(siteId, check = false, focus = null) {
   const s = sites.get(siteId);
   if (!s) return;
   if (!rulesDlg.open) rulesDlg.showModal();
@@ -168,7 +237,21 @@ async function openRules(siteId, check = false) {
       saveSiteData(r.site);
       paintRules(sites.get(siteId), r.rules, r.error);
     } else paintRules(s, await api(`/api/sites/${siteId}/rules`));
+    if (focus) focusRules(focus);
   } catch (err) { rulesDlg.innerHTML = `<div class="alert alert-error">${esc(err.message)}</div><button type="button" class="btn btn-sm" data-rules-close>Close</button>`; }
+}
+function focusRules(focus) {
+  const { v } = rulesState;
+  const ids = focus === "delayed" ? v.rules.filter((r) => r.delayed).map((r) => r.id) : [focus];
+  if (!ids.length) return;
+  if (rulesFilter === "tagged" && ids.some((id) => !v.rules.find((r) => r.id === id)?.tag)) {
+    rulesFilter = "all"; paintRules(rulesState.s, v);                      // a filtered-out rule would be invisible
+  }
+  if (focus !== "delayed" && CFG.isAdmin && v.readable !== false && v.rules.some((r) => r.id === focus)) return openEditor(focus);
+  const rows = ids.map((id) => rulesDlg.querySelector(`[data-rule-row="${CSS.escape(id)}"]`)).filter(Boolean);
+  rows.forEach((tr) => tr.classList.add("rule-focus"));
+  if (!rows.length) { toast("That rule isn't in NX any more. Press Check now to read the rules again.", { kind: "warn" }); return; }
+  rows[0].scrollIntoView({ block: "center" });
 }
 function saveSiteData(data) { if (data) { sites.set(data.id, { ...sites.get(data.id), ...data }); renderAll(); } }
 // The full rule editor (rule_editor.js) takes over the dialog; "Quick edit" (tags, on/off, interval) is the fallback
@@ -228,17 +311,19 @@ rulesDlg.addEventListener("change", async (e) => {
 document.getElementById("site-detail").addEventListener("click", async (e) => {
   const s = sites.get(selectedId);
   if (!s) return;
-  if (e.target.closest("[data-rules]")) return openRules(s.id);
+  const ro = e.target.closest("[data-rules], [data-rules-open]");
+  if (ro) return openRules(s.id, false, ro.dataset.rule || (ro.hasAttribute("data-rules-delayed") ? "delayed" : null));
   const btn = e.target.closest("[data-check]");
   if (!btn) return;
-  btn.disabled = true; btn.textContent = "Checking…";
+  const label = btn.querySelector("span") || btn;
+  btn.disabled = true; label.textContent = "Checking…";
   try {
     const r = await api(`/api/sites/${s.id}/check`, { method: "POST" });
     saveSiteData(r.site);
     toast(r.error ? `${esc(s.name)}: ${esc(r.error)}` : `${esc(s.name)} checked: ${esc(STATUS[r.site.status] || r.site.status)}, ${r.site.camera_count} cameras, ${r.rules.rules.length} NX rules`,
           r.error ? { kind: "error" } : {});
   } catch (err) { toast(esc(err.message), { kind: "error" }); }
-  finally { btn.disabled = false; btn.textContent = "Check now"; }
+  finally { btn.disabled = false; label.textContent = "Check now"; }
 });
 
 // ---------------------------------------------------------------- right: live feed
@@ -319,6 +404,7 @@ function renderAll() {
 function select(id, pan = true) {
   selectedId = id;
   renderAll();
+  paintBar();
   models.siteChanged();
   const s = sites.get(id);
   if (!pan || s?.lat == null) return;
@@ -326,12 +412,16 @@ function select(id, pan = true) {
   else openPlanView(s);
 }
 
-// Back to all sites: leave the top-down view for the street-map overview.
+// Back to all sites = God's eye (the user, 2026-10-14: "default to top down but have a god's eye option as well for all
+// sites not just one site"): every site from above, in whichever view is showing (top-down, 3D or the street map).
 function deselect() {
   selectedId = null;
-  if (plan) { closePlanView(); fitToSites(); }
   renderAll();
+  if (globe) globe.flyToAll([...sites.values()]);
+  else fitToSites();
+  paintBar();
 }
+const godsEye = deselect;
 
 // ---------------------------------------------------------------- 3D view (over the map pane)
 const $id = (x) => document.getElementById(x);
@@ -375,11 +465,12 @@ function renderCoords({ lat, lng, alt, heading }) {
 const tickClock = () => { $id("hud-clock").textContent = new Date().toISOString().replace("T", " ").slice(0, 19) + " UTC"; };
 
 async function openGlobeView(site) {
-  if (globe) { globe.flyTo(site); return; }
+  if (globe) { if (site) globe.flyTo(site); else globe.flyToAll([...sites.values()]); return; }
   if (globeOpening) return;
   closePlanView();
   globeOpening = true;
-  globeEl.hidden = false; globeBar.hidden = false;
+  renderDetail();
+  globeEl.hidden = false;
   globeMsg.textContent = "Loading 3D view…"; globeMsg.hidden = false;
   try {
     const { openGlobe } = await import("./globe.js");
@@ -399,18 +490,21 @@ async function openGlobeView(site) {
     hud.hidden = false; camsBtn.hidden = !CFG.isAdmin;
     $id("globe-model").hidden = !CFG.isAdmin;
     globe.showModels(modelsOn); paintModelBtn();
-    $id("globe-close").textContent = "2D map";
     $id("imagery-3d").textContent = globe.hasBuildings ? "3D" : "Satellite";
     showImagery("sat");
     tickClock(); hudClock = setInterval(tickClock, 1000);
     renderHud();
-    globe.flyTo(sites.get(selectedId) || site, { fromSpace: true });
+    const target = sites.get(selectedId) || site;
+    if (target) globe.flyTo(target, { fromSpace: true });
+    else globe.flyToAll([...sites.values()], { fromSpace: true });
   } catch (err) {
     console.error("3D view failed", err);
     closeGlobeView();
     toast(`3D view isn't available on this screen (${esc(err.message || String(err))}). The 2D map and alarms are unaffected.`, { kind: "error", timeout: 8000 });
   } finally {
     globeOpening = false;
+    renderDetail();
+    paintBar();
   }
 }
 
@@ -421,20 +515,23 @@ function closeGlobeView() {
   try { globe?.destroy(); } catch (err) { console.error(err); }
   globe = null; delete window.__globe; delete window.__globeStats;
   clearInterval(hudClock); hudClock = null;
-  globeEl.hidden = true; globeBar.hidden = true; globeMsg.hidden = true; hud.hidden = true;
+  globeEl.hidden = true; globeMsg.hidden = true; hud.hidden = true;
   globeEl.replaceChildren();
+  renderDetail();
+  paintBar();
 }
 
 // ---- top-down view: the 2D map itself, on aerial imagery and zoomed into the site, with cameras
 // drawn flat (no WebGL, so no graphics check or watchdog needed; see plan.js)
 // deviceId: centre on that camera instead of the whole site (opening an alarm).
-async function openPlanView(site, deviceId = null) {
-  const go = () => (deviceId ? plan.focusCamera(site, deviceId) : plan.flyTo(site));
+async function openPlanView(site = null, deviceId = null) {
+  const go = () => (!site ? fitToSites() : deviceId ? plan.focusCamera(site, deviceId) : plan.flyTo(site));
   if (plan) { go(); return; }
   if (globe) closeGlobeView();
   try {
     const { openPlan } = await import("./plan.js");
-    if (plan || globe || globeOpening) return;     // 3D was picked while this loaded: it wins
+    if (globe || globeOpening) return;             // 3D was picked while this loaded: it wins
+    if (plan) { go(); return; }                    // opened meanwhile (start-up + an alarm link): still go where asked
     plan = openPlan(lmap, { cameras: globeCams, onPickCamera: pickCamera, onHoverCamera: hoverCamera });
     plan.setCones(conesOn());
     window.__plan = plan;   // for tools/e2e/topdown.py
@@ -444,12 +541,20 @@ async function openPlanView(site, deviceId = null) {
     return;
   }
   mapCanvas.classList.add("plan-open");
-  globeBar.hidden = false; camsBtn.hidden = !CFG.isAdmin;
-  $id("globe-close").textContent = "Exit top-down";
+  camsBtn.hidden = !CFG.isAdmin;
   paintConesBtn(); $id("plan-cones").hidden = false;
   $id("imagery-3d").textContent = "Satellite";
   showImagery("sat");
   go();
+  renderDetail();
+  paintBar();
+}
+
+// "Map" in the site panel: leave top-down / 3D for the street map, still on this site.
+function showMapView(site) {
+  if (globe) closeGlobeView();
+  closePlanView();
+  if (site.lat != null) lmap.setView([site.lat, site.lng], Math.max(lmap.getZoom(), 16));
 }
 
 function closePlanView() {
@@ -458,7 +563,20 @@ function closePlanView() {
   try { plan.destroy(); } catch (err) { console.error(err); }
   plan = null; delete window.__plan;
   mapCanvas.classList.remove("plan-open");
-  globeBar.hidden = true; $id("plan-cones").hidden = true;
+  $id("plan-cones").hidden = true; camsBtn.hidden = true;
+  renderDetail();
+  paintBar();
+}
+
+// The bar over the map: Map / Top-down / 3D (always there, so top-down is one click from the street map), God's eye,
+// and each view's own tools.
+function paintBar() {
+  const mode = globe || globeOpening ? "3d" : plan ? "plan" : "map";
+  globeBar.hidden = false;
+  globeBar.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === mode));
+  globeBar.querySelector("[data-imagery]").parentElement.hidden = mode === "map";
+  $id("globe-recenter").hidden = mode === "map" || selectedId == null;
+  if (placingSite == null) camsBtn.hidden = mode === "map" || !CFG.isAdmin || selectedId == null;   // a site's cameras: pick a site first
 }
 
 // ---- site 3D models (globe.js draws them; model_panel.js uploads and places them, admins)
@@ -848,7 +966,17 @@ document.addEventListener("keydown", (e) => {
 
 globeBar.addEventListener("click", (e) => {
   const t = e.target;
-  if (t.id === "globe-close") { if (plan) { closePlanView(); fitToSites(); } else closeGlobeView(); return; }
+  const v = t.closest("[data-view]")?.dataset.view;
+  if (v) {
+    const s = sites.get(selectedId) || null;
+    if (v === "plan") return openPlanView(s);
+    if (v === "3d") return openGlobeView(s);
+    if (globe) closeGlobeView();
+    closePlanView();
+    if (s?.lat != null) lmap.setView([s.lat, s.lng], Math.max(lmap.getZoom(), 16)); else fitToSites();
+    return;
+  }
+  if (t.closest("#globe-all")) return godsEye();
   if (t.id === "globe-recenter") return view()?.flyTo(sites.get(selectedId));
   if (t.id === "plan-cones") return toggleCones();
   if (t.id === "globe-cams") { models.hide(); return placingSite == null ? openPlacing() : closePlacing(); }
@@ -871,15 +999,17 @@ function focusAlarm(a) {
 
 // ---------------------------------------------------------------- interactions
 const siteList = document.getElementById("site-list");
-siteList.addEventListener("click", (e) => { const li = e.target.closest(".site-item"); if (li) select(Number(li.dataset.id)); });
+siteList.addEventListener("click", (e) => { const li = e.target.closest(".site-item"); if (li) { closeDrawer(); select(Number(li.dataset.id)); } });
 siteList.addEventListener("keydown", (e) => {
   const li = e.target.closest(".site-item");
-  if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); select(Number(li.dataset.id)); }
+  if (li && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); closeDrawer(); select(Number(li.dataset.id)); }
 });
 document.getElementById("site-detail").addEventListener("click", async (e) => {
-  if (e.target.id === "close-detail") { deselect(); return; }
-  if (e.target.closest("[data-globe]") && sites.has(selectedId)) { openGlobeView(sites.get(selectedId)); return; }
-  if (e.target.closest("[data-plan]") && sites.has(selectedId)) { openPlanView(sites.get(selectedId)); return; }
+  if (e.target.closest("#close-detail")) { closeDrawer(); deselect(); return; }
+  const s = sites.get(selectedId);
+  if (e.target.closest("[data-view-map]") && s) { closeDrawer(); showMapView(s); return; }
+  if (e.target.closest("[data-globe]") && s) { closeDrawer(); openGlobeView(s); return; }
+  if (e.target.closest("[data-plan]") && s) { closeDrawer(); openPlanView(s); return; }
   const op = e.target.dataset.arm;
   if (op && sites.has(selectedId)) { e.target.disabled = true; await setArmed(sites.get(selectedId), op === "arm"); e.target.disabled = false; }
 });
@@ -902,6 +1032,8 @@ feed.addEventListener("keydown", (e) => {
 
 // ---------------------------------------------------------------- active calls (a guard was sent; open until End call)
 const calls = new Map();
+const callLatest = new Map();        // alarm id -> the guards' status and newest update (call_updates.js), shown on the card
+const callFlash = new Set();         // cards to flash once (a new guard update)
 let callsSoon = null;
 async function loadCalls() {
   try {
@@ -910,7 +1042,13 @@ async function loadCalls() {
     rows.filter(inView).forEach((a) => calls.set(a.id, a));
   } catch { return; }
   renderCalls();
+  const missing = [...calls.keys()].filter((id) => !callLatest.has(id));     // first look: what each guard said last
+  if (missing.length) {
+    await Promise.all(missing.map((id) => guardUpdates(id).then((u) => callLatest.set(id, u)).catch(() => {})));
+    renderCalls();
+  }
 }
+on("call.update", ({ alarm, updates }) => { callLatest.set(alarm.id, updates); callFlash.add(alarm.id); reloadCalls(); });
 function renderCalls() {
   const box = document.getElementById("calls");
   // Acknowledged calls only: one still waiting for an operator is in the live feed below (no duplicates).
@@ -922,10 +1060,29 @@ function renderCalls() {
       <div class="feed-top"><span class="chip call-chip">Call</span>${a.verdict === "real" ? '<span class="chip p1">Real event</span>' : ""}${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
       <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b></div>
+      ${a.joined_count ? `<div class="call-joined"><b>+${a.joined_count} alarm${a.joined_count === 1 ? "" : "s"} during this call</b>${a.joined_newest
+        ? ` <span class="muted">· newest: ${esc(a.joined_newest.caption)}${a.joined_newest.camera ? ` (${esc(a.joined_newest.camera)})` : ""}</span>` : ""}</div>` : ""}
+      ${callLatestHtml(callLatest.get(a.id))}
       <div class="feed-actions"><button class="btn btn-sm btn-primary" data-call-open="${a.id}">Open call</button></div>
     </li>`).join("");
   const list = document.getElementById("calls-list");
   if (list.dataset.html !== html) { list.innerHTML = html; list.dataset.html = html; }      // only redraw on a change
+  for (const id of callFlash) {
+    const li = list.querySelector(`[data-call="${id}"]`);
+    callFlash.delete(id);
+    if (!li) continue;                                    // not acknowledged yet: it's in the live feed (the toast says it)
+    li.classList.remove("call-flash"); void li.offsetWidth; li.classList.add("call-flash");
+  }
+}
+// The guard's status (En route / On scene / Clear) stays on top; their newest other update (a note, opened the
+// link, sharing location) under it.
+function callLatestHtml(u) {
+  if (u) u = { ...u, last: [...(u.rows || [])].reverse().find((r) => r.kind === "guard") || null };   // joined alarms have their own line
+  if (!u?.last) return "";
+  const at = (r) => new Date(r.ts).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" });
+  const line = (r) => `<b>${esc(r.who)}: ${esc(r.what)}</b> <span class="muted">· ${esc(at(r))}</span>${r.detail && r.what === "Guard note" ? `<div class="muted small-print">“${esc(r.detail)}”</div>` : ""}`;
+  const top = u.status || u.last;
+  return `<div class="call-latest">&#128222; ${line(top)}${u.last !== top ? `<div class="call-latest-more">${line(u.last)}</div>` : ""}</div>`;
 }
 const reloadCalls = () => { clearTimeout(callsSoon); callsSoon = setTimeout(loadCalls, 300); };
 ["alarm.timeline", "alarm.updated", "alarm.acked", "reconnect", "store"].forEach((ev) => on(ev, reloadCalls));
@@ -965,9 +1122,13 @@ setInterval(() => { if (selectedId) renderDetail(); }, 30000);
 await loadSites().catch((e) => { siteList.innerHTML = `<li class="empty">${esc(e.message)}</li>`; });
 renderAll();
 fitToSites();
+paintBar();
+// Top-down by default with every site in view (God's eye). An alarm link (/?alarm=N) opens top-down at that alarm's
+// camera instead; only one of the two runs, so they can't race (the site-wide view landing after the camera's).
 const focusId = Number(new URLSearchParams(location.search).get("alarm"));
+const focusLink = (a) => { focusAlarm(a); if (sites.get(a.site_id)?.lat == null) openPlanView(null); };
 if (focusId) {
   history.replaceState(null, "", "/");
   const a = openAlarms.get(focusId);
-  if (a) focusAlarm(a); else api(`/api/alarms/${focusId}`).then(focusAlarm).catch(() => {});
-}
+  if (a) focusLink(a); else api(`/api/alarms/${focusId}`).then(focusLink).catch(() => openPlanView(null));
+} else openPlanView(null);

@@ -71,14 +71,19 @@ class Scope:
 
 async def get_scope(request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)) -> Scope:
     own = user._tenant
-    sel = request.session.get("scope", "own")
+    mcp = request.scope.get("twg_mcp")
+    if request.scope.get("twg_mobile"):                 # the iPhone app: always the user's own company
+        sel = "own"
+    else:
+        sel = (mcp.get("company") or "own") if mcp else request.session.get("scope", "own")
     if sel == "own" or not user.can("platform.view"):
         return Scope(user, "own", frozenset({own.id}), own)
     if sel == "all":
         return Scope(user, "all", None, None)
     tenant = await db.get(Tenant, int(sel)) if str(sel).isdigit() else None
     if tenant is None or tenant.id == own.id:
-        request.session["scope"] = "own"
+        if not mcp:
+            request.session["scope"] = "own"
         return Scope(user, "own", frozenset({own.id}), own)
     return Scope(user, "tenant", frozenset({tenant.id}), tenant)
 

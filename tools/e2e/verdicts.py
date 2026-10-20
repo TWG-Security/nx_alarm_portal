@@ -83,6 +83,17 @@ with sync_playwright() as p:
     pg.click("#ack-false")
     pg.wait_for_function("!document.querySelector('.feed-item.p3')", timeout=5000)
 
+    # --- 4b. False alarm in the alarm details closes them (the user, 2026-10-14: "when false alarm is click close that alarm")
+    inject("dock")
+    pg.wait_for_selector(".feed-item.p3", timeout=10000)
+    pg.click(".feed-item.p3 [data-detail]")
+    pg.wait_for_selector("#drawer:not([hidden]) [data-ack=false]", timeout=8000)
+    pg.click("#drawer [data-ack=false]")
+    pg.wait_for_selector("#drawer", state="hidden", timeout=5000)
+    pg.wait_for_timeout(300)
+    left = [pg.locator(".live-mount video").count(), pg.locator(".feed-item.p3").count(), pg.locator(".toast:has-text('false alarm')").count()]
+    check(left[0] == 0 and left[1] == 0 and left[2] >= 1, f"drawer: False alarm closes the details, the alarm leaves the feed, a toast confirms (live videos, p3 cards, toasts: {left})")
+
     # --- 5. critical pop-up: two verdict buttons, live via its toggle
     inject("panic")
     pg.wait_for_selector("#critical-dialog[open]", timeout=10000)
@@ -97,6 +108,7 @@ with sync_playwright() as p:
     # --- 6. groups: an operator gets bulk edit only through a group
     r = call(pg, "POST", "/api/users", {"email": "op@twgsecurity.com", "display_name": "Night Operator",
                                         "password": "Operator-pass-1234!", "role": "operator"})
+    assert "id" in r["body"], r
     op_id = r["body"]["id"]
     for kind in ("line", "line", "line"):
         inject(kind)

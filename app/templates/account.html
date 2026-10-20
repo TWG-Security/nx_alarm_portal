@@ -10,6 +10,20 @@
       <p class="muted" style="margin-top:0">Get a text when an alarm comes in, with a link to its video and live cameras (no sign-in needed on the phone).</p>
       <div id="tx-box"><span class="muted">Loading…</span></div>
     </form>
+    <form class="card" id="pu-form">
+      <h2>App notifications (iPhone)</h2>
+      <p class="muted" style="margin-top:0">Alarms on your iPhone from the TWG Alarms app, chosen like your texts (the same sites).
+        Texts stay on as the backup: the app never turns them off.</p>
+      <div class="row">
+        <div class="field"><label for="pu-level">Notify me</label><select id="pu-level"><option value="off">No notifications</option><option value="critical">Critical only</option><option value="alarm">Critical + Alarm</option><option value="warning">Everything, warnings too</option></select></div>
+        <div class="field"><label for="pu-when">Send</label><select id="pu-when"><option value="raised">When the alarm goes off</option><option value="confirmed">Only when an operator confirms it's real (e.g. a mobile guard)</option><option value="both">Both: when it goes off, and again when confirmed</option></select></div>
+      </div>
+      <div id="pu-devices" class="small-print"></div>
+      <div class="row" style="gap:8px;align-items:center">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto">Save</button>
+        <button class="btn" type="button" id="pu-test" style="flex:0 0 auto">Send a test notification</button>
+      </div>
+    </form>
     <div class="card">
       <h2>Two-step sign-in</h2>
       <div id="mfa-box"><span class="muted">Loading…</span></div>
@@ -39,6 +53,26 @@
         <tbody id="sess-rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
       </table></div>
       <small class="muted" style="display:block;margin-top:8px">A screen that's signed out shows a red "SIGNED OUT" banner and stops receiving alarms until someone signs in again.</small>
+    </div>
+    <div class="card" id="tok-card">
+      <h2>API tokens (AI assistants / MCP)</h2>
+      <p class="muted" style="margin-top:0">A token lets an AI assistant (Claude, through the TWG MCP Gateway) use the portal <b>as you</b>:
+        read alarms, sites, guards and the audit log, add notes, close alarms, end calls and <b>dispatch guards (real texts)</b>,
+        within your company and permissions. Everything it does is in the audit log, marked MCP.</p>
+      <form id="tok-form" class="row" style="align-items:flex-end">
+        <div class="field"><label for="tok-name">Name</label><input id="tok-name" type="text" maxlength="100" required placeholder="e.g. Claude gateway"></div>
+        <div class="field"><label for="tok-days">Expires</label><select id="tok-days">
+          <option value="30">In 30 days</option><option value="90" selected>In 90 days</option><option value="365">In a year</option><option value="">Never (until revoked)</option></select></div>
+        <div class="field" style="flex:0 0 auto"><button class="btn btn-primary" type="submit">Create token</button></div>
+      </form>
+      <div id="tok-new"></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Name</th><th>Token</th><th>Last used</th><th>Expires</th><th></th></tr></thead>
+        <tbody id="tok-rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+      </table></div>
+      <small class="muted" style="display:block;margin-top:8px">Server URL: <span class="mono" id="tok-url"></span>, header
+        <span class="mono">Authorization: Bearer &lt;token&gt;</span>. Tokens stop working if you're disabled, your password is reset
+        by an admin, or you use Sign out everywhere.</small>
     </div>
   </div>
 </div>

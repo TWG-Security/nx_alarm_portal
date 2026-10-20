@@ -134,8 +134,8 @@ $("mfa-form").addEventListener("submit", async (e) => {
 
 function sessWarn() {
   const warn = [];
-  if (Number($("s-idle").value) > 0) warn.push(`Screens nobody touches for ${$("s-idle").value} minutes sign out, <b>including wall-mounted monitoring screens</b>. They then stop receiving alarms (with a red banner) until someone signs in.`);
-  if (Number($("s-max").value) > 0) warn.push(`Every screen is signed out ${$("s-max").value} hours after signing in, <b>monitoring screens included</b>.`);
+  if (Number($("s-idle").value) > 0) warn.push(`Screens nobody touches for ${$("s-idle").value} minutes sign out, <b>including monitoring screens</b> (except users marked Monitoring station on the Users page). They then stop receiving alarms (with a red banner) until someone signs in.`);
+  if (Number($("s-max").value) > 0) warn.push(`Every screen is signed out ${$("s-max").value} hours after signing in, <b>monitoring screens included</b> (except users marked Monitoring station).`);
   $("sess-warn").innerHTML = warn.map((w) => `<div class="alert alert-warn">${w}</div>`).join("");
 }
 function paintSessions() {

@@ -76,21 +76,23 @@ document.querySelectorAll(".sites-pick").forEach((box) => box.addEventListener("
 const sameSites = (a, b) => (a == null || b == null ? a == b : a.length === b.length && a.every((x, i) => x === b[i]));
 
 // Table cell: number, then what they get and whether they've opted in. Editing happens in the Edit dialog.
+const PUSH_WORD = { off: "off", critical: "Critical only", alarm: "Critical + Alarm", warning: "Everything" };
+const pushChip = (u) => (u.push_devices ? `<div class="chips"><span class="chip" title="TWG Alarms app on ${u.push_devices} iPhone${u.push_devices === 1 ? "" : "s"}${u.push_when !== "raised" ? `, ${WHEN[u.push_when] || u.push_when}` : ""}">App: ${esc(PUSH_WORD[u.push_level] || u.push_level)}</span></div>` : "");
 function textSummary(u) {
-  if (!u.phone) return '<span class="muted">No number</span>';
+  if (!u.phone) return '<span class="muted">No number</span>' + pushChip(u);
   const [cWord, cCls] = CONSENT[u.sms_consent] || CONSENT.none;
   return `<div class="nowrap">${esc(fmtPhone(u.phone))}</div>
     <div class="chips"><span class="chip">${u.sms_level !== "off" && u.sms_when === "confirmed" ? "Any level" : LEVEL[u.sms_level] || u.sms_level}</span>
       ${u.sms_level === "off" || !WHEN[u.sms_when] ? "" : `<span class="chip" title="Texted when an operator marks an alarm Real event">${WHEN[u.sms_when]}</span>`}
       ${u.sms_level === "off" ? "" : `<span class="chip" title="${esc(u.sms_sites == null ? "Every site, including ones added later" : u.sms_sites.map(siteName).join(", "))}">${esc(sitesLabel(u))}</span>`}
       <span class="chip ${cCls}" title="${esc(consentNote(u))}">${cWord}</span></div>
-    ${["failed", "undelivered"].includes(u.last_text?.outcome) ? lastText(u) : ""}`;
+    ${["failed", "undelivered"].includes(u.last_text?.outcome) ? lastText(u) : ""}${pushChip(u)}`;
 }
 
 function render() {
   tbody.innerHTML = users.map((u) => `<tr>
     <td><b>${esc(u.display_name || u.email)}</b>${u.display_name ? `<div class="muted small-print">${esc(u.email)}</div>` : ""}</td>
-    <td>${u.role === "admin" ? "Admin" : "Operator"}</td>
+    <td>${u.role === "admin" ? "Admin" : "Operator"}${u.monitoring_station ? '<div class="chips"><span class="chip" title="Never signed out for inactivity or by the sign-out-after limit">Monitoring station</span></div>' : ""}</td>
     <td>${statusChip(u)}${u.invited ? inviteNote(u) : ""}</td>
     <td>${textSummary(u)}</td>
     <td>${twoStep(u)}</td>
@@ -120,7 +122,10 @@ function openEdit(u) {
   edUser = u;
   $("ed-title").textContent = u.display_name || u.email;
   $("ed-email").textContent = u.email;
-  $("ed-name").value = u.display_name; $("ed-role").value = u.role;
+  $("ed-name").value = u.display_name; $("ed-role").value = u.role; $("ed-station").checked = !!u.monitoring_station;
+  $("ed-push-level").value = u.push_level || "alarm"; $("ed-push-when").value = u.push_when || "raised";
+  $("ed-push-note").textContent = u.push_devices ? `Signed in to the TWG Alarms app on ${u.push_devices} iPhone${u.push_devices === 1 ? "" : "s"}. Same sites as their texts.`
+    : "Not signed in to the TWG Alarms app on an iPhone yet: these apply once they are. Same sites as their texts.";
   $("ed-phone").value = fmtPhone(u.phone); $("ed-sms").value = u.sms_level; $("ed-when").value = u.sms_when || "raised";
   paintSites("ed", u.sms_sites);
   $("ed-link").innerHTML = "";
@@ -158,6 +163,9 @@ $("edit-form").addEventListener("submit", async (e) => {
   const phone = $("ed-phone").value.trim(), level = $("ed-sms").value;
   if ($("ed-name").value.trim() !== u.display_name) body.display_name = $("ed-name").value.trim();
   if ($("ed-role").value !== u.role) body.role = $("ed-role").value;
+  if ($("ed-station").checked !== !!u.monitoring_station) body.monitoring_station = $("ed-station").checked;
+  if ($("ed-push-level").value !== (u.push_level || "alarm")) body.push_level = $("ed-push-level").value;
+  if ($("ed-push-when").value !== (u.push_when || "raised")) body.push_when = $("ed-push-when").value;
   if (phone !== fmtPhone(u.phone)) body.phone = phone;
   // A first number with "No texts" picked defaults to Critical + Alarm (that's why it was added).
   const lvl = !u.phone && phone && level === "off" ? "alarm" : level;
@@ -221,7 +229,7 @@ $("user-form").addEventListener("submit", async (e) => {
   try {
     const r = await api("/api/users", { method: "POST", body: { email: $("u-email").value, display_name: $("u-name").value,
       password: how() === "password" ? $("u-pass").value : "", role: $("u-role").value,
-      phone: $("u-phone").value, sms_level: $("u-sms").value, sms_when: $("u-when").value, sms_sites: readSites("u") } });
+      phone: $("u-phone").value, sms_level: $("u-sms").value, sms_when: $("u-when").value, sms_sites: readSites("u"), monitoring_station: $("u-station").checked } });
     toast(r.setup_link ? "User invited" : "User created");
     if (r.setup_link) { $("u-link").innerHTML = linkBox(r); $("u-submit").hidden = true; }     // keep it open: the admin may copy the link
     else addDlg.close();
@@ -257,7 +265,13 @@ async function openSecurity(u) {
         || '<tr><td colspan="4" class="empty">Not signed in anywhere.</td></tr>'}
     </tbody></table></div>
     ${s.sessions.length ? `<button class="btn btn-sm" type="button" id="sec-all" style="margin-top:10px">Sign them out everywhere</button>
-      <p class="muted small-print">A signed-out screen shows a red "SIGNED OUT" banner and stops receiving alarms until someone signs in.</p>` : ""}`;
+      <p class="muted small-print">A signed-out screen shows a red "SIGNED OUT" banner and stops receiving alarms until someone signs in.</p>` : ""}
+    ${s.tokens?.length ? `<h3>API tokens (AI assistants / MCP)</h3>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Token</th><th>Last used</th><th></th></tr></thead><tbody>
+      ${s.tokens.map((t) => `<tr><td>${esc(t.name)}<div class="muted small-print">created ${esc(fmtTime(t.created_at))}${t.expires_at ? `, expires ${esc(fmtTime(t.expires_at))}` : ""}</div></td>
+        <td class="mono">${esc(t.hint)}</td><td>${t.last_used_at ? `${esc(relTime(t.last_used_at))} <span class="mono muted">${esc(t.last_used_ip)}</span>` : "Never"}</td>
+        <td><button class="btn btn-sm" data-revoke-token="${t.id}" data-name="${esc(t.name)}">Revoke</button></td></tr>`).join("")}
+    </tbody></table></div>` : ""}`;
 }
 
 $("sec-body").addEventListener("click", async (e) => {
@@ -270,6 +284,10 @@ $("sec-body").addEventListener("click", async (e) => {
       if (!confirm(`Sign ${secUser.email} out of every browser?`)) return;
       const r = await api(`/api/users/${secUser.id}/sessions`, { method: "DELETE" });
       toast(`Signed out of ${r.ended} browser${r.ended === 1 ? "" : "s"}`);
+    } else if (e.target.dataset.revokeToken) {
+      if (!confirm(`Revoke ${secUser.email}'s API token "${e.target.dataset.name}"? Anything using it stops working right away.`)) return;
+      await api(`/api/users/${secUser.id}/tokens/${e.target.dataset.revokeToken}`, { method: "DELETE" });
+      toast("Token revoked");
     } else if (e.target.dataset.end) {
       await api(`/api/users/${secUser.id}/sessions/${encodeURIComponent(e.target.dataset.end)}`, { method: "DELETE" });
       toast("Signed out there");

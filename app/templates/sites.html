@@ -41,6 +41,31 @@
           <li>The routers need GPS turned on (in InControl2 or the router's own <b>Location</b> settings) and an InControl2 subscription.</li>
         </ol></details>
     </form>
+    <form class="card" id="fl-form">
+      <h2>Fleet vehicles (Fleetio)</h2>
+      <p class="muted" style="margin-top:0">Every vehicle in your Fleetio account shows on the map at its last known position in Fleetio
+        (from your GPS / telematics integration or the Fleetio Go app). New vehicles appear by themselves; switch one off below to hide it.</p>
+      <div id="fl-status"></div>
+      <label class="check"><input type="checkbox" id="fl-enabled"> Show Fleetio vehicles</label>
+      <div class="rules-grid">
+        <div class="field"><label for="fl-token">Account Token</label><input id="fl-token" type="text" maxlength="200" class="mono" autocomplete="off"></div>
+        <div class="field"><label for="fl-key">API key</label><input id="fl-key" type="password" maxlength="500" autocomplete="new-password"><small id="fl-key-hint"></small></div>
+        <div class="field"><label for="fl-poll">Check every</label><input id="fl-poll" type="number" min="30" max="3600"><small>seconds (30 to 3600)</small></div>
+      </div>
+      <div id="fl-error"></div>
+      <div class="row manage-only" style="align-items:center;gap:8px">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto">Save</button>
+        <button class="btn" type="button" id="fl-test" style="flex:0 0 auto">Test connection</button>
+        <span id="fl-test-result" class="muted"></span>
+      </div>
+      <details class="muted small-print"><summary>Getting a Fleetio API key and Account Token</summary>
+        <ol class="steps">
+          <li>Sign in at <b>secure.fleetio.com</b> as an admin, then open <b>secure.fleetio.com/api_keys</b> (Account Settings → API Keys).</li>
+          <li><b>Add API Key</b>, name it "TWG Alarm Portal". It only needs to read vehicles.</li>
+          <li>Copy the <b>Account Token</b> and the <b>API key</b> into the boxes above, tick <b>Show Fleetio vehicles</b>, <b>Save</b>, then <b>Test connection</b>.</li>
+          <li>Vehicles get positions in Fleetio from a GPS / telematics integration (or Fleetio Go). The test shows how fresh they are.</li>
+        </ol></details>
+    </form>
     <div class="card">
       <div class="card-head"><h2>Tracked guards and vehicles</h2></div>
       <p class="muted" style="margin-top:0"><b>Texts go to</b> is the person a <b>Dispatch</b> text goes to (they need a phone number and must have replied YES to texts).</p>

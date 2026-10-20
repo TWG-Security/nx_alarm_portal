@@ -28,22 +28,25 @@ def check(ok, msg):
         fails.append(msg)
 
 
-def texts() -> list[dict]:
-    return json.load(urllib.request.urlopen(f"{FAKE_NX}/_twilio"))
+def texts(gifs: bool = False) -> list[dict]:
+    """Texts at the fake Twilio. The GIF follow-ups ("TWG ALARM VIDEO", seconds after each alarm text) are left
+    out unless asked for: they land late, in whichever later step is counting."""
+    t = json.load(urllib.request.urlopen(f"{FAKE_NX}/_twilio"))
+    return t if gifs else [x for x in t if " VIDEO: " not in (x.get("body") or "").split("\n")[0]]
 
 
 def twilio_mode(mode: str) -> None:
     urllib.request.urlopen(urllib.request.Request(f"{FAKE_NX}/_twilio/mode/{mode}", method="POST"))
 
 
-def wait_texts(n: int, timeout=10.0) -> list[dict]:
+def wait_texts(n: int, timeout=10.0, gifs: bool = False) -> list[dict]:
     end = time.time() + timeout
     while time.time() < end:
-        t = texts()
+        t = texts(gifs)
         if len(t) >= n:
             return t
         time.sleep(0.05)
-    return texts()
+    return texts(gifs)
 
 
 def twilio_reply(frm: str, body: str) -> int:
@@ -55,6 +58,19 @@ def twilio_reply(frm: str, body: str) -> int:
                                     hashlib.sha1).digest()).decode()
     req = urllib.request.Request(url, data=urllib.parse.urlencode(params).encode(), headers={"X-Twilio-Signature": sig})
     return urllib.request.urlopen(req).status
+
+
+def quiet(seconds: float = 8.0, timeout: float = 40.0) -> None:
+    """Until no text (GIF follow-ups included) has reached Twilio for `seconds`: the earlier steps' GIF texts and their
+    delivery reports (the fake fails them ~3 s later in mediafail mode) are done, so they can't land in the next step."""
+    end, last, since = time.time() + timeout, -1, time.time()
+    while time.time() < end:
+        n = len(texts(gifs=True))
+        if n != last:
+            last, since = n, time.time()
+        elif time.time() - since >= seconds:
+            return
+        time.sleep(0.2)
 
 
 def alarm_on_screen(pg, kind: str) -> float:
@@ -177,6 +193,18 @@ with sync_playwright() as p:
     check(text["media"].endswith("/alarm.jpg"), "text is an MMS with the alarm picture")
     pic = urllib.request.urlopen(text["media"])
     check(pic.status == 200 and pic.headers["content-type"] == "image/jpeg", f"picture loads for Twilio ({len(pic.read())} bytes)")
+    # Then the GIF follows, once NX has recorded the seconds after the alarm (the user, 2026-10-14: "send with a still
+    # image first once the gif is made send the gif").
+    t_text = time.time()
+    g0 = len(texts(gifs=True)) - 1
+    t = wait_texts(g0 + 2, timeout=30, gifs=True)
+    gif_text = t[-1] if len(t) >= g0 + 2 else {}
+    print(f"      GIF text {time.time() - t_text + ms / 1000:.1f} s after the alarm: {gif_text.get('body', '')[:40]!r}")
+    check(gif_text.get("to") == text["to"] and gif_text.get("body", "").startswith("TWG ALARM VIDEO: ")
+          and gif_text.get("media", "").endswith("/alarm.gif"), "then a second text to the same phone carries the GIF")
+    if gif_text:
+        g = urllib.request.urlopen(gif_text["media"]).read()
+        check(g[:6] == b"GIF89a" and len(g) <= 600_000, f"the GIF loads for Twilio ({len(g):,} bytes)")
 
     # --- 4. The link on a phone, signed out
     phone = b.new_context(viewport={"width": 390, "height": 844}, is_mobile=True, has_touch=True)
@@ -285,6 +313,7 @@ with sync_playwright() as p:
     pg.goto(f"{PORTAL}/"); pg.wait_for_timeout(1500)
 
     # --- 5. Twilio rejects texts: alarms still instant, the failure shows loudly
+    quiet()
     twilio_mode("fail")
     ms = alarm_on_screen(pg, "panic")
     check(ms < 1000, f"Twilio rejecting: alarm on screen in {ms:.0f} ms")
@@ -293,7 +322,7 @@ with sync_playwright() as p:
     pg.wait_for_timeout(1500)
     pg.goto(f"{PORTAL}/platform#sms"); pg.click('#tabs [data-tab="sms"]')
     pg.wait_for_selector("#sms-status .alert-error", timeout=5000)
-    check("30034" in pg.inner_text("#sms-status"), "Platform page shows Twilio's error")
+    check("30034" in pg.inner_text("#sms-status"), f"Platform page shows Twilio's error ({pg.inner_text('#sms-status')[:160]!r})")
     pg.screenshot(path=f"{out}/sms6-failed.png", full_page=True)
     pg.goto(f"{PORTAL}/users")
     pg.wait_for_selector(".text-failed", timeout=5000)

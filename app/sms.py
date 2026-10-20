@@ -32,6 +32,14 @@ opt-outs are audit-logged in the person's company. Public terms: /sms-terms.
 
 Picture (MMS, Platform switch, on by default): the alarm frame with its analytics boxes (the incident
 report's drawing), prepared once per alarm and cached, served to Twilio at /media/a/<token>/alarm.jpg.
+Confirmed and Dispatch texts (sent after someone verified it) carry a GIF of the seconds around the alarm with
+its boxes instead (services/alarm_gif.py, /media/a/<token>/alarm.gif), else the still.
+GIF follow-up (the user, 2026-10-14: "send with a still image first once the gif is made send the gif"): the alarm
+text itself still goes at once with the still (NX hasn't recorded the seconds after the alarm yet, and an alarm
+text is never held back); once those seconds are recorded and the GIF is made, a second text "TWG ALARM VIDEO"
+carries it to the same people (purpose alarm_gif). It goes only after their alarm text was accepted, not when
+the GIF can't be made within GIF_TEXT_MAX_S, not once the alarm was marked False alarm / Dismissed, and not to
+someone flood control is already holding back; it doesn't count toward their limit.
 The text waits at most PICTURE_BUDGET_S for it; without a picture by then, or if Twilio refuses the
 picture, the text goes out without one. A picture never costs the text.
 
@@ -201,6 +209,24 @@ def alarm_text(alarm: Alarm, link: str) -> str:
     return "\n".join([line for line in lines if line] + _links(link, site))
 
 
+def gif_text(alarm: Alarm) -> str:
+    """The follow-up that carries the moving picture of an alarm texted a few seconds earlier:
+
+    TWG ALARM VIDEO: Panic button
+    TWG Security Office
+    Front Door Cam, 2:03:22 PM EDT
+
+    Reply STOP to opt out.
+    """
+    site = alarm.site
+    what = _ascii(alarm.caption or alarm.event_type, 60)
+    cam = _ascii(alarm.source_name, 40)
+    lines = [f"TWG {LEVEL_WORD.get(alarm.priority, 'ALARM')} VIDEO: {what}",
+             _ascii(site.name if site else "", 60),
+             ", ".join(p for p in (cam if cam and cam.lower() not in what.lower() else "", _clock(alarm)) if p)]
+    return "\n".join([line for line in lines if line] + ["", "Reply STOP to opt out."])
+
+
 def confirmed_text(alarm: Alarm, link: str, by: str, more: int = 0) -> str:
     """An operator marked the alarm Real event. Like alarm_text, plus who confirmed it, when, and their note:
 
@@ -295,6 +321,16 @@ def call_ended_text(alarm: Alarm, by: str, verdict: str = "") -> str:
     note = _ascii(alarm.call_end_note, 120)
     return (f"TWG CALL ENDED: {what} at {site}. {who} ended the call, {_clock(alarm, utcnow())}. You can clear."
             + (f"\nNote: {note}" if note else "") + "\nReply STOP to opt out.")
+
+
+def call_update_text(call: Alarm, alarm: Alarm, count: int, link: str) -> str:
+    """To dispatched guards: a new alarm at the site they were sent to (it joined the active call)."""
+    site = call.site
+    more = f" (+{count - 1} more)" if count > 1 else ""
+    lines = [f"TWG UPDATE: {_ascii(alarm.caption, 120)}{more}", _ascii(site.name if site else "", 80),
+             f"{_ascii(alarm.source_name or 'Camera', 60)}, {_clock(alarm)}",
+             "New alarm at the site you were sent to (same call).", "", VIDEO_LABEL, f"{link} ", "", "Reply STOP to opt out."]
+    return "\n".join(lines)
 
 
 def locate_text(company: str, by: str, url: str) -> str:
@@ -475,7 +511,19 @@ async def _status(cfg: Twilio, message_sid: str) -> dict:
     return r.json() if r.status_code == 200 else {}
 
 
-async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str) -> None:
+def _twilio_time(value) -> int | None:
+    """Twilio's date_updated ("Wed, 14 Oct 2026 03:21:00 +0000") in ms, or None."""
+    from email.utils import parsedate_to_datetime
+    try:
+        return int(parsedate_to_datetime(str(value)).timestamp() * 1000) if value else None
+    except (TypeError, ValueError):
+        return None
+
+
+async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str, at_ms: int | None = None) -> None:
+    """The text's final status. A text about an alarm also gets an audit row "sms.delivery", so its timeline and the
+    incident report show when it was sent AND when it was delivered (the user, 2026-10-14: "log when the message is
+    sent and delivered"). at_ms: when Twilio says the status changed (else now; never before it was sent)."""
     if log_id is None:
         return
     _, db_slots = _slots()
@@ -485,8 +533,12 @@ async def _set_outcome(log_id: int | None, outcome: str, error: str, to: str) ->
             entry.outcome = outcome
             entry.error = (f"{entry.error}; {error}" if entry.error and error else error or entry.error)[:500]
             if entry.alarm_id is not None and entry.tenant_id is not None:
-                from app.audit import timeline_changed
-                timeline_changed(db, entry.tenant_id, entry.alarm_id)          # "delivered" shows on the timeline
+                sent_ms = int(entry.ts.replace(tzinfo=entry.ts.tzinfo or timezone.utc).timestamp() * 1000)
+                now = int(time.time() * 1000)
+                at = at_ms if at_ms is not None and sent_ms - 2000 <= at_ms <= now + 5000 else now
+                audit(db, entry.tenant_id, "sms.delivery", user_id=entry.user_id, alarm_id=entry.alarm_id, sms_id=entry.id,
+                      purpose=entry.purpose, outcome=outcome if outcome != "sent" else "no_report", error=error,
+                      to=masked(to), sent_ms=sent_ms, at_ms=max(at, sent_ms))
         if outcome in ("failed", "undelivered"):
             row = await db.get(PlatformSettings, 1)
             if row is not None:
@@ -508,13 +560,21 @@ async def _watch(cfg: Twilio, log_id: int | None, message_sid: str, user: User, 
         if status not in FINAL:
             continue
         if status in ("delivered", "read"):
-            await _set_outcome(log_id, "delivered", "", user.phone)
+            await _set_outcome(log_id, "delivered", "", user.phone, _twilio_time(m.get("date_updated")))
             return
         why = explain(m.get("error_code"))
         log.error("sms %s for alarm %s to %s: %s (%s)", purpose, alarm.id if alarm else "-", masked(user.phone), status, why)
-        await _set_outcome(log_id, status if status in ("failed", "undelivered") else "failed", why, user.phone)
+        await _set_outcome(log_id, status if status in ("failed", "undelivered") else "failed", why, user.phone,
+                           _twilio_time(m.get("date_updated")))
         if str(m.get("error_code")) == "21610":
             await _mark_stopped(user.phone)
+        elif purpose == "alarm_gif":
+            pass                             # only the GIF follow-up sank: they already have the alarm text and still
+        elif media_url.endswith("/alarm.gif") and alarm is not None and await alarm_picture(alarm) is not None:
+            # The GIF sank it (too big for the carrier, ...): send it again with the still picture, now.
+            log.warning("sms: alarm %s to %s: sending again with the still picture", alarm.id, masked(user.phone))
+            await _send(cfg, user, body, purpose, alarm, time.time(), media_url[:-len("alarm.gif")] + "alarm.jpg",
+                        note=f"resent with the still picture ({why})")
         elif media_url:
             # The picture sank the whole message: send the words alone, now.
             log.warning("sms: alarm %s to %s: sending again without the picture", alarm.id if alarm else "-", masked(user.phone))
@@ -534,7 +594,7 @@ async def _mark_stopped(phone: str) -> None:
 
 
 async def _send(cfg: Twilio, user: User, body: str, purpose: str, alarm: Alarm | None, arrived: float,
-                media_url: str = "", note: str = "") -> None:
+                media_url: str = "", note: str = "") -> str:
     outcome, error, sid, attempts = await deliver(cfg, user.phone, body, media_url=media_url)
     if "without the picture" in error:
         media_url = ""                       # deliver() already dropped it
@@ -548,6 +608,70 @@ async def _send(cfg: Twilio, user: User, body: str, purpose: str, alarm: Alarm |
                            delay_ms=delay_ms if outcome == "sent" and alarm is not None else None)
     if outcome == "sent" and sid and WATCH:
         _spawn(_watch(cfg, log_id, sid, user, body, purpose, alarm, media_url), _watchers, limit_s=WATCH_AT_S[-1] + TASK_MAX_S)
+    return outcome
+
+
+GIF_TEXT_MAX_S = 30          # the GIF follow-up gives up if the GIF isn't made within this (nothing waits on it)
+# One GIF text per camera per person in this long: an analytics burst (the user, 2026-10-14, two intrusions 3.4 s apart
+# on one camera: "it sends two gifs i only want one") gets an alarm text per alarm but a single GIF. A follow-up that
+# ends up not sent (no GIF, false alarm, ...) frees the camera for the next alarm's GIF.
+GIF_ONE_PER_S = 60
+_gif_claims: dict[tuple[int, str], tuple[int, float]] = {}   # (user id, camera or site) -> (alarm id, when claimed)
+
+
+def _claim_gif(user: User, alarm: Alarm) -> bool:
+    key, now = (user.id, alarm.device_id or f"site {alarm.site_id}"), time.time()
+    held = _gif_claims.get(key)
+    if held and now - held[1] < GIF_ONE_PER_S:
+        log.info("sms: alarm %s: no GIF text to %s (alarm %s's GIF from the same camera %.0f s ago covers it)",
+                 alarm.id, masked(user.phone), held[0], now - held[1])
+        return False
+    _gif_claims[key] = (alarm.id, now)
+    for k in [k for k, (_, at) in _gif_claims.items() if now - at >= GIF_ONE_PER_S]:
+        del _gif_claims[k]
+    return True
+
+
+def _release_gif(user: User, alarm: Alarm) -> None:
+    key = (user.id, alarm.device_id or f"site {alarm.site_id}")
+    if _gif_claims.get(key, (None,))[0] == alarm.id:
+        del _gif_claims[key]
+
+
+async def _alarm_then_gif(cfg: Twilio, user: User, body: str, alarm: Alarm, arrived: float, media: str,
+                          token: str, gif_body: str) -> None:
+    """The alarm text exactly as without a follow-up; once Twilio took it, the GIF follow-up is its own task."""
+    if await _send(cfg, user, body, "alarm", alarm, arrived, media) == "sent" and _claim_gif(user, alarm):
+        _spawn(_gif_after(cfg, user, alarm, token, gif_body), _gif_tasks, limit_s=GIF_TEXT_MAX_S + TASK_MAX_S)
+
+
+async def _gif_after(cfg: Twilio, user: User, alarm: Alarm, token: str, body: str) -> None:
+    sent = False
+    try:
+        sent = await _gif_follow_up(cfg, user, alarm, token, body)
+    finally:
+        if not sent:
+            _release_gif(user, alarm)
+
+
+async def _gif_follow_up(cfg: Twilio, user: User, alarm: Alarm, token: str, body: str) -> bool:
+    from app.services import alarm_gif, clips
+    wait = (alarm.event_ts_ms + alarm_gif.GIF_POST_MS + clips.PARTIAL_LAG_MS) / 1000 - time.time()
+    if wait > 0:                         # until NX has recorded the seconds after the alarm: the full GIF, not a short one
+        await asyncio.sleep(wait)
+    if await alarm_gif.alarm_gif(alarm, budget_s=GIF_TEXT_MAX_S) is None:
+        log.info("sms: alarm %s: no GIF, so no GIF text to %s (they have the still)", alarm.id, masked(user.phone))
+        return False
+    _, db_slots = _slots()
+    async with db_slots, sessionmaker()() as db:
+        verdict = await db.scalar(select(Alarm.verdict).where(Alarm.id == alarm.id))
+    if verdict in ("false", "dismissed"):
+        log.info("sms: alarm %s was marked %s: no GIF text to %s", alarm.id, verdict, masked(user.phone))
+        return False
+    if len(_sent.get(user.id, ())) >= cfg.max_per_window:
+        log.info("sms: alarm %s: no GIF text to %s (flood control is holding their texts)", alarm.id, masked(user.phone))
+        return False
+    return await _send(cfg, user, body, "alarm_gif", alarm, time.time(), alarm_links.gif_url(token)) == "sent"
 
 
 async def send_test(to: str, by: str, *, user: User | None = None) -> tuple[str, str]:
@@ -646,6 +770,19 @@ async def alarm_picture(alarm: Alarm, budget_s: float | None = None) -> bytes | 
     return pic
 
 
+async def verified_media(alarm: Alarm) -> str:
+    """For a text sent after the alarm was verified (Confirmed, Dispatch): "gif" if the moving picture is ready
+    within its budget, else "jpg" if the still is, else "". Both are made at once, so the wait is the longer
+    budget (alarm_gif.GIF_BUDGET_S), not the sum."""
+    from app.services import alarm_gif
+    gif, still = await asyncio.gather(alarm_gif.alarm_gif(alarm), alarm_picture(alarm))
+    return "gif" if gif is not None else "jpg" if still is not None else ""
+
+
+def media_url(kind: str, token: str) -> str:
+    return alarm_links.gif_url(token) if kind == "gif" else alarm_links.picture_url(token) if kind == "jpg" else ""
+
+
 # ---------------------------------------------------------------- flood control
 @dataclass
 class _Held:
@@ -707,6 +844,7 @@ async def _flush(user_id: int) -> None:
 # ---------------------------------------------------------------- alarms
 _tasks: set[asyncio.Task] = set()
 _flushers: set[asyncio.Task] = set()     # summaries waiting for the window (minutes): drain() doesn't wait for them
+_gif_tasks: set[asyncio.Task] = set()    # GIF follow-ups (seconds after the alarm text): drain() doesn't wait for them
 _started: dict[asyncio.Task, float] = {}
 TASK_MAX_S = 120             # no text task runs longer (Twilio: 3 tries x 10 s + 8 s; picture: 4 s; DB writes)
 
@@ -739,6 +877,7 @@ def status() -> dict:
     now = time.monotonic()
     ages = [now - _started[t] for t in _tasks if t in _started]
     return {"in_flight": len(_tasks), "summaries_waiting": len(_flushers), "checking_delivery": len(_watchers),
+            "gif_texts_waiting": len(_gif_tasks),
             "oldest_s": round(max(ages), 1) if ages else 0, "max_s": TASK_MAX_S}
 
 
@@ -746,7 +885,7 @@ async def shutdown(grace_s: float = 2.0) -> None:
     """App shutdown: let texts in flight finish for grace_s, then cancel the rest (a restart never hangs on them)."""
     if _tasks:
         await asyncio.wait(list(_tasks), timeout=grace_s)
-    pending = [t for t in [*_tasks, *_flushers, *_watchers] if not t.done()]
+    pending = [t for t in [*_tasks, *_flushers, *_watchers, *_gif_tasks] if not t.done()]
     for t in pending:
         t.cancel()
     if pending:
@@ -795,11 +934,15 @@ async def _handle(alarm_id: int, arrived: float) -> None:
                     _spawn(_flush(u.id), _flushers, limit_s=WINDOW_S + TASK_MAX_S)
                 log.info("sms: alarm %s held back for %s (over %d texts in 10 min)", alarm.id, masked(u.phone),
                          cfg.max_per_window)
+            gif_body = gif_text(alarm) if plan else ""
             await db.commit()
         has_picture = bool(plan) and cfg.pictures and await alarm_picture(alarm) is not None
         for u, body, token in plan:
             media = alarm_links.picture_url(token) if has_picture else ""
-            _spawn(_send(cfg, u, body, "alarm", alarm, arrived, media))
+            if has_picture:                  # then the moving picture follows (gif_text)
+                _spawn(_alarm_then_gif(cfg, u, body, alarm, arrived, media, token, gif_body))
+            else:
+                _spawn(_send(cfg, u, body, "alarm", alarm, arrived, media))
     except Exception:  # noqa: BLE001 - never let a text problem escape into the event loop's error log only
         log.exception("sms: alarm %s could not be texted", alarm_id)
 
@@ -873,12 +1016,13 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
             await db.commit()
         for alarm_id, tracker_id in auto:
             _spawn(_auto_dispatch(alarm_id, tracker_id, by))
-        pictures = {}
+        kinds = {}
         if plan and cfg.pictures:
-            for a in {a.id: a for *_, a in plan}.values():
-                pictures[a.id] = await alarm_picture(a) is not None
+            alarms_ = list({a.id: a for *_, a in plan}.values())
+            for a, kind in zip(alarms_, await asyncio.gather(*(verified_media(a) for a in alarms_))):
+                kinds[a.id] = kind
         for u, body, token, a in plan:
-            _spawn(_send(cfg, u, body, "confirmed", a, arrived, alarm_links.picture_url(token) if pictures.get(a.id) else ""))
+            _spawn(_send(cfg, u, body, "confirmed", a, arrived, media_url(kinds.get(a.id, ""), token)))
     except Exception:  # noqa: BLE001
         log.exception("sms: confirmed alarms %s could not be texted", alarm_ids)
 
@@ -1030,9 +1174,11 @@ async def drain() -> None:
 def reset() -> None:
     """Tests: forget flood-control state and per-loop semaphores."""
     global _send_slots, _db_slots
-    for t in [*_tasks, *_flushers, *_watchers]:
+    for t in [*_tasks, *_flushers, *_watchers, *_gif_tasks]:
         t.cancel()
     _tasks.clear()
+    _gif_tasks.clear()
+    _gif_claims.clear()
     _flushers.clear()
     _watchers.clear()
     _started.clear()
@@ -1042,3 +1188,8 @@ def reset() -> None:
     _send_slots = _db_slots = None
     global _picture_slots
     _picture_slots = None
+    from app.services import alarm_gif         # its caches are keyed by alarm id, and its semaphore is per event loop
+    alarm_gif._gifs.clear(); alarm_gif._failed.clear(); alarm_gif._inflight.clear()
+    alarm_gif._slots = None
+    from app import apns
+    apns.reset()

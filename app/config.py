@@ -62,6 +62,8 @@ class Settings(BaseSettings):
     media_cache_max_mb: int = 4096       # oldest clips are evicted beyond this
     # Guard tracking: Peplink InControl2 API (dev points it at tools/fake_nx.py's fake IC2)
     peplink_api_base: str = "https://api.ic.peplink.com"
+    # Fleet vehicles from Fleetio (app/fleetio.py; dev points it at tools/fake_nx.py's fake Fleetio)
+    fleetio_api_base: str = "https://secure.fleetio.com/api"
     # Site 3D models (app/routers/site_models.py): uploads and their converted 3D Tiles
     model_dir: str = "./site-models"
     model_max_mb: int = 3072             # largest upload
@@ -70,7 +72,10 @@ class Settings(BaseSettings):
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     prefetch_clips: bool = True          # build clips for critical/alarm events as soon as footage exists
-    session_max_age_s: int = 12 * 3600
+    # The signed cookie's own lifetime. Sessions end on the server (app/sessions.py: closed browser, max age, revoked);
+    # this only has to outlive the longest "closed browser" setting (90 days). It was 12 h counted from sign-in and
+    # never renewed, which signed every screen out 12 h after login however busy it was (fixed 2026-10-15).
+    session_max_age_s: int = 90 * 24 * 3600
 
     # Sign-in protection (app/security_guard.py, app/net.py). Both also editable on the Platform page.
     trusted_proxy_ips: str = ""          # comma-separated IPs/CIDRs allowed to send CF-Connecting-IP (the tunnel connector)
@@ -78,6 +83,17 @@ class Settings(BaseSettings):
     # Passkeys (WebAuthn) only work on this exact host name; the page hides them elsewhere (e.g. the LAN IP).
     webauthn_rp_id: str = "alarmportal.twgsecurity.net"
     webauthn_origins: str = "https://alarmportal.twgsecurity.net"   # comma-separated
+    # The iPhone app (docs/IOS_APP_BRIEF.md): served in /.well-known/apple-app-site-association so iOS offers the
+    # portal's saved passwords and passkeys in the app. APPLE_TEAM_ID = the 10-character Apple Developer Team ID.
+    apple_team_id: str = ""
+    apple_bundle_id: str = "com.twgsecurity.alarms"
+    # Push notifications for the iPhone app (app/push.py): token-based APNs auth. The .p8 file lives next to .env on
+    # the host (mode 600, never in git or the backups) and is mounted into the container read-only.
+    apns_key_path: str = ""
+    apns_key_id: str = ""
+    apns_team_id: str = ""
+    apns_topic: str = "com.twgsecurity.alarms"
+    apns_api_base: str = ""          # "" = Apple's (production / sandbox per device); dev and tests point it at a fake
     webauthn_rp_name: str = "TWG Alarm Portal"
     cookie_secure: bool = True           # set False only for plain-http local dev
     twilio_api_base: str = "https://api.twilio.com"   # text messages (app/sms.py); tests and dev point it at a fake

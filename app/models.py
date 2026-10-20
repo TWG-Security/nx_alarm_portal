@@ -59,6 +59,13 @@ class User(Base):
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a code's step can't be reused
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
+    # Never signed out for inactivity (idle) or by the "always sign out after" limit: operators watching alarms
+    # (the user, 2026-10-15: "i dont want operators to log out while monitoring"). A closed browser still expires.
+    monitoring_station: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    # iPhone app notifications (app/push.py), like sms_level / sms_when; which sites: sms_sites. push_level None =
+    # not chosen yet: critical + alarm (as a newly added number texts), once they have the app.
+    push_level: Mapped[str | None] = mapped_column(String(10), nullable=True)   # off | critical | alarm | warning
+    push_when: Mapped[str] = mapped_column(String(10), default="raised", server_default="raised")
     invited_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Deleted by an admin (api.delete_user): hidden, can't sign in or be texted; the row stays so history keeps the name
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -178,6 +185,10 @@ class AlarmLink(Base):
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     opened_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     open_count: Mapped[int] = mapped_column(Integer, default=0)
+    # "dispatch" for a dispatch text's link (migration 0026): its token is kept Fernet-encrypted so the iPhone app can
+    # list the guard's dispatches (GET /api/mobile/dispatches). Other links keep only the hash.
+    purpose: Mapped[str] = mapped_column(String(12), default="", server_default="")
+    token_enc: Mapped[str] = mapped_column(Text, default="", server_default="")
 
 
 class WebAuthnCredential(Base):
@@ -195,6 +206,66 @@ class WebAuthnCredential(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PushDevice(Base):
+    """An iPhone that gets this person's app notifications (APNs device token). Tied to the app's sign-in
+    (user_sessions row, session_id): it's dropped when that sign-in ends, or when APNs says the token is dead."""
+
+    __tablename__ = "push_devices"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    session_id: Mapped[str] = mapped_column(String(64), index=True)
+    apns_token: Mapped[str] = mapped_column(String(200), unique=True)
+    environment: Mapped[str] = mapped_column(String(10))                       # sandbox | production
+    app_version: Mapped[str] = mapped_column(String(40), default="")
+    ios_version: Mapped[str] = mapped_column(String(40), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PushLog(Base):
+    """Every push sent (or not), like sms_log: the alarm's timeline and the incident report show them."""
+
+    __tablename__ = "push_log"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True)
+    alarm_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    device: Mapped[str] = mapped_column(String(80), default="")               # "iPhone · iOS 27.0 · …" (who it went to)
+    purpose: Mapped[str] = mapped_column(String(12))   # alarm | summary | confirmed | dispatch | call_ended | stand_down | closed | test
+    outcome: Mapped[str] = mapped_column(String(12))   # sent (APNs accepted) | failed | dropped (dead token, removed)
+    status: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    reason: Mapped[str] = mapped_column(String(200), default="")
+    apns_id: Mapped[str] = mapped_column(String(64), default="")
+    delay_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)       # alarm reached the portal -> APNs accepted
+
+
+class ApiToken(Base):
+    """A person's key for the portal's MCP server (/mcp, app/mcp_server.py). Acts as that person: their company,
+    sites and permissions. Only the SHA-256 is stored; the token is shown once. It stops working when revoked,
+    expired, the person is disabled or deleted, or their sessions are ended everywhere (token_version)."""
+
+    __tablename__ = "api_tokens"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100), default="")
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hint: Mapped[str] = mapped_column(String(16), default="")              # "twgp_…a1b2": recognisable, not usable
+    token_version: Mapped[int] = mapped_column(Integer, default=0)         # the user's at creation
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_used_ip: Mapped[str] = mapped_column(String(64), default="")
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_reason: Mapped[str] = mapped_column(String(100), default="")
 
 
 class UserSession(Base):
@@ -336,6 +407,9 @@ class Alarm(Base):
     call_ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     call_ended_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     call_end_note: Mapped[str] = mapped_column(Text, default="")
+    # An alarm that came in at the site while another alarm's call was active joined that call (migration 0028;
+    # services/calls.py join_active_call): this is the call's alarm id.
+    call_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id", ondelete="SET NULL"), nullable=True, index=True)
     call_ended_by: Mapped[User | None] = relationship(foreign_keys=[call_ended_by_id], lazy="joined")
 
 
@@ -505,7 +579,8 @@ class IpAllow(Base):
 
 
 class TrackerSource(Base):
-    """A company's InControl2 API client (its admins enter it on the Sites page). Its trackers are read with it."""
+    """A company's GPS account (its admins enter it on the Sites page), one per kind: "peplink" = an InControl2 API
+    client (client_id + secret), "fleetio" = a Fleetio account (client_id = Account Token, secret = API key)."""
 
     __tablename__ = "tracker_sources"
     __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_tracker_sources_tenant_kind"),)
@@ -539,7 +614,8 @@ class Tracker(Base):
     ic2_group: Mapped[int] = mapped_column(Integer, default=0)
     ic2_device: Mapped[int] = mapped_column(Integer, default=0)
     serial: Mapped[str] = mapped_column(String(40), default="")
-    device_name: Mapped[str] = mapped_column(String(200), default="")         # the router's name in InControl2
+    ext_id: Mapped[str] = mapped_column(String(64), default="")               # source "fleetio": the Fleetio vehicle id
+    device_name: Mapped[str] = mapped_column(String(200), default="")         # the router's name in InControl2 (Fleetio: year make model)
     tz: Mapped[str] = mapped_column(String(64), default="")                   # the IC2 group's time zone (its timestamps are local)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
     lng: Mapped[float | None] = mapped_column(Float, nullable=True)

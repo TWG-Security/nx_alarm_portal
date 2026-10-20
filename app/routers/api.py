@@ -723,7 +723,20 @@ async def list_alarms(scope: Scope = Depends(get_scope), db: AsyncSession = Depe
     if after_id:
         stmt = stmt.where(Alarm.id > after_id)
     rows = (await db.scalars(stmt.order_by(Alarm.id.asc() if order == "oldest" else Alarm.id.desc()).limit(limit))).unique().all()
-    return [alarm_dict(a) for a in rows]
+    out = [alarm_dict(a) for a in rows]
+    if state == "active" and rows:
+        # Calls: how many alarms joined each one since it started (services/calls.py join_active_call), and the newest.
+        counts = dict((await db.execute(select(Alarm.call_id, func.count()).where(Alarm.call_id.in_([a.id for a in rows]))
+                                        .group_by(Alarm.call_id))).all())
+        newest = {}
+        if counts:
+            last = select(Alarm.call_id, func.max(Alarm.id).label("id")).where(Alarm.call_id.in_(list(counts))).group_by(Alarm.call_id).subquery()
+            for a in (await db.scalars(select(Alarm).join(last, Alarm.id == last.c.id))).unique().all():
+                newest[a.call_id] = {"id": a.id, "caption": a.caption, "camera": a.source_name, "event_ts_ms": a.event_ts_ms,
+                                     "level": {1: "critical", 2: "alarm"}.get(a.priority, "warning")}
+        for d in out:
+            d["joined_count"], d["joined_newest"] = counts.get(d["id"], 0), newest.get(d["id"])
+    return out
 
 
 @router.post("/alarms/bulk")
@@ -765,6 +778,10 @@ async def bulk_edit(body: BulkIn, request: Request, user: User = Depends(require
     if confirmed or withdrawn:
         from app import sms
         sms.notify_verdicts(confirmed, withdrawn, user.id)
+    from app import apns
+    if confirmed or withdrawn:
+        apns.notify_verdicts(confirmed, withdrawn, user.id)
+    apns.notify_closed(acked, user.label, body.verdict)
     return {"acknowledged": acked, "changed": changed, "unchanged": unchanged}
 
 
@@ -834,6 +851,27 @@ async def add_note(alarm_id: int, body: NoteIn, request: Request, scope: Scope =
     data = note_dict(note)
     bus.publish(alarm.tenant_id, "alarm.note", data)
     return data
+
+
+VIEW_AGAIN_S = 300      # the same person re-opening the same alarm within 5 min isn't logged again
+
+
+@router.post("/alarms/{alarm_id}/viewed")
+async def alarm_viewed(alarm_id: int, request: Request, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """The alarm details were opened: on the timeline and in the incident report (the user, 2026-10-14: "add when
+    it was viewed"). Read access is enough; re-opens within VIEW_AGAIN_S are skipped."""
+    user = scope.user
+    alarm = await _get_alarm(db, scope, alarm_id)
+    now = datetime.now(timezone.utc)
+    seen = select(AuditLog.id).where(AuditLog.alarm_id == alarm.id, AuditLog.action == "alarm.viewed").limit(1)
+    if await db.scalar(seen.where(AuditLog.user_id == user.id, AuditLog.ts >= now - timedelta(seconds=VIEW_AGAIN_S))):
+        return {"logged": False}
+    first = await db.scalar(seen) is None
+    received = alarm.received_at.replace(tzinfo=alarm.received_at.tzinfo or timezone.utc)
+    audit(db, alarm.tenant_id, "alarm.viewed", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), first=first, state=alarm.state, after_s=max(0, round((now - received).total_seconds())))
+    await db.commit()
+    return {"logged": True}
 
 
 @router.get("/summary")
@@ -940,6 +978,7 @@ class UserIn(BaseModel):
     sms_level: str = Field(default="off", pattern="^(off|critical|alarm)$")
     sms_sites: list[int] | None = Field(default=None, max_length=1000)     # None = all sites
     sms_when: str = Field(default="raised", pattern="^(raised|confirmed|both)$")
+    monitoring_station: bool = False
 
 
 class UserUpdate(BaseModel):
@@ -951,6 +990,9 @@ class UserUpdate(BaseModel):
     sms_level: str | None = Field(default=None, pattern="^(off|critical|alarm)$")
     sms_when: str | None = Field(default=None, pattern="^(raised|confirmed|both)$")
     sms_all_sites: bool | None = None                                     # True = every site (clears sms_sites)
+    monitoring_station: bool | None = None                                # never signed out for inactivity / max age
+    push_level: str | None = Field(default=None, pattern="^(off|critical|alarm|warning)$")   # iPhone app notifications
+    push_when: str | None = Field(default=None, pattern="^(raised|confirmed|both)$")
     sms_sites: list[int] | None = Field(default=None, max_length=1000)    # only these sites
 
 
@@ -994,13 +1036,14 @@ def _check_password(pw: str) -> None:
 
 def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | None = None, text: dict | None = None) -> dict:
     return {"id": u.id, "email": u.email, "display_name": u.display_name, "role": u.role,
-            "phone": u.phone, "sms_level": u.sms_level, "sms_sites": u.sms_sites, "sms_when": u.sms_when, "last_text": text, "sms_consent": u.sms_consent,
+            "phone": u.phone, "sms_level": u.sms_level, "sms_sites": u.sms_sites, "sms_when": u.sms_when, "monitoring_station": bool(u.monitoring_station), "last_text": text, "sms_consent": u.sms_consent,
             "sms_consent_at": u.sms_consent_at.isoformat() if u.sms_consent_at else None,
             "sms_optin_sent_at": u.sms_optin_sent_at.isoformat() if u.sms_optin_sent_at else None,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
             "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
             "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
-            "invite_email": invite}
+            "invite_email": invite, "push_level": u.push_level or "alarm", "push_when": u.push_when or "raised",
+            "push_devices": getattr(u, "_push_devices", 0)}
 
 
 @router.get("/users")
@@ -1031,6 +1074,11 @@ async def list_users(user: User = Depends(require_admin), scope: Scope = Depends
                 .group_by(SmsLog.user_id).subquery())
         for t in (await db.scalars(select(SmsLog).join(last, SmsLog.id == last.c.id))).all():
             texts[t.user_id] = {"outcome": t.outcome, "ts": t.ts.isoformat(), "error": t.error, "purpose": t.purpose}
+    from app.models import PushDevice
+    phones = dict((await db.execute(select(PushDevice.user_id, func.count()).where(PushDevice.user_id.in_(ids))
+                                    .group_by(PushDevice.user_id))).all()) if ids else {}
+    for u in rows:
+        u._push_devices = phones.get(u.id, 0)
     return [_user_dict(u, keys.get(u.id, 0), live.get(u.id, 0), mails.get(u.id), texts.get(u.id)) for u in rows]
 
 
@@ -1045,7 +1093,7 @@ async def create_user(body: UserIn, request: Request, user: User = Depends(requi
     phone = _phone(body.phone)
     sites = await _site_choice(db, tid, body.sms_sites)
     new = User(tenant_id=tid, email=body.email.strip().lower(), display_name=body.display_name.strip(),
-               phone=phone, sms_level=body.sms_level if phone else "off", sms_sites=sites, sms_when=body.sms_when,
+               phone=phone, sms_level=body.sms_level if phone else "off", sms_sites=sites, sms_when=body.sms_when, monitoring_station=body.monitoring_station,
                password_hash=hash_password(body.password) if body.password else "", role=body.role,
                password_changed_at=now if body.password else None, invited_at=None if body.password else now)
     db.add(new)
@@ -1100,7 +1148,8 @@ async def update_user(user_id: int, body: UserUpdate, request: Request, user: Us
             body.sms_level = "off"
     if body.sms_level not in (None, "off") and not (body.phone if body.phone is not None else target.phone):
         raise HTTPException(400, "Add a mobile number first")
-    for name in ("display_name", "role", "is_active", "phone", "sms_level", "sms_when"):
+    for name in ("display_name", "role", "is_active", "phone", "sms_level", "sms_when", "monitoring_station",
+                 "push_level", "push_when"):
         value = getattr(body, name)
         if value is not None and getattr(target, name) != value:
             setattr(target, name, value)

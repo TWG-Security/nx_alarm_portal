@@ -98,6 +98,13 @@ def nx_row(ts, *, type_="generic", action_id="a1", ack=False, device="dev-1", ca
 
 
 @pytest.fixture(autouse=True)
+def no_real_apns_key(monkeypatch):
+    """The repo's .env may name production's APNs key (app/apns.py): tests never use it (apns_on sets a test key)."""
+    from app.config import get_settings
+    monkeypatch.setattr(get_settings(), "apns_key_path", "")
+
+
+@pytest.fixture(autouse=True)
 def fresh_security_state():
     """Settings snapshot, session IPs and connector hints are per process; reset them per test."""
     from app import net, platform_settings, security_guard

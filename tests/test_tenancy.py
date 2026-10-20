@@ -270,3 +270,161 @@ async def test_create_company_branding_and_logo_rules(client, session, world):
     assert (await client.put(f"/api/tenants/{cid}", json={"is_active": False})).status_code == 403
     await _as(client, world["a_admin"].email)
     assert (await client.get(f"/branding/{cid}/logo")).status_code == 404
+
+
+async def test_iphone_app_tokens_see_only_their_own_company(client, session, world):
+    """The iPhone app (Bearer device tokens, app/routers/mobile.py): always the user's own company, no switcher,
+    and every way into another company's things answers 404 as on the website."""
+    sb, ab, aa = world["sites"]["Bravo Guards"], world["alarms"]["Bravo Guards"], world["alarms"]["Acme Security"]
+    twg_alarm = world["alarms"]["TWG Security"]
+    a_email, viewer_email, a_id = world["a_admin"].email, world["twg_viewer"].email, world["a"].id
+
+    async def token(email):
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        r = await client.post("/api/mobile/login", json={"email": email, "password": PASSWORD, "device_name": "test"})
+        assert r.status_code == 200, r.text
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    h = await token(a_email)
+    assert (await client.get("/api/mobile/me", headers=h)).json()["company"]["id"] == a_id
+    assert [s["name"] for s in (await client.get("/api/sites", headers=h)).json()] == ["Acme Security HQ"]
+    for q in ("state=all", "state=open", "state=open&alerting=1", f"state=all&tenant_id={world['b'].id}"):
+        ids = [x["id"] for x in (await client.get(f"/api/alarms?{q}", headers=h)).json()]
+        assert ids == ([aa.id] if "tenant_id" not in q else []), q
+    for method, path, body in [
+        ("GET", f"/api/alarms/{ab.id}", None), ("GET", f"/api/alarms/{ab.id}/notes", None),
+        ("GET", f"/api/alarms/{ab.id}/timeline", None), ("POST", f"/api/alarms/{ab.id}/ack", {"verdict": "false"}),
+        ("POST", f"/api/alarms/{ab.id}/notes", {"text": "x"}), ("POST", f"/api/alarms/{ab.id}/end-call", {}),
+        ("GET", f"/api/alarms/{ab.id}/guards", None), ("POST", f"/api/alarms/{ab.id}/dispatch", {"tracker_ids": [1]}),
+        ("GET", f"/media/alarms/{ab.id}/snapshot.jpg", None), ("GET", f"/media/alarms/{ab.id}/live.jpg", None),
+        ("GET", f"/api/alarms/{ab.id}/clip", None), ("GET", f"/api/sites/{sb.id}/cameras", None),
+        ("POST", f"/api/sites/{sb.id}/disarm", {}),
+    ]:
+        r = await client.request(method, path, json=body, headers=h)
+        assert r.status_code == 404, (method, path, r.status_code, r.text[:200])
+
+    # TWG's view-everything operator: the app shows TWG's own company only, even after asking for "all".
+    h = await token(viewer_email)
+    await client.post("/api/scope", json={"scope": "all"}, headers=h)
+    ids = [x["id"] for x in (await client.get("/api/alarms?state=all", headers=h)).json()]
+    assert ids == [twg_alarm.id]
+    assert (await client.get(f"/api/alarms/{aa.id}", headers=h)).status_code == 404
+
+
+async def test_guard_dispatch_endpoints_stay_inside_their_company(client, session, world):
+    """GET /api/mobile/dispatches lists only the caller's own dispatch links in their own company; GET /api/a/{token}
+    answers only for a real token (the token is the key), and an unknown one counts as a failed sign-in."""
+    from datetime import timedelta
+    from app import alarm_links
+    from app.models import AuthEvent
+    ab = world["alarms"]["Bravo Guards"]
+    b_op_id, a_email, b_email = world["b_op"].id, world["a_admin"].email, world["b_op"].email
+    ab.call_state = "active"
+    b_op = await session.get(User, b_op_id)
+    token = await alarm_links.mint(session, ab, b_op, 24, purpose="dispatch")
+    await session.commit()
+
+    async def bearer_for(email):
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        r = await client.post("/api/mobile/login", json={"email": email, "password": PASSWORD, "device_name": "t"})
+        return {"Authorization": f"Bearer {r.json()['token']}"}
+
+    assert (await client.get("/api/mobile/dispatches", headers=await bearer_for(a_email))).json() == []
+    mine = (await client.get("/api/mobile/dispatches", headers=await bearer_for(b_email))).json()
+    assert [(d["alarm_id"], d["link_token"]) for d in mine] == [(ab.id, token)]
+    assert (await client.get("/api/mobile/dispatches")).status_code == 401           # no sign-in
+    client.cookies.clear()
+    assert (await client.get(f"/api/a/{token}")).json()["alarm"]["id"] == ab.id
+    before = len((await session.scalars(select(AuthEvent).where(AuthEvent.kind == "alarm_link"))).all())
+    assert (await client.get(f"/api/a/{token[:-2]}xx")).status_code == 404
+    after = len((await session.scalars(select(AuthEvent).where(AuthEvent.kind == "alarm_link"))).all())
+    assert after == before + 1
+
+
+async def test_iphone_app_passkey_sign_in_stays_in_its_company(client, session, world):
+    """A customer's passkey sign-in from the app (POST /api/mobile/passkey/options + verify) gives a token for
+    their own company only; a second factor can't be answered with another company's passkey."""
+    from tests.test_two_factor import add_passkey, soft_key
+    a_email, b_email, a_id = world["a_admin"].email, world["b_admin"].email, world["a"].id
+    aa, ab = world["alarms"]["Acme Security"], world["alarms"]["Bravo Guards"]
+    keys = {}
+    for email in (a_email, b_email):
+        keys[email] = soft_key()
+        await _as(client, email)
+        await add_passkey(client, keys[email])
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    o = (await client.post("/api/mobile/passkey/options", json={"device_name": "t"})).json()
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": keys[a_email].sign(o["options"])})
+    h = {"Authorization": f"Bearer {r.json()['token']}"}
+    assert r.json()["user"]["company"]["id"] == a_id
+    assert [x["id"] for x in (await client.get("/api/alarms?state=all", headers=h)).json()] == [aa.id]
+    assert (await client.get(f"/api/alarms/{ab.id}", headers=h)).status_code == 404
+    # Acme's password step, answered with Bravo's passkey: refused
+    from app import mfa
+    from sqlalchemy import update
+    await session.execute(update(User).where(User.email == a_email).values(totp_enabled=True, totp_secret_enc=mfa.new_totp_secret()))
+    await session.commit()
+    ch = (await client.post("/api/mobile/login", json={"email": a_email, "password": PASSWORD, "device_name": "t"})).json()["challenge"]
+    o = (await client.post("/api/mobile/passkey/options", json={"challenge": ch})).json()
+    r = await client.post("/api/mobile/passkey/verify", json={"challenge_id": o["challenge_id"], "credential": keys[b_email].sign(o["options"])})
+    assert r.status_code == 400 and "token" not in r.json()
+
+
+async def test_iphone_push_stays_inside_its_company(client, session, world, tmp_path, monkeypatch):
+    """App notifications (app/apns.py) go only to the alarm's own company's phones; a phone can only be removed by its
+    owner; push settings are per person (PUT /api/mobile/me/push changes only the caller)."""
+    import httpx
+    import respx
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from app import apns, sms
+    from app.config import get_settings
+    from app.models import PushDevice
+    path = tmp_path / "k.p8"
+    path.write_bytes(ec.generate_private_key(ec.SECP256R1()).private_bytes(
+        serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    for k, v in {"apns_key_path": str(path), "apns_key_id": "K1", "apns_team_id": "NY8H9358QD", "apns_api_base": "https://apns.test"}.items():
+        monkeypatch.setattr(get_settings(), k, v)
+    apns.reset()
+    aa, ab = world["alarms"]["Acme Security"], world["alarms"]["Bravo Guards"]
+    a_email, b_email = world["a_admin"].email, world["b_admin"].email
+    tokens = {}
+    for email, tok in ((a_email, "a" * 64), (b_email, "b" * 64)):
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        t = (await client.post("/api/mobile/login", json={"email": email, "password": PASSWORD, "device_name": "t"})).json()["token"]
+        tokens[email] = {"Authorization": f"Bearer {t}"}
+        assert (await client.post("/api/mobile/devices", headers=tokens[email], json={"apns_token": tok, "environment": "sandbox"})).status_code == 200
+    with respx.mock:
+        route = respx.post(url__startswith="https://apns.test/3/device/").mock(return_value=httpx.Response(200))
+        for a in (aa, ab):
+            a.state = "new"
+        await session.commit()
+        apns.notify([aa])
+        await sms.drain()
+        assert [c.request.url.path.rsplit("/", 1)[-1] for c in route.calls] == ["a" * 64]       # Acme's alarm: Acme's phone only
+    # Bravo can't remove Acme's phone; settings change only the caller
+    r = await client.delete(f"/api/mobile/devices/{'a' * 64}", headers=tokens[b_email])
+    assert r.json() == {"removed": False}
+    assert len((await session.scalars(select(PushDevice))).all()) == 2
+    await client.put("/api/mobile/me/push", headers=tokens[b_email], json={"push_level": "off"})
+    session.expire_all()
+    a_user = await session.scalar(select(User).where(User.email == a_email))
+    assert a_user.push_level is None
+    apns.reset()
+
+
+async def test_on_duty_share_token_is_in_the_callers_company(client, session, world):
+    """POST /api/mobile/share makes / finds the caller's phone tracker in THEIR company only."""
+    from app.models import Tracker
+    a_email, a_id = world["a_admin"].email, world["a"].id
+    client.cookies.clear()
+    client.headers.pop("X-CSRF-Token", None)
+    t = (await client.post("/api/mobile/login", json={"email": a_email, "password": PASSWORD, "device_name": "t"})).json()["token"]
+    r = await client.post("/api/mobile/share", headers={"Authorization": f"Bearer {t}"})
+    assert r.status_code == 200
+    rows = (await session.scalars(select(Tracker).where(Tracker.source == "phone"))).all()
+    assert [x.tenant_id for x in rows] == [a_id]

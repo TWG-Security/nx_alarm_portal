@@ -5,9 +5,10 @@ import { createPasskey, getPasskey, passkeyError, passkeysUsable } from "./webau
 const $ = (id) => document.getElementById(id);
 let me = null;
 
-const METHOD = { password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
+const METHOD = { mobile: "the iPhone app", password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
   sso: "Google", legacy: "before sessions were tracked" };
 function browserName(ua) {
+  if (/TWG Alarms/.test(ua)) return `iPhone app (${ua})`;
   const os = /Windows/.test(ua) ? "Windows" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Android/.test(ua) ? "Android"
     : /iPhone|iPad/.test(ua) ? "iPhone/iPad" : /Linux/.test(ua) ? "Linux" : "";
   const br = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
@@ -136,7 +137,77 @@ $("sign-out-all").addEventListener("click", async () => {
   location.href = "/login";
 });
 
+// ---------------------------------------------------------------- API tokens (MCP server)
+async function loadTokens() {
+  const r = await api("/api/account/tokens");
+  $("tok-url").textContent = r.mcp_url;
+  $("tok-rows").innerHTML = r.tokens.map((t) => `<tr><td><b>${esc(t.name)}</b><div class="muted small-print">Created ${esc(fmtTime(t.created_at))}</div></td>
+      <td class="mono">${esc(t.hint)}</td>
+      <td>${t.last_used_at ? `${esc(relTime(t.last_used_at))}<div class="muted small-print mono">${esc(t.last_used_ip)}</div>` : '<span class="muted">Never</span>'}</td>
+      <td>${t.expires_at ? esc(fmtTime(t.expires_at)) : "Never"}</td>
+      <td><button class="btn btn-sm" type="button" data-revoke="${t.id}" data-name="${esc(t.name)}">Revoke</button></td></tr>`).join("")
+    || '<tr><td colspan="5" class="empty">No tokens.</td></tr>';
+}
+$("tok-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const days = $("tok-days").value;
+    const r = await api("/api/account/tokens", { method: "POST", body: { name: $("tok-name").value, days: days ? Number(days) : null } });
+    $("tok-new").innerHTML = `<div class="alert alert-ok"><b>Token "${esc(r.name)}"</b>: copy it now, it won't be shown again.
+      <div class="row" style="margin-top:8px;align-items:center"><input type="text" readonly value="${esc(r.token)}" class="mono" id="tok-value" onfocus="this.select()">
+      <button class="btn btn-sm" type="button" id="tok-copy" style="flex:0 0 auto">Copy</button></div></div>`;
+    $("tok-copy").addEventListener("click", () => {
+      $("tok-value").select();
+      (navigator.clipboard ? navigator.clipboard.writeText(r.token) : Promise.reject()).then(() => toast("Token copied"))
+        .catch(() => { document.execCommand("copy"); toast("Token copied"); });
+    });
+    e.target.reset(); $("tok-days").value = "90";
+    await loadTokens();
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+$("tok-rows").addEventListener("click", async (e) => {
+  const d = e.target.dataset;
+  if (!d.revoke || !confirm(`Revoke the token "${d.name}"? Anything using it stops working right away.`)) return;
+  try { await api(`/api/account/tokens/${d.revoke}`, { method: "DELETE" }); toast("Token revoked"); $("tok-new").innerHTML = ""; await loadTokens(); }
+  catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+
+// ---------------------------------------------------------------- iPhone app notifications (app/apns.py)
+const ENV = { sandbox: "test build", production: "App Store / TestFlight" };
+async function loadPush() {
+  const r = await api("/api/account/push");
+  $("pu-level").value = r.push_level; $("pu-when").value = r.push_when;
+  $("pu-devices").innerHTML = (r.ready ? "" : '<div class="alert alert-warn">App notifications aren\'t switched on for the portal yet (the server needs Apple\'s key).</div>')
+    + (r.devices.length ? `<p>Signed in on ${r.devices.length} iPhone${r.devices.length === 1 ? "" : "s"}:</p><ul>${r.devices.map((d) => `<li>iOS ${esc(d.ios_version || "?")}, app ${esc(d.app_version || "?")} (${esc(ENV[d.environment] || d.environment)}),
+        added ${esc(relTime(d.created_at))}${d.last_push_at ? `, last notification ${esc(relTime(d.last_push_at))}` : ""}
+        <button class="btn btn-sm" type="button" data-pu-remove="${d.id}">Remove</button></li>`).join("")}</ul>`
+      : '<p class="muted">No iPhone yet: sign in to the TWG Alarms app and allow notifications.</p>');
+  $("pu-test").disabled = !r.ready || !r.devices.length;
+}
+$("pu-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try { await api("/api/account/push", { method: "PUT", body: { push_level: $("pu-level").value, push_when: $("pu-when").value } }); toast("Saved"); await loadPush(); }
+  catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+$("pu-test").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/account/push/test", { method: "POST" });
+    const ok = r.results.filter((x) => x.outcome === "sent").length;
+    toast(ok === r.results.length ? "Test notification sent: check your iPhone" : `Sent to ${ok} of ${r.results.length}: ${esc(r.results.find((x) => x.outcome !== "sent")?.reason || "")}`,
+      { kind: ok ? "" : "error" });
+    await loadPush();
+  } catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+$("pu-devices").addEventListener("click", async (e) => {
+  const id = e.target.dataset.puRemove;
+  if (!id || !confirm("Stop notifications on this iPhone? (Signing out of the app does the same.)")) return;
+  try { await api(`/api/account/push/devices/${id}`, { method: "DELETE" }); toast("Removed"); await loadPush(); }
+  catch (err) { toast(esc(err.message), { kind: "error" }); }
+});
+
 async function load() {
+  loadPush().catch((err) => toast(esc(err.message), { kind: "error" }));
+  loadTokens().catch((err) => toast(esc(err.message), { kind: "error" }));
   me = await api("/api/account");
   $("acct-who").innerHTML = `${esc(me.display_name || me.email)} · ${esc(me.email)} · ${esc(me.company)} (${me.role === "admin" ? "admin" : "operator"})`;
   $("pw-hint").textContent = me.password_hint;

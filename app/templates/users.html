@@ -36,6 +36,9 @@
       <div class="field"><label for="u-name">Name</label><input id="u-name" type="text"></div>
     </div>
     <div class="field"><label for="u-role">Role</label><select id="u-role"><option value="operator">Operator</option><option value="admin">Admin</option></select></div>
+    <label class="check check--top" for="u-station"><input id="u-station" type="checkbox"> <span><b>Monitoring station</b>: never sign out while the portal is open
+      <small class="muted" style="display:block">Ignores the inactivity and "always sign out after" limits on the Platform page, so an operator watching alarms isn't
+        signed out mid-shift. Closing the browser for longer than the closed-browser limit still signs them out.</small></span></label>
     <h3>Alarm texts</h3>
     <div class="row">
       <div class="field"><label for="u-phone">Mobile number (optional)</label><input id="u-phone" type="tel" maxlength="30" placeholder="(570) 555-1234" autocomplete="off"></div>
@@ -75,6 +78,9 @@
       <div class="field"><label for="ed-name">Name</label><input id="ed-name" type="text" maxlength="200"></div>
       <div class="field"><label for="ed-role">Role</label><select id="ed-role"><option value="operator">Operator</option><option value="admin">Admin</option></select></div>
     </div>
+    <label class="check check--top" for="ed-station"><input id="ed-station" type="checkbox"> <span><b>Monitoring station</b>: never sign out while the portal is open
+      <small class="muted" style="display:block">Ignores the inactivity and "always sign out after" limits on the Platform page, so an operator watching alarms isn't
+        signed out mid-shift. Closing the browser for longer than the closed-browser limit still signs them out.</small></span></label>
     <h3>Alarm texts</h3>
     <div class="row">
       <div class="field"><label for="ed-phone">Mobile number</label><input id="ed-phone" type="tel" maxlength="30" placeholder="(570) 555-1234" autocomplete="off"></div>
@@ -92,6 +98,12 @@
       <label class="radio inline"><input type="radio" name="ed-scope" value="some"><span>Only these sites</span></label>
       <div class="member-grid" id="ed-sites" hidden></div></div>
     <div id="ed-texts"></div>
+    <h3>App notifications (iPhone)</h3>
+    <div class="row">
+      <div class="field"><label for="ed-push-level">Notify them</label><select id="ed-push-level"><option value="off">No notifications</option><option value="critical">Critical only</option><option value="alarm">Critical + Alarm</option><option value="warning">Everything, warnings too</option></select></div>
+      <div class="field"><label for="ed-push-when">Send</label><select id="ed-push-when"><option value="raised">When the alarm goes off</option><option value="confirmed">Only when an operator confirms it's real (e.g. a mobile guard)</option><option value="both">Both: when it goes off, and again when confirmed</option></select></div>
+    </div>
+    <p class="muted small-print" id="ed-push-note" style="margin-top:-4px"></p>
     <h3>Account</h3>
     <div id="ed-account"></div>
     <div id="ed-link"></div>
