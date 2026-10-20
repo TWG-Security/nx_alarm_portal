@@ -218,7 +218,7 @@ PUT    /api/mobile/me/push  (Bearer)  {"push_level"?, "push_when"?}  -> Me      
   | "confirmed" | "both"; which sites = the same as their texts (`sms_sites`). Me also has `"push_ready"` (the server
   has Apple's key).
 
-What is pushed, all with `"sound": "default"`, apns-push-type `alert`, `apns-expiration` = now + 1 h:
+What is pushed (apns-push-type `alert`, `apns-expiration` = now + 1 h). **Sounds** (2026-10-20): the app installs each person's choice as `Library/Sounds/twg-critical.wav`, `twg-alarm.wav`, `twg-warning.wav`; `alarm` (incl. CONFIRMED and summaries) and `call_update` pushes use the file for the alarm's level, `dispatch` always `twg-critical.wav`, `alarm_closed` has no sound, the rest (`call_ended`, stand down, `test`) `"default"`:
 
 | type | when (same as the text) | aps.alert | interruption-level | apns-collapse-id / priority | extra keys |
 |---|---|---|---|---|---|

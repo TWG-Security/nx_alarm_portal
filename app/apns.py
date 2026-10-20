@@ -48,6 +48,13 @@ DB_SLOTS = 2
 ALARM_TTL_S = 3600               # APNs keeps an undelivered alarm push this long (a phone that was off)
 DEAD = {"BadDeviceToken", "Unregistered", "DeviceTokenNotForTopic"}
 WORD = {1: "CRITICAL", 2: "ALARM", 3: "WARNING"}
+# The app installs each person's chosen sound per level as Library/Sounds/<file>; iOS plays its default sound if the
+# file is missing. Alarm-type pushes use the alarm's level; dispatch is always critical; CLOSED stays silent.
+SOUND = {1: "twg-critical.wav", 2: "twg-alarm.wav", 3: "twg-warning.wav"}
+
+
+def sound_for(priority: int) -> str:
+    return SOUND.get(priority, SOUND[3])
 
 
 def level_of(user: User) -> str:
@@ -250,7 +257,7 @@ def alarm_payload(alarm: Alarm, word: str | None = None) -> dict:
     return {"aps": {"alert": {"title": f"{word or WORD.get(alarm.priority, 'WARNING')} · {_site(alarm)}",
                               "subtitle": alarm.source_name or "",
                               "body": f"{alarm.caption} · {_when(alarm)}"},
-                    "sound": "default", "interruption-level": "time-sensitive" if alarm.priority <= 2 else "active",
+                    "sound": sound_for(alarm.priority), "interruption-level": "time-sensitive" if alarm.priority <= 2 else "active",
                     "thread-id": f"alarm-{alarm.id}"},
             "type": "alarm", "alarm_id": alarm.id, "level": level, "site_id": alarm.site_id}
 
@@ -307,7 +314,7 @@ async def _flush(user_id: int) -> None:
                 return
             n, sites = held.count, ", ".join(held.sites[:3]) + (" …" if len(held.sites) > 3 else "")
             payload = {"aps": {"alert": {"title": f"{n} more alarm{'s' if n != 1 else ''}", "body": sites or _site(newest)},
-                               "sound": "default", "interruption-level": "time-sensitive", "thread-id": "alarm-summary"},
+                               "sound": sound_for(newest.priority), "interruption-level": "time-sensitive", "thread-id": "alarm-summary"},
                        "type": "alarm", "summary": True, "count": n, "alarm_id": newest.id,
                        "level": {1: "critical", 2: "alarm"}.get(newest.priority, "warning"), "site_id": newest.site_id}
         await _send(user_id, "summary", payload, _headers("alarm-summary"), newest, None)
@@ -451,7 +458,7 @@ def dispatch(alarm: Alarm, user_id: int, link_token: str, distance: str, by: str
     where = ", ".join(x for x in ((alarm.site.address if alarm.site else ""), f"{distance} away" if distance else "") if x)
     p = {"aps": {"alert": {"title": f"DISPATCH · {_site(alarm)}", "subtitle": alarm.caption,
                            "body": where or (f"Sent by {by}" if by else "Open for directions")},
-                 "sound": "default", "interruption-level": "time-sensitive", "thread-id": f"alarm-{alarm.id}"},
+                 "sound": SOUND[1], "interruption-level": "time-sensitive", "thread-id": f"alarm-{alarm.id}"},
          "type": "dispatch", "alarm_id": alarm.id, "link_token": link_token, "site_id": alarm.site_id,
          "level": {1: "critical", 2: "alarm"}.get(alarm.priority, "warning"), "auto": auto}
     _spawn(_send(user_id, "dispatch", p, _headers(f"dispatch-{alarm.id}"), alarm, time.time()))
@@ -464,7 +471,7 @@ def call_update(call: Alarm, alarm: Alarm, user_id: int, count: int = 1) -> None
     more = f" (+{count - 1} more)" if count > 1 else ""
     p = {"aps": {"alert": {"title": f"UPDATE · {_site(call)}", "subtitle": alarm.source_name or "",
                            "body": f"{alarm.caption}{more} · {_when(alarm)}"},
-                 "sound": "default", "interruption-level": "time-sensitive", "thread-id": f"alarm-{call.id}"},
+                 "sound": sound_for(alarm.priority), "interruption-level": "time-sensitive", "thread-id": f"alarm-{call.id}"},
          "type": "call_update", "alarm_id": call.id, "joined_alarm_id": alarm.id, "count": count,
          "level": {1: "critical", 2: "alarm"}.get(alarm.priority, "warning"), "site_id": call.site_id}
     _spawn(_send(user_id, "call_update", p, _headers(f"update-{alarm.id}"), call, time.time()))

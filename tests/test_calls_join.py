@@ -121,3 +121,4 @@ async def test_the_dispatched_guards_app_gets_a_call_update(client, session, apn
     assert b["alarm_id"] == call.id and b["joined_alarm_id"] and b["aps"]["alert"]["title"] == f"UPDATE · {site.name}"
     assert b["aps"]["alert"]["body"].startswith("Gate line crossed") and b["aps"]["thread-id"] == f"alarm-{call.id}"
     assert h["apns-collapse-id"] == f"update-{b['joined_alarm_id']}"
+    assert b["aps"]["sound"] == "twg-alarm.wav"                           # the joined alarm's level

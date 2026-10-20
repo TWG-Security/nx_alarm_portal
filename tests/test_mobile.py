@@ -459,7 +459,7 @@ async def test_a_new_alarm_pushes_the_exact_payload_signed_es256(client, session
     assert token == PHONE and str(route.calls[0].request.url).startswith(f"{APNS_BASE}/3/device/")
     assert body["aps"]["alert"]["title"] == "CRITICAL · TWG Security Office"
     assert body["aps"]["alert"]["subtitle"] == "Front Door Cam" and body["aps"]["alert"]["body"].startswith("Panic button · ")
-    assert body["aps"]["sound"] == "default" and body["aps"]["interruption-level"] == "time-sensitive"
+    assert body["aps"]["sound"] == "twg-critical.wav" and body["aps"]["interruption-level"] == "time-sensitive"
     assert body["aps"]["thread-id"] == f"alarm-{alarm.id}"
     assert {k: body[k] for k in ("type", "alarm_id", "level", "site_id")} == {"type": "alarm", "alarm_id": alarm.id, "level": "critical", "site_id": site.id}
     assert headers["apns-push-type"] == "alert" and headers["apns-priority"] == "10"
@@ -492,6 +492,7 @@ async def test_who_gets_pushed_levels_when_and_sites(client, session, apns_on):
     apns.notify([await make_alarm(session, site, priority=3)])
     await sms.drain()
     assert route.call_count == 1 and sent(route)[0][2]["aps"]["interruption-level"] == "active"
+    assert sent(route)[0][2]["aps"]["sound"] == "twg-warning.wav"
     await client.put("/api/mobile/me/push", headers=h, json={"push_when": "confirmed"})
     apns.notify([await make_alarm(session, site, priority=1)])
     await sms.drain()
@@ -585,6 +586,9 @@ async def test_confirmed_closed_dispatch_and_call_ended_pushes(client, session, 
     assert "dispatch" in types and "alarm" in types
     d = next(b for b in by_token("c" * 64) if b["type"] == "dispatch")
     assert d["aps"]["alert"]["title"] == "DISPATCH · TWG Security Office" and d["alarm_id"] == alarm.id
+    assert d["aps"]["sound"] == "twg-critical.wav"                       # dispatch: always the critical sound
+    assert [b["aps"]["sound"] for b in by_token("b" * 64) if b["type"] == "alarm"] == ["twg-alarm.wav"]
+    assert "sound" not in closed[0][1]["aps"]                             # CLOSED stays silent
     link = (await client.get("/api/mobile/dispatches", headers=hg)).json()
     assert link and link[0]["link_token"] == d["link_token"]            # the same token as the text's /a/ link
     await client.post(f"/api/alarms/{alarm.id}/end-call", json={"note": "clear"})
