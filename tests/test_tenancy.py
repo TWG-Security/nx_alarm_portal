@@ -65,8 +65,14 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
     from app.models import Tracker
     bt = Tracker(tenant_id=world["b"].id, name="Bravo guard", source="phone", user_id=world["b_op"].id, lat=40, lng=-75)
     session.add(bt)
+    from app.models import CameraHealth, CameraHealthImage
+    session.add(CameraHealth(tenant_id=world["b"].id, site_id=sb.id, device_id="cam-b", name="Bravo cam", status="warning",
+                             issues=[], state={}, metrics={}, settings={}, mode="day"))
+    session.add(CameraHealthImage(site_id=sb.id, device_id="cam-b", kind="last", jpeg=b"\xff\xd8bravo"))
     await session.commit()
     await _as(client, world["a_admin"].email)
+    assert (await client.get("/api/camera-health")).json()["cameras"] == []
+    assert (await client.get("/api/camera-health/summary")).json() == {"total": {}, "sites": {}}
 
     assert [s["id"] for s in (await client.get("/api/sites")).json()] == [sa.id]
     for q in ("state=all", "state=open", "state=open&alerting=1", f"state=all&tenant_id={world['b'].id}"):
@@ -115,6 +121,10 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("DELETE", f"/api/sites/{sb.id}/rules/4c1d77c5-5f11-4567-8cfa-6db360231186", None),
         ("PUT", f"/api/tracking/trackers/{bt.id}", {"name": "x"}), ("DELETE", f"/api/tracking/trackers/{bt.id}", None),
         ("POST", f"/api/tracking/trackers/{bt.id}/share", {"renew": True}),
+        ("GET", f"/api/camera-health/{sb.id}/cam-b", None), ("GET", f"/media/camera-health/{sb.id}/cam-b/last.jpg", None),
+        ("POST", f"/api/camera-health/{sb.id}/cam-b/check", None), ("POST", f"/api/camera-health/{sb.id}/cam-b/accept", None),
+        ("POST", f"/api/camera-health/{sb.id}/cam-b/mute", {"hours": 24}),
+        ("PUT", f"/api/camera-health/{sb.id}/cam-b/settings", {"skip": True}),
     ]:
         r = await client.request(method, path, json=body)
         assert r.status_code == 404, (method, path, r.status_code, r.text[:200])

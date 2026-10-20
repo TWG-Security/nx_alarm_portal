@@ -9,3 +9,5 @@ __pycache__
 tile-cache
 media-cache
 site-models
+secrets
+.dev-*

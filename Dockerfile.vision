@@ -1,0 +1,29 @@
+# syntax=docker/dockerfile:1
+# Camera health worker (app/camhealth): the portal's code plus OpenCV and, for the NVIDIA card, PyTorch with CUDA and
+# three small pretrained models baked in (app/camhealth/ai.py). Runs `python -m app.camhealth.worker`, never the web
+# app; it only reads frames from NX and writes the camera_health tables.
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME=/models/hf \
+    TORCH_HOME=/models/torch
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends libglib2.0-0 && rm -rf /var/lib/apt/lists/*
+
+# The big layer first so code changes rebuild in seconds. cu126 wheels carry the Turing (T1000, sm_75) kernels.
+RUN pip install --no-cache-dir torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu126
+COPY requirements-vision.txt requirements.txt ./
+RUN grep -v -E "^(meshoptimizer|trimesh|pyproj|scipy)" requirements.txt > /tmp/req.txt \
+    && pip install --no-cache-dir -r /tmp/req.txt -r requirements-vision.txt
+COPY app/camhealth/ai.py /tmp/ai.py
+RUN mkdir -p /models && python /tmp/ai.py --download && chmod -R a+rX /models
+
+COPY app ./app
+RUN useradd --create-home --uid 10001 appuser
+USER appuser
+ENV HF_HUB_OFFLINE=1
+
+CMD ["python", "-m", "app.camhealth.worker"]

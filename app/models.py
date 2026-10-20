@@ -650,3 +650,63 @@ class TrackerPoint(Base):
     lat: Mapped[float] = mapped_column(Float)
     lng: Mapped[float] = mapped_column(Float)
     speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CameraHealth(Base):
+    """Camera image health (app/camhealth): one row per camera, written by the vision worker every check."""
+
+    __tablename__ = "camera_health"
+    __table_args__ = (UniqueConstraint("site_id", "device_id", name="uq_camera_health_cam"),
+                      Index("ix_camera_health_changed", "changed_at"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(300), default="")
+    nx_status: Mapped[str] = mapped_column(String(20), default="")      # NX: Online | Recording | Offline | Unauthorized
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | ok | warning | problem | offline
+    issues: Mapped[list] = mapped_column(JSONType, default=list)        # shown: [{kind, severity, title, detail, boxes, ...}]
+    state: Mapped[dict] = mapped_column(JSONType, default=dict)         # app/camhealth/state.py (streaks, tracks)
+    metrics: Mapped[dict] = mapped_column(JSONType, default=dict)       # last check's numbers (for tuning)
+    mode: Mapped[str] = mapped_column(String(10), default="")           # day | night (the last frame)
+    ai: Mapped[bool] = mapped_column(Boolean, default=False)            # the GPU checks ran on the last frame
+    learning: Mapped[bool] = mapped_column(Boolean, default=True)       # no reference for this mode yet
+    settings: Mapped[dict] = mapped_column(JSONType, default=dict)      # {skip: bool, view_checks: bool}
+    error: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)   # status/issues changed
+    muted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    check_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CameraHealthImage(Base):
+    """The last checked frame and the reference pictures (kept in the database so the references are backed up)."""
+
+    __tablename__ = "camera_health_images"
+    __table_args__ = (UniqueConstraint("site_id", "device_id", "kind", name="uq_camera_health_image"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))                        # last | ref_day | ref_night
+    jpeg: Mapped[bytes] = mapped_column(LargeBinary)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    source: Mapped[str] = mapped_column(String(20), default="auto")     # auto | user
+    by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class CameraHealthEvent(Base):
+    """History: an issue raised or cleared, a reference accepted, a mute."""
+
+    __tablename__ = "camera_health_events"
+    __table_args__ = (Index("ix_camera_health_events_cam", "site_id", "device_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    kind: Mapped[str] = mapped_column(String(30))
+    change: Mapped[str] = mapped_column(String(20))                      # raised | cleared | reference | muted | unmuted
+    detail: Mapped[dict] = mapped_column(JSONType, default=dict)

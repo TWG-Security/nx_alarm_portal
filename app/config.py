@@ -98,6 +98,12 @@ class Settings(BaseSettings):
     cookie_secure: bool = True           # set False only for plain-http local dev
     twilio_api_base: str = "https://api.twilio.com"   # text messages (app/sms.py); tests and dev point it at a fake
     start_pollers: bool = True           # tests turn this off
+    # Camera image health (app/camhealth/worker.py, the `vision` container)
+    camhealth_interval_s: int = 300      # one frame per camera this often
+    camhealth_parallel: int = 3          # frames fetched at once over all sites (one per site at a time)
+    camhealth_frame_width: int = 1280    # px asked from NX
+    camhealth_ai: str = "auto"           # auto (GPU if there is one) | off
+    camhealth_watch_s: float = 10.0      # the web app looks for changed cameras this often (-> camera.health events)
 
 
 @lru_cache

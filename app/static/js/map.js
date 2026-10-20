@@ -151,6 +151,7 @@ function renderDetail() {
       ${viewBtn("3d", "data-globe", "3D", "Fly into a 3D aerial view of this site")}</div>` : ""}
     ${armCardHtml(s)}
     ${rulesLineHtml(s)}
+    ${healthLineHtml(s)}
     <dl class="sp-kv">
       <dt>NX</dt><dd>${esc(s.nx_site_name || "—")}${s.nx_version ? ` <span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
       ${s.notes ? `<dt>Notes</dt><dd class="sp-notes">${esc(s.notes)}</dd>` : ""}
@@ -437,7 +438,35 @@ const camAlarm = (siteId, deviceId) => [...openAlarms.values()].find((a) => a.si
 const globeModels = () => [...sites.values()].filter((s) => s.model?.ready).map((s) =>
   ({ siteId: s.id, url: s.model.ready.url, anchor: s.model.ready.anchor, placement: s.model.ready.placement }));
 const globeCams = () => [...sites.values()].flatMap((s) => Object.entries(s.camera_places || {}).map(([deviceId, p]) =>
-  ({ siteId: s.id, deviceId, ...p, alarm: !!camAlarm(s.id, deviceId) })));
+  ({ siteId: s.id, deviceId, ...p, alarm: !!camAlarm(s.id, deviceId), health: camHealthOf(s.id, deviceId) })));
+
+// Camera image health (the vision worker; /health page): {status, issue} per camera that isn't muted. Never an alarm:
+// only the site panel line and the camera icons show it.
+const camHealth = new Map();
+let healthLoaded = false, healthTimer = null;
+function camHealthOf(siteId, deviceId) {
+  const h = camHealth.get(`${siteId}:${String(deviceId).toLowerCase()}`);
+  return h && !h.muted && (h.status === "problem" || h.status === "warning") ? { status: h.status, issue: h.issues[0]?.title || "" } : null;
+}
+async function loadHealth() {
+  const r = await api("/api/camera-health").catch(() => null);
+  if (!r) return;
+  camHealth.clear();
+  for (const c of r.cameras) camHealth.set(`${c.site_id}:${c.device_id}`, c);
+  healthLoaded = r.cameras.length > 0;
+  renderDetail(); plan?.update(); globe?.update();
+}
+on("camera.health", () => { clearTimeout(healthTimer); healthTimer = setTimeout(loadHealth, 1500); });
+function healthLineHtml(s) {
+  if (!healthLoaded) return "";
+  const cams = [...camHealth.values()].filter((c) => c.site_id === s.id);
+  if (!cams.length) return "";
+  const p = cams.filter((c) => c.status === "problem" && !c.muted).length, w = cams.filter((c) => c.status === "warning" && !c.muted).length;
+  const ok = cams.filter((c) => c.status === "ok").length;
+  if (!p && !w) return `<div class="sp-status ok" title="Checked every few minutes for blur, covered or moved cameras and scene changes">${ICON.camera}<span>Camera pictures OK (${ok} checked)</span></div>`;
+  const txt = [p ? `${p} camera problem${p === 1 ? "" : "s"}` : "", w ? `${w} warning${w === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+  return `<a class="sp-status warn sp-health" href="/health?site=${s.id}" title="Open Camera health for this site">${ICON.camera}<span>${txt}</span><span class="sp-status-more">Review</span>${ICON.chevron}</a>`;
+}
 
 // HUD text: the selected site, a UTC clock, counts, and where the view is centred.
 const STATE_TXT = { ok: "NORMAL", warn: "WARNING", alarm: "ALARM", offline: "OFFLINE" };
@@ -1115,7 +1144,8 @@ on("site.status", ({ site_id, status, detail }) => {
 on("site.updated", (s) => { sites.set(s.id, { ...sites.get(s.id), ...s }); renderAll(); models.siteChanged(); });
 on("site.push", ({ site_id, push }) => { const s = sites.get(site_id); if (s) { s.push = push; renderDetail(); } });
 on("site.removed", (s) => { sites.delete(s.id); markers.get(s.id)?.remove(); markers.delete(s.id); renderAll(); });
-on("reconnect", () => loadSites().then(renderAll).catch(() => {}));
+on("reconnect", () => { loadSites().then(renderAll).catch(() => {}); loadHealth(); });
+loadHealth();
 on("focus-alarm", focusAlarm);
 setInterval(() => { if (selectedId) renderDetail(); }, 30000);
 

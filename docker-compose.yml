@@ -31,6 +31,30 @@ services:
       db:
         condition: service_healthy
 
+  # Camera image health (app/camhealth/worker.py): its own process and image (PyTorch + the NVIDIA card), capped at
+  # 1.5 CPUs and niced, so it can never slow the alarm pipeline in `app`. Reads frames from NX, writes camera_health.
+  vision:
+    build:
+      context: .
+      dockerfile: Dockerfile.vision
+    image: nx-alarm-vision:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@db:5432/portal
+    cpus: 1.5
+    mem_limit: 3g
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      app:
+        condition: service_healthy      # migrations have run
+
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
