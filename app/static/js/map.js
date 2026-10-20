@@ -1,5 +1,5 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { CFG, api, esc, toast, siteLinkChip, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
@@ -356,7 +356,7 @@ function renderFeed() {
   const more = rows.length - FEED_MAX;
   ul.innerHTML = rows.slice(0, FEED_MAX).map((a) => `
     <li class="feed-item p${a.priority}" data-id="${a.id}" tabindex="0">
-      <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${timerHtml(a.event_ts_ms)}</div>
+      <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${siteLinkChip(a)}${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
       <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}</div>
       <div class="meta">${a.source_name ? `${esc(a.source_name)} · ` : ""}${fmtTime(a.event_ts_ms)}</div>

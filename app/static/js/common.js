@@ -516,3 +516,14 @@ export function markerState(site, counts) {
   if (counts[3]) return "warn";
   return "ok";
 }
+
+
+// A "Site connection lost" alarm stays open for the operator, but says whether the site is back (the user,
+// 2026-10-20: "alarm should stay open but it shows online or offline in the alarm"). site_status is the site's status
+// now; the server re-sends the alarm (alarm.updated) whenever the site goes online or offline again.
+export function siteLinkChip(a) {
+  if (a.event_type !== "portalSiteOffline") return "";
+  return a.site_status === "online"
+    ? '<span class="chip online" title="The portal reaches this site again; alarms are coming in">Site back online</span>'
+    : '<span class="chip offline" title="The portal still can\'t reach this site: its alarms are not being received">Site still offline</span>';
+}
