@@ -160,8 +160,8 @@ class AI:
         for box, label, score in zip(out["boxes"].cpu().numpy(), out["labels"].cpu().numpy(), out["scores"].cpu().numpy()):
             if score >= OBJECT_MIN_SCORE and int(label) in PERSON_VEHICLE:
                 x0, y0, x1, y1 = box
-                found.append({"label": PERSON_VEHICLE[int(label)], "score": round(float(score), 2),
-                              "box": [x0 / w, y0 / h, (x1 - x0) / w, (y1 - y0) / h]})
+                found.append({"label": PERSON_VEHICLE[int(label)], "score": round(float(score), 2),      # plain floats:
+                              "box": [float(x0 / w), float(y0 / h), float((x1 - x0) / w), float((y1 - y0) / h)]})  # JSON
         return found
 
 

@@ -45,8 +45,8 @@ class Library:
         d.mkdir(parents=True, exist_ok=True)
         name = f"{day}_{local.strftime('%H%M')}_{'m' if f.mono else 'c'}"
         ok, buf = cv2.imencode(".jpg", f.bgr, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        (d / f"{name}.json").write_text(json.dumps(objects, default=float))     # first: a frame never lacks its notes
         (d / f"{name}.jpg").write_bytes(buf.tobytes())
-        (d / f"{name}.json").write_text(json.dumps(objects))
         for old in sorted(d.glob("*.jpg"), reverse=True)[KEEP:]:
             old.unlink(missing_ok=True)
             old.with_suffix(".json").unlink(missing_ok=True)

@@ -159,7 +159,8 @@ def test_library_one_frame_per_half_hour_per_day(tmp_path):
     assert lib.add(1, "cam", t, frame("normal", 80), [])
     assert not lib.add(1, "cam", t.replace(minute=20), frame("normal", 81), [])      # same slot, same day
     for d in range(1, KEEP + 2):
-        assert lib.add(1, "cam", t.replace(day=20 + d), frame("normal", 82 + d), [{"label": "car", "box": [0, 0, .1, .1]}])
+        import numpy as np                     # the detector's boxes arrive as numpy numbers
+        assert lib.add(1, "cam", t.replace(day=20 + d), frame("normal", 82 + d), [{"label": "car", "box": [np.float32(0), 0, .1, .1]}])
     assert len(list((tmp_path / "1" / "cam" / "30").glob("*.jpg"))) == KEEP
     lib.add(1, "cam", t.replace(hour=14, minute=40), frame("normal", 90), [])           # the slot before
     got = lib.frames(1, "cam", t, mono=False)
