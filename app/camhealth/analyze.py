@@ -43,8 +43,9 @@ BLUR_RATIO = 0.35          # fine detail left vs the reference
 BLUR_SHAPE_NCC = 0.6       # ... while the coarse shapes still match (else it's a change, not blur)
 CHANGE_NCC = 0.35          # correlation below this = the cell's picture changed
 SHIFTS = (-4, 0, 4)        # px: best correlation over small shifts (wind, vibration, JPEG)
-DINO_CHANGE = 0.30         # GPU: patch cosine similarity below this = changed (measured on 29 real cameras,
-                           # 2026-10-20: shadows on grass 0.34-0.48, people / a car that left 0.09-0.28)
+DINO_CHANGE = 0.45         # GPU: cell's mean patch cosine similarity below this = changed. Measured 2026-10-20 on
+                           # cells the correlation flagged: shadows / light on real lawns and drives 0.52-0.66 (10th
+                           # percentile; single cells down to 0.39), a new object 0.33-0.63, people/vehicles excluded
 
 MIN_REGION_CELLS = 2
 MIN_REGION_AREA = 0.008    # of the frame
