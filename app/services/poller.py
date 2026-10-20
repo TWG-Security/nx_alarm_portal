@@ -420,6 +420,7 @@ class PollerManager:
                                               descending=False) or []
             created, more = await self._ingest_rows(rt, db, site, policy, rows)
             relevelled += more
+            failed_for = time.monotonic() - rt.failing_since if rt.failing_since else None   # the outage, from its first failure
             rt.failing_since = None
             site.event_cursor_ms = max([cursor] + [int(r.get("timestampMs") or 0) for r in rows])
 
@@ -431,7 +432,7 @@ class PollerManager:
             if status_changed:
                 audit(db, site.tenant_id, "site.online", site_id=site.id)
                 await db.commit()
-                await self._mark_restored(db, site)
+                await self._mark_restored(db, site, failed_for)
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": "online"})
             if relevelled:
                 bus.publish(site.tenant_id, "alarms.reload", {})
@@ -547,20 +548,47 @@ class PollerManager:
             await db.commit()
             if changed:
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": status, "detail": detail})
+                await self._offline_again(db, site)
             self._announce(created)
 
-    async def _mark_restored(self, db: AsyncSession, site: Site) -> None:
-        """Note the reconnect on any still-open 'connection lost' alarm (the operator still acknowledges it)."""
+    async def _mark_restored(self, db: AsyncSession, site: Site, failed_for: float | None = None) -> None:
+        """Note the reconnect on any still-open 'connection lost' alarm. It stays open for the operator (the user,
+        2026-10-20: "alarm should stay open but it shows online or offline in the alarm"): alarm_dict's site_status
+        shows "Site back online" on it, the timeline says when and after how long, and so does its description."""
+        from app import sms
         rows = (await db.scalars(select(Alarm).where(Alarm.site_id == site.id, Alarm.state == "new",
                                                      Alarm.event_type == "portalSiteOffline"))).all()
-        stamp = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")
+        now = datetime.now(timezone.utc)
         for a in rows:
-            if "Connection restored" not in a.description:
-                a.description = f"{a.description}\nConnection restored at {stamp}."
+            received = a.received_at.replace(tzinfo=a.received_at.tzinfo or timezone.utc)
+            # How long NX was unreachable: from the first failed contact (the alarm comes offline_after_s later),
+            # or since the alarm when the outage started before a restart (the portal doesn't know then).
+            since_alarm = max(0.0, (now - received).total_seconds())
+            down_s = failed_for if failed_for is not None and failed_for >= since_alarm else since_alarm
+            a.description = f"{a.description}\nBack online at {sms._clock(a, now)} (unreachable for {_duration(down_s)})."
+            audit(db, site.tenant_id, "alarm.site_restored", site_id=site.id, alarm_id=a.id, down_s=round(down_s))
         if rows:
             await db.commit()
             for a in rows:
                 bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
+
+    async def _offline_again(self, db: AsyncSession, site: Site) -> None:
+        """The site dropped again while older 'connection lost' alarms are still open: they show it (site_status)."""
+        rows = (await db.scalars(select(Alarm).where(Alarm.site_id == site.id, Alarm.state == "new",
+                                                     Alarm.event_type == "portalSiteOffline"))).all()
+        for a in rows:
+            bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
+
+
+
+def _duration(s: float) -> str:
+    """3 min 41 s, 1 h 5 min, 12 s."""
+    s = int(round(s))
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min {s % 60} s"
+    return f"{s // 3600} h {s % 3600 // 60} min"
 
 
 manager = PollerManager()

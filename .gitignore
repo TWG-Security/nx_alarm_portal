@@ -14,3 +14,4 @@ site-models/
 # Apple push keys (APNs .p8): production's lives next to .env, never in git or backups
 *.p8
 secrets/
+camhealth-data

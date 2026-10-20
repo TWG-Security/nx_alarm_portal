@@ -19,6 +19,8 @@ POST /_twilio/mode/{ok|fail|hang|mediafail} makes it accept, reject (400, code 3
 an MMS and then report it failed (63019, picture not downloadable) on GET .../Messages/{sid}.json.
 POST /_frames/{normal|late|none} makes recorded frames (timestampMs != -1) answer 200 with 0 bytes, like NX for a
 motion-recording camera that isn't recording yet: "late" for 1.5 s after each injected event, "none" always.
+Camera health: POST /_health/{device id|all}/{mode} switches live frames (and /media/<id>.mpjpeg) to a synthetic scene
+with that defect (tools/health_scene.py); /_health/{dev}/off goes back to the test pattern.
 """
 import json, os, subprocess, tempfile, time, uuid
 import asyncio
@@ -32,10 +34,12 @@ AXIS_ENGINE, CVEDIA_ENGINE = "{cb4a4ec3-31e4-7fe7-ba2a-e3464b407edc}", "{09d04f5
 AXIS_SCENARIO = "nx.axis.{c95466c7-a66e-d03d-7e39-13f1a05704cb}"
 # Like NX 6.1: analytics plugins enabled per camera, I/O ports in options.ioSettings.
 DEV = [{"id": "{11111111-1111-1111-1111-111111111111}", "name": "Front Gate PTZ", "deviceType": "Camera", "model": "AXISQ1798LE",
+        "status": "Recording", "mediaStreams": [{"resolution": "1920x1080"}],
         "userEnabledAnalyticsEngineIds": [AXIS_ENGINE],
         "options": {"ioSettings": [{"id": "I0", "portType": "input", "inputName": "Gate contact"},
                                    {"id": "I1", "portType": "output", "outputName": "Strobe"}]}},
        {"id": "{22222222-2222-2222-2222-222222222222}", "name": "Loading Dock", "deviceType": "Camera",
+        "status": "Online", "mediaStreams": [{"resolution": "1280x720"}],
         "userEnabledAnalyticsEngineIds": [CVEDIA_ENGINE]}]
 # 1x1 grey JPEG
 JPG = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00fbfcffd9")
@@ -190,8 +194,43 @@ FRAMES = {"mode": "normal", "last_inject": 0.0}
 async def frames_mode(mode: str):
     FRAMES["mode"] = mode
     return FRAMES
+HEALTH: dict = {}     # camera health scenes: device id (no braces) or "all" -> tools/health_scene.py mode
+@app.post("/_health/{dev}/{mode}")
+async def health_mode(dev: str, mode: str):
+    """Live frames become tools/health_scene.py's synthetic scene in `mode` (normal, blur, covered, dark, glare,
+    moved, change, blocked, frozen, dusk, night; "none" = 200 with no picture, "error" = 503) for one camera or "all"."""
+    if mode == "off":
+        HEALTH.pop(dev.strip("{}"), None)
+    else:
+        HEALTH[dev.strip("{}")] = mode
+    return HEALTH
+def _health_frame(d: str):
+    mode = HEALTH.get(d.strip("{}")) or HEALTH.get("all")
+    if mode is None:
+        return None
+    if mode == "none":
+        return Response(b"", media_type="image/jpeg")
+    if mode == "error":
+        return Response("relay busy", status_code=503)
+    from tools.health_scene import scene
+    return Response(scene(mode), media_type="image/jpeg")
+@app.get("/media/{d}.mpjpeg")
+async def mpjpeg(d: str):
+    """NX's live MJPEG stream: a few frames of the health scene (or the test pattern), multipart."""
+    from fastapi.responses import StreamingResponse
+    frame = _health_frame(d)
+    if frame is not None and frame.status_code != 200:
+        return frame
+    async def gen():
+        for _ in range(3):
+            body = frame.body if frame is not None else (await image(d)).body
+            yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body + b"\r\n"
+            await asyncio.sleep(0.04)
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 @app.get("/rest/v4/devices/{d}/image")
 async def image(d: str, timestampMs: int = -1):
+    if timestampMs == -1 and (frame := _health_frame(d)) is not None:
+        return frame
     if timestampMs != -1 and (FRAMES["mode"] == "none" or
                               (FRAMES["mode"] == "late" and time.time() - FRAMES["last_inject"] < 1.5)):
         return Response(b"", media_type="image/jpeg")       # NX: no recording at or after that moment (yet)

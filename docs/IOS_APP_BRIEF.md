@@ -268,6 +268,15 @@ While a site has an active call, a new alarm at that site **joins the call**: `a
   `{"type": "call_update", "alarm_id": <call>, "joined_alarm_id", "count", "level", "site_id"}`, title
   `UPDATE · <site>`, body `<caption> · <time>`, time-sensitive, thread-id `alarm-<call>`, collapse id `update-<joined>`.
 
+### 6.2c "Site connection lost" shows if the site is back (built 2026-10-20)
+
+Every Alarm now has `"site_status"`: its site's status **now** ("online" | "offline" | "auth_error" | …). A "Site
+connection lost" alarm (`event_type` "portalSiteOffline") stays open until someone closes it, but shows **Site back
+online** (green) when `site_status` is "online", else **Site still offline** (red), as the website does. The server
+re-sends such open alarms as `alarm.updated` whenever the site goes online or offline again. Its timeline gets "Site
+back online · the portal reached NX again after 1 min 5 s", and its description gets "Back online at <time>
+(unreachable for …)".
+
 ### 6.3 Live stream (open while the app is in front)
 
 `GET /api/events` (Bearer) → `text/event-stream`. Read it with `URLSession.bytes(for:)` and parse lines

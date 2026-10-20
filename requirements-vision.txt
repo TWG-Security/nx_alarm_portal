@@ -1,0 +1,5 @@
+# Camera health worker only (Dockerfile.vision; torch/torchvision are installed there from PyTorch's CUDA index).
+opencv-python-headless>=4.10,<5   # frame analysis (app/camhealth/analyze.py)
+timm==1.0.30                      # DINOv2 patch features (app/camhealth/ai.py)
+transformers==5.20.2               # UperNet + ConvNeXt semantic segmentation (app/camhealth/ai.py)
+nvidia-ml-py==13.615.71            # GPU numbers for TWG's processing panel (app/camhealth/ai.py gpu_stats)

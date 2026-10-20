@@ -25,6 +25,7 @@
     <a href="/" class="{{ 'active' if page == 'map' }}">Map</a>
     <a href="/alarms" class="{{ 'active' if page == 'alarms' }}">Alarms <span id="nav-alarm-count" class="badge" hidden>0</span></a>
     <a href="/sites" class="{{ 'active' if page == 'sites' }}">Sites</a>
+    <a href="/health" class="{{ 'active' if page == 'health' }}" title="Camera image health: blurry, covered, moved, scene changed">Cameras <span id="nav-health-count" class="badge badge--warn" hidden>0</span></a>
     <a href="/audit" class="{{ 'active' if page == 'audit' }}">Audit log</a>
     {% if user.is_admin and not (scope and scope.mode == 'all') %}<a href="/settings" class="{{ 'active' if page == 'settings' }}">Settings</a>
     <a href="/users" class="{{ 'active' if page == 'users' }}">Users</a>{% endif %}

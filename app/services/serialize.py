@@ -33,6 +33,7 @@ def alarm_dict(a: Alarm) -> dict:
         "site_id": a.site_id,
         "site_name": a.site.name if a.site else "",
         "site_address": a.site.address if a.site else "",
+        "site_status": a.site.status if a.site else "",            # now: online / offline / auth_error / …
         "level": LEVEL_NAMES.get(a.priority, "warning"),
         "level_source": a.level_source,
         "event_type": a.event_type,
