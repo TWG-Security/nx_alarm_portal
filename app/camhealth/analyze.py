@@ -54,7 +54,8 @@ SEM_CHANGE = 0.25          # GPU: share of a cell whose ADE20K class changed = w
                            # untouched frames vs a 25-min-old reference: correlation < 0.35 AND DINOv2 < 0.45 AND class
                            # change > 0.25 found 23/27 with 1 false flag (a PTZ, which skips scene checks anyway)
 MOVABLE = {"person", "car", "truck", "bus", "van", "bicycle", "minibike", "boat", "animal", "airplane", "ship"}
-TWILIGHT = (-6.0, 3.0)     # sun elevation: dusk / dawn, the light changes too fast for the whole-view comparison
+TWILIGHT = (-6.0, 3.0)
+IR_DAY_SUN = 20.0          # infrared with the sun this high = stuck in night mode (indoor cameras switch earlier)     # sun elevation: dusk / dawn, the light changes too fast for the whole-view comparison
 LIBRARY_MAX = 8            # library frames compared per check
 
 MIN_REGION_CELLS = 2
@@ -67,6 +68,12 @@ MOVE_SHIFT = 0.03          # of the width
 MOVE_ROT = 1.5             # degrees
 MOVE_SCALE = 0.05
 MIN_INLIERS = 15
+# View lost (camera turned far away / something right in front of it): the reference can't be lined up AND the whole
+# picture no longer looks like that place. Measured 2026-10-20 (the user turned site 2's PTZ onto the house wall):
+# DINOv2 mean patch similarity tamper 0.10, a 50 % pan 0.29, normal cameras 0.68-1.00; CPU thumbnail correlation tamper
+# -0.21, normal cameras 0.16-1.00. Matching points alone can't tell: healthy cameras dropped to 5-9 in changing light.
+VIEW_LOST_DINO = 0.45
+VIEW_LOST_THUMB = 0.0
 
 PROBLEM_KINDS = {"no_picture", "frozen", "covered", "moved", "view_changed"}
 TITLES = {
@@ -186,6 +193,8 @@ class Alignment:
     dy: float = 0.0
     rotation: float = 0.0
     scale: float = 1.0
+    ref_points: int = 0        # ORB keypoints found in the reference / the frame
+    cur_points: int = 0
 
     @property
     def moved(self) -> bool:
@@ -200,25 +209,26 @@ def align(ref: np.ndarray, cur: np.ndarray) -> Alignment:
     orb = cv2.ORB_create(nfeatures=1500, fastThreshold=10)
     k1, d1 = orb.detectAndCompute(_clahe.apply(ref), None)
     k2, d2 = orb.detectAndCompute(_clahe.apply(cur), None)
-    if d1 is None or d2 is None or len(k1) < 20 or len(k2) < 20:
-        return Alignment(False, None)
+    n1, n2 = len(k1 or ()), len(k2 or ())
+    if d1 is None or d2 is None or n1 < 20 or n2 < 20:
+        return Alignment(False, None, 0, ref_points=n1, cur_points=n2)
     pairs = cv2.BFMatcher(cv2.NORM_HAMMING).knnMatch(d1, d2, k=2)
     good = [p[0] for p in pairs if len(p) == 2 and p[0].distance < 0.75 * p[1].distance]
     if len(good) < MIN_INLIERS:
-        return Alignment(False, None, len(good))
+        return Alignment(False, None, len(good), ref_points=n1, cur_points=n2)
     src = np.float32([k1[m.queryIdx].pt for m in good])
     dst = np.float32([k2[m.trainIdx].pt for m in good])
     m, mask = cv2.estimateAffinePartial2D(src, dst, method=cv2.RANSAC, ransacReprojThreshold=4.0)
     inliers = int(mask.sum()) if mask is not None else 0
     if m is None or inliers < MIN_INLIERS:
-        return Alignment(False, None, inliers)
+        return Alignment(False, None, inliers, ref_points=n1, cur_points=n2)
     scale = math.hypot(m[0, 0], m[1, 0])
     rot = math.degrees(math.atan2(m[1, 0], m[0, 0]))
     h, w = ref.shape[:2]
     cx, cy = w / 2, h / 2                                   # how far the picture's centre moved
     nx, ny = m[0, 0] * cx + m[0, 1] * cy + m[0, 2], m[1, 0] * cx + m[1, 1] * cy + m[1, 2]
     dx, dy = nx - cx, ny - cy
-    return Alignment(True, m, inliers, math.hypot(dx, dy), dx, dy, rot, scale)
+    return Alignment(True, m, inliers, math.hypot(dx, dy), dx, dy, rot, scale, ref_points=n1, cur_points=n2)
 
 
 def regions(mask: np.ndarray, g: tuple[int, int], *, min_cells: int = MIN_REGION_CELLS) -> list[list[float]]:
@@ -374,7 +384,7 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
     if sun is not None:
         res.metrics["sun"] = round(sun, 1)
     alone = check_alone(f)
-    if f.mono and sun is not None and sun > 8 and f.gray.mean() > 40:
+    if f.mono and sun is not None and sun > IR_DAY_SUN and f.gray.mean() > 40:
         alone.append(issue("ir_day", detail=f"Black-and-white (infrared) picture with the sun {sun:.0f}° up"))
     people = []
     if ai is not None and not alone:
@@ -399,9 +409,19 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
         # A PTZ camera looking somewhere else: comparing it with the reference means nothing, the plain checks stay.
         res.issues += alone
         return res
-    ref_gray, valid = ref.gray, np.ones(f.shape, np.uint8)
+    # Lined up but shifted = "moved" below (with where the view went); not lined up at all = maybe the view is lost.
+    if not a.ok and not any(i["kind"] in ("covered", "dark", "glare") for i in alone):
+        lost = _view_lost(res, f, ref, a, ai)
+        if lost:
+            res.issues.append(issue("view_changed", boxes=[[0, 0, 1, 1]],
+                                    detail="The camera no longer sees its reference view: turned or moved, or something "
+                                           "right in front of the lens"))
+            res.issues += [i for i in alone if i["kind"] == "ir_day"]
+            return res
+    ref_gray, ref_bgr, valid = ref.gray, ref.bgr, np.ones(f.shape, np.uint8)
     if a.ok:
         ref_gray = cv2.warpAffine(ref.gray, a.matrix, (f.shape[1], f.shape[0]), borderMode=cv2.BORDER_REFLECT)
+        ref_bgr = cv2.warpAffine(ref.bgr, a.matrix, (f.shape[1], f.shape[0]), borderMode=cv2.BORDER_REFLECT)
         valid = cv2.warpAffine(np.ones(ref.shape, np.uint8), a.matrix, (f.shape[1], f.shape[0]))
         if a.moved:
             h, w = ref.shape
@@ -413,27 +433,34 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
     inside = _cells(valid.astype(np.float32), g) > 0.9          # cells the shifted reference still covers
     full = [[0, 0, 1, 1]]
 
-    # Whole view, against the day / night reference.
+    # Whole view, against the day / night reference AND every library frame from this time of day (as the light falls
+    # cameras raise gain and soften the picture: that's dusk, not a focus problem; measured 2026-10-20 at sun 11°).
+    lib = [x for x in (library or []) if x.frame.shape == f.shape and x.frame.mono == f.mono][:LIBRARY_MAX]
+    res.metrics["library"] = len(lib)
     wq = quality(f, cs, ref_gray, inside, g)
     n_tex = max(int(wq.textured.sum()), 1)
     sharp_ratio = round(float(np.median(wq.ratio[wq.textured])) if wq.textured.any() else 1.0, 3)
+    flat, dark, glare, blur = wq.flat, wq.dark, wq.glare, wq.blur
+    for x in lib:
+        lq = quality(f, cs, x.frame.gray, inside, g)
+        flat, dark, glare, blur = flat & lq.flat, dark & lq.dark, glare & lq.glare, blur & lq.blur
     res.metrics.update(cells=int(g[0] * g[1]), textured=int(wq.textured.sum()), sharp_ratio=sharp_ratio)
-    if wq.flat.sum() >= WHOLE * n_tex:
+    if flat.sum() >= WHOLE * n_tex:
         res.issues.append(issue("covered", boxes=full, detail="The picture lost almost all its detail"))
-    if wq.dark.sum() and wq.dark.sum() >= WHOLE * max(int(wq.lit.sum()), 1):
+    if dark.sum() and dark.sum() >= WHOLE * max(int(wq.lit.sum()), 1):
         res.issues.append(issue("dark", severity="problem", boxes=full, detail="The picture went black"))
-    if wq.glare.sum() >= WHOLE * g[0] * g[1]:
+    if glare.sum() >= WHOLE * g[0] * g[1]:
         res.issues.append(issue("glare", severity="problem", boxes=full, detail="The picture is blown out to white"))
-    if wq.blur.sum() >= WHOLE * n_tex:
+    if blur.sum() >= WHOLE * n_tex:
         res.issues.append(issue("blur", severity="problem", boxes=full,
                                 detail=f"Fine detail down to {sharp_ratio * 100:.0f}% of the reference"))
 
     # Areas, against the library for this time of day.
-    lib = [x for x in (library or []) if x.frame.shape == f.shape and x.frame.mono == f.mono][:LIBRARY_MAX]
-    res.metrics["library"] = len(lib)
     if view_checks and not res.issues:
         if lib:
-            _areas(res, f, cs, lib, ai, g, inside)
+            # ... and the reference too: a smudge or a new object differs from it as well, dusk haze on day one doesn't
+            # (2026-10-20: "Out of focus" areas at 5 pm against only that afternoon's library frames).
+            _areas(res, f, cs, lib + [LibFrame(Frame(ref_bgr, ref_gray, ref.mode, 0, ref.small, ref.mono))], ai, g, inside)
         else:
             res.metrics["area_learning"] = True
     res.issues += [i for i in alone if i["kind"] == "ir_day"]
@@ -505,6 +532,13 @@ def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[i
     changed = hit["changed"]
     n_tex = max(int((stats(lib[0].frame.gray, g).std > TEXTURED_STD).sum()), 1)
     if changed.sum() >= VIEW_CHANGED * n_tex:
+        # Most cells changed: a lost view only if the whole picture also no longer looks like the place (GPU); else
+        # it's light (a hazy low sun against a thin first-day library read as "View changed", 2026-10-20).
+        if feat is not None:
+            best = max(float((feat * ai.patch_features(x.frame.bgr)).sum(-1).mean()) for x in lib)
+            res.metrics["view_sim"] = round(best, 3)
+            if best >= VIEW_LOST_DINO:
+                return
         res.issues.append(issue("view_changed", boxes=[[0, 0, 1, 1]], detail="Most of the view no longer matches"))
         return
     diff = cv2.absdiff(cv2.GaussianBlur(f.gray, (0, 0), 2), cv2.GaussianBlur(lib[0].frame.gray, (0, 0), 2))
@@ -514,6 +548,25 @@ def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[i
         res.issues.append(issue("scene_change", boxes=boxes,
                                 detail=f"{len(boxes)} area{'s differ' if len(boxes) > 1 else ' differs'} from earlier "
                                        f"pictures at this time of day ({_area(boxes) * 100:.0f}% of the view)"))
+
+
+def _thumb(gray: np.ndarray) -> np.ndarray:
+    t = cv2.resize(gray, (64, 36), interpolation=cv2.INTER_AREA).astype(np.float32)
+    return (t - t.mean()) / (t.std() + 1e-3)
+
+
+def _view_lost(res: Result, f: Frame, ref: Frame, a: Alignment, ai) -> bool:
+    """Does the whole picture still look like the reference's place? (GPU: DINOv2; CPU: thumbnail correlation)"""
+    if ai is not None:
+        try:
+            sim = float((ai.patch_features(f.bgr) * ai.patch_features(ref.bgr)).sum(-1).mean())
+            res.metrics["view_sim"] = round(sim, 3)
+            return sim < VIEW_LOST_DINO
+        except Exception as exc:  # noqa: BLE001 - fall back to the CPU measure
+            res.metrics["ai_error"] = str(exc)[:200]
+    corr = float((_thumb(f.gray) * _thumb(ref.gray)).mean())
+    res.metrics["view_corr"] = round(corr, 3)
+    return corr < VIEW_LOST_THUMB
 
 
 def _box_cells(m: np.ndarray, box: list[float], g: tuple[int, int]) -> np.ndarray:

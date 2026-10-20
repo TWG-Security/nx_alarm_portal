@@ -72,6 +72,21 @@ def test_moved_reports_where_the_reference_view_went():
     assert abs(x0 - 90 / H.W) < 0.01 and abs(y0 - 40 / H.H) < 0.01
 
 
+def test_a_camera_turned_away_is_a_problem():
+    """The user turned site 2's PTZ onto the house wall (2026-10-20): too far to line up, so "moved" can't measure
+    it; the view is lost. Simulated: close-up siding (horizontal boards) filling the picture."""
+    import numpy as np
+    rng = np.random.default_rng(30)
+    wall = np.zeros((H.H, H.W, 3), np.float32) + np.array([150, 170, 180], np.float32)
+    for y in range(0, H.H, 90):
+        wall[y:y + 6] *= 0.55                                         # board edges
+    wall += rng.normal(0, 6, wall.shape).astype(np.float32)
+    away = A.frame_from_bgr(np.clip(wall, 0, 255).astype(np.uint8))
+    res = check(away)
+    assert kinds(res) == ["view_changed"] and res.issues[0]["severity"] == "problem", res.issues
+    assert res.metrics["view_corr"] < A.VIEW_LOST_THUMB
+
+
 def test_black_or_flat_pictures_are_compared_with_the_day_reference():
     """No colour doesn't make a black picture "night (infrared)": it would dodge the reference."""
     assert frame("dark").mode == frame("covered").mode == "day"
