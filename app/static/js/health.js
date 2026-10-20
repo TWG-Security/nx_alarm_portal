@@ -100,17 +100,31 @@ async function openCamera(siteId, deviceId, show = true) {
   document.getElementById("hcd-title").textContent = c.name;
   document.getElementById("hcd-sub").innerHTML = `${esc(c.site_name)} · ${esc(STATUS[c.status] || c.status)}${c.muted ? ` · muted until ${esc(fmtTime(c.muted_until))}` : ""}`
     + ` · NX: ${esc(c.nx_status || "?")}${c.mode ? ` · ${c.mode === "night" ? "night (IR)" : "day"}` : ""}${c.ai ? " · AI checked" : ""}`;
-  const refKind = `ref_${c.mode || "day"}`;
-  const ref = c.refs?.[refKind];
-  document.getElementById("hcd-ref").innerHTML = ref ? media(c, refKind, false, ref.taken_at) : `<div class="hc-noimg">No ${c.mode === "night" ? "night" : "day"} reference yet: it's learned from two checks in a row that agree</div>`;
-  document.getElementById("hcd-ref-when").textContent = ref ? `${fmtTime(ref.taken_at)}${ref.source === "user" ? " (accepted by hand)" : " (learned)"}` : "";
+  const admin = CFG.isAdmin, pending = c.settings.retake;
+  document.getElementById("hcd-refs").innerHTML = ["day", "night"].map((mode) => {
+    const ref = c.refs?.[`ref_${mode}`], now = c.mode === mode;
+    const label = mode === "day" ? "Day reference" : "Night reference";
+    const waiting = pending?.mode === mode;
+    return `<figure class="hcd-ref${now ? " hcd-ref--now" : ""}"><figcaption>${label}${now ? ' <span class="chip">in use now</span>' : ""}
+        <span class="muted">${ref ? `${esc(fmtTime(ref.taken_at))} ${ref.source === "user" ? "(taken by hand)" : "(learned)"}` : ""}</span></figcaption>
+      <div class="hc-media">${ref ? media(c, `ref_${mode}`, false, ref.taken_at)
+        : `<div class="hc-noimg">${mode === "night" ? "Learned after dark" : "Learned in daylight"}: two checks in a row that agree, nobody in view</div>`}</div>
+      ${admin ? `<div class="hcd-ref-actions">
+        ${waiting ? `<span class="muted">Retake pending: ${now ? "next check" : mode === "night" ? "tonight's first check" : "the morning's first check"} with nobody in view</span>
+          <button class="btn btn-sm" data-ref="${mode}" data-ref-act="cancel">Cancel</button>`
+          : `<button class="btn btn-sm" data-ref="${mode}" data-ref-act="retake" title="${now ? "Take a fresh picture now as the reference" : `Take the next ${mode} picture as the reference`}">Retake${now ? " now" : ` at ${mode === "night" ? "night" : "day"}`}</button>`}
+        ${ref ? `<button class="btn btn-sm" data-ref="${mode}" data-ref-act="relearn" title="Forget it: it's learned again automatically">Relearn</button>` : ""}
+      </div>` : ""}</figure>`;
+  }).join("");
+  const lib = c.metrics?.library_slots;
+  document.getElementById("hcd-learn").textContent = c.metrics?.twilight ? "Dusk / dawn: only the basic checks run until the light settles."
+    : lib != null ? `Area checks compare with the same time of day: ${lib} of 48 half-hours learned${c.metrics.area_learning ? " (none yet for this time: area checks wait)" : ""}.` : "";
   document.getElementById("hcd-now").innerHTML = media(c);
   document.getElementById("hcd-now-when").textContent = c.checked_at ? fmtTime(c.checked_at) : "";
   document.getElementById("hcd-now").classList.toggle("hc-hide-boxes", !document.getElementById("hcd-boxes").checked);
   document.getElementById("hcd-issues").innerHTML = (c.issues || []).length
     ? (c.issues).map((i) => `<div class="hcd-issue hcd-issue--${i.severity}"><b>${esc(i.title)}</b> <span class="muted">since ${esc(relTime(i.since_ms))}</span><div>${esc(i.detail || "")}</div></div>`).join("")
     : `<div class="hcd-issue hcd-issue--ok"><b>${c.status === "offline" ? "Offline in NX: not checked" : c.status === "pending" ? "Not checked yet" : "Nothing wrong found"}</b>${c.error ? `<div>${esc(c.error)}</div>` : ""}</div>`;
-  const admin = CFG.isAdmin;
   const viewOn = c.settings.view_checks ?? c.metrics.view_checks ?? true;   // the worker's choice (off for PTZ)
   document.getElementById("hcd-actions").innerHTML =
     `<button class="btn" data-act="check"${c.check_requested ? " disabled" : ""}>${c.check_requested ? "Checking…" : "Check now"}</button>`
@@ -132,6 +146,18 @@ async function openCamera(siteId, deviceId, show = true) {
 
 dlg.addEventListener("click", async (e) => {
   if (e.target === dlg || e.target.id === "hcd-close") { dlg.close(); return; }
+  const rb = e.target.closest("[data-ref-act]");
+  if (rb && open) {
+    const act = rb.dataset.refAct, mode = rb.dataset.ref;
+    if (act === "relearn" && !confirm(`Forget the ${mode} reference? It's learned again automatically (two checks in a row that agree).`)) return;
+    rb.disabled = true;
+    try {
+      await api(`/api/camera-health/${open.site_id}/${encodeURIComponent(open.device_id)}/reference`, { method: "POST", body: { mode, action: act } });
+      if (act === "retake") toast(`The ${mode} reference will be retaken on the next ${mode} check with nobody in view`);
+      await load();
+    } catch (err) { toast(esc(err.message || "Failed"), { kind: "alarm" }); rb.disabled = false; }
+    return;
+  }
   const b = e.target.closest("[data-act]");
   if (!b || !open) return;
   const base = `/api/camera-health/${open.site_id}/${encodeURIComponent(open.device_id)}`;
@@ -177,6 +203,77 @@ summaryEl.addEventListener("click", (e) => {
 [showSel, siteSel].forEach((el) => el.addEventListener("change", render));
 q.addEventListener("input", render);
 if (params.get("show")) showSel.value = params.get("show");
+
+// ---- TWG only: the vision worker's processing (GPU, models, queue, recent checks) ----
+const hp = document.getElementById("hp");
+const ms = (v) => (v == null ? "—" : v >= 1000 ? `${(v / 1000).toFixed(1)} s` : `${Math.round(v)} ms`);
+
+// One series per chart (the caption names it): 2px line, ~10% area wash, end dot with a surface ring, hover readout.
+function spark(el, title, pts, { max, unit, fmt = (v) => `${Math.round(v)}${unit}` }) {
+  if (!pts.length) { el.innerHTML = `<figcaption>${esc(title)}</figcaption><div class="muted hp-empty">No samples yet</div>`; return; }
+  const W = 320, H = 72, P = 4, t0 = pts[0].t, t1 = Math.max(pts[pts.length - 1].t, t0 + 1);
+  const x = (t) => P + (t - t0) / (t1 - t0) * (W - 2 * P), y = (v) => H - P - Math.min(v, max) / max * (H - 2 * P);
+  const line = pts.map((p) => `${x(p.t).toFixed(1)},${y(p.v).toFixed(1)}`).join(" ");
+  const last = pts[pts.length - 1];
+  el.innerHTML = `<figcaption>${esc(title)} <b>${esc(fmt(last.v))}</b> <span class="muted">last 2 h</span></figcaption>
+    <div class="hp-plot"><svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(title)}, now ${esc(fmt(last.v))}">
+      <line class="hp-grid" x1="0" x2="${W}" y1="${y(max)}" y2="${y(max)}" /><line class="hp-grid" x1="0" x2="${W}" y1="${y(0)}" y2="${y(0)}" />
+      <polygon class="hp-area" points="${x(t0)},${y(0)} ${line} ${x(last.t)},${y(0)}" />
+      <polyline class="hp-line" points="${line}" />
+      <line class="hp-cross" x1="0" x2="0" y1="0" y2="${H}" hidden />
+      <circle class="hp-dot" cx="${x(last.t)}" cy="${y(last.v)}" r="4" />
+    </svg><div class="hp-tip" hidden></div></div>`;
+  const svg = el.querySelector("svg"), cross = svg.querySelector(".hp-cross"), tip = el.querySelector(".hp-tip");
+  svg.addEventListener("pointermove", (e) => {
+    const r = svg.getBoundingClientRect(), tx = t0 + ((e.clientX - r.left) / r.width * W - P) / (W - 2 * P) * (t1 - t0);
+    const p = pts.reduce((a, b) => (Math.abs(b.t - tx) < Math.abs(a.t - tx) ? b : a));
+    const px = x(p.t) / W * r.width;
+    cross.setAttribute("x1", x(p.t)); cross.setAttribute("x2", x(p.t)); cross.hidden = false;
+    tip.hidden = false; tip.style.left = `${Math.min(Math.max(px, 40), r.width - 40)}px`;
+    tip.textContent = `${new Date(p.t).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })} · ${fmt(p.v)}`;
+  });
+  svg.addEventListener("pointerleave", () => { cross.hidden = true; tip.hidden = true; });
+}
+
+async function loadProcessing() {
+  if (!hp || !hp.open) return;
+  const r = await api("/api/camera-health/processing").catch(() => null);
+  const d = r?.data;
+  document.getElementById("hp-age").textContent = !d ? "· the worker hasn't reported yet"
+    : r.age_s > 120 ? `· last report ${Math.round(r.age_s / 60)} min ago: is the vision container running?` : `· updated ${r.age_s} s ago`;
+  if (!d) return;
+  const g = d.gpu || {};
+  const tile = (label, value, sub = "", pct = null) => `<div class="hp-tile"><div class="muted">${esc(label)}</div><div class="hp-val">${esc(value)}</div>`
+    + (pct != null ? `<div class="hp-bar" role="img" aria-label="${Math.round(pct)}%"><i style="width:${Math.min(100, pct)}%"></i></div>` : "")
+    + `${sub ? `<div class="muted hp-sub">${esc(sub)}</div>` : ""}</div>`;
+  document.getElementById("hp-tiles").innerHTML = [
+    tile("GPU", g.name || (d.ai ? "?" : "Off (CPU only)"), g.driver ? `driver ${g.driver}` : g.error || ""),
+    tile("GPU busy", g.util != null ? `${g.util}%` : "—", g.clock_mhz ? `${g.clock_mhz} MHz` : "", g.util),
+    tile("GPU memory", g.mem_used_mb != null ? `${(g.mem_used_mb / 1024).toFixed(1)} of ${(g.mem_total_mb / 1024).toFixed(1)} GB` : "—", "", g.mem_total_mb ? g.mem_used_mb / g.mem_total_mb * 100 : null),
+    tile("Temperature", g.temp_c != null ? `${g.temp_c} °C` : "—", [g.power_w != null ? `${g.power_w} W of ${g.power_limit_w ?? "?"} W` : "", g.fan != null ? `fan ${g.fan}%` : ""].filter(Boolean).join(" · ")),
+    tile("Schedule", `every ${Math.round(d.interval_s / 60)} min`, `${d.parallel} camera at a time · ${d.checked_cameras} of ${d.cameras} cameras checked`),
+    tile("Now", d.busy?.length ? `checking ${d.busy.join(", ")}` : `next in ${d.next_in_s} s`, `${d.due_now} waiting · avg check ${ms(d.avg_check_ms)}`),
+    tile("Worker", `${d.process?.rss_mb ?? "?"} MB`, `CPU ${d.process?.cpu_s ?? "?"} s since ${fmtTime(d.started_at)}${d.errors_recent ? ` · ${d.errors_recent} recent errors` : ""}`),
+  ].join("");
+  const hist = d.gpu_history || [];
+  spark(document.getElementById("hp-util"), "GPU busy", hist.map((p) => ({ t: p.t, v: p.util })), { max: 100, unit: "%" });
+  spark(document.getElementById("hp-mem"), "GPU memory", hist.map((p) => ({ t: p.t, v: p.mem })),
+    { max: g.mem_total_mb || Math.max(1, ...hist.map((p) => p.mem)), unit: "", fmt: (v) => `${(v / 1024).toFixed(2)} GB` });
+  document.getElementById("hp-models").innerHTML = Object.values(d.models || {}).map((m) =>
+    `<tr><td>${esc(m.model)}</td><td>${m.calls}</td><td>${ms(m.avg_ms)}</td><td>${ms(m.p95_ms)}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">${d.ai ? "No model calls in the last hour" : "AI off: CPU checks only"}</td></tr>`;
+  document.getElementById("hp-recent").innerHTML = (d.recent || []).slice(0, 15).map((c) => {
+    const gp = Object.entries(c.gpu_ms || {}).map(([k, v]) => `${k} ${ms(v)}`).join(" · ");
+    return `<tr><td>${esc(new Date(c.at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" }))}</td>
+      <td>${esc(c.camera)}</td><td>${esc(c.how)} ${ms(c.fetch_ms)}</td><td class="hp-gpu">${esc(gp || "—")}</td><td>${ms(c.total_ms)}</td>
+      <td>${c.error ? `<span class="hc-t--problem">${esc(c.error)}</span>` : c.issues?.length ? `<span class="hc-t--${c.status}">${esc(c.issues.join(", "))}</span>` : "OK"}${c.library != null ? ` <span class="muted">· ${c.library} same-time frames</span>` : ""}</td></tr>`;
+  }).join("") || `<tr><td colspan="6" class="muted">No checks yet</td></tr>`;
+}
+if (hp) {
+  hp.addEventListener("toggle", loadProcessing);
+  setInterval(loadProcessing, 15_000);
+  loadProcessing();
+}
 
 on("camera.health", () => { clearTimeout(reloadTimer); reloadTimer = setTimeout(load, 1000); });
 on("reconnect", load);

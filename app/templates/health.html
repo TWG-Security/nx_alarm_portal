@@ -17,6 +17,22 @@
     <input id="hf-q" type="search" placeholder="Camera name" aria-label="Search cameras">
     <span class="muted hc-meta" id="hc-meta"></span>
   </div>
+  {% if user.can('platform.view') %}
+  <details class="hp" id="hp" open>
+    <summary><b>Processing</b> <span class="chip tenant-chip">TWG only</span> <span class="muted" id="hp-age"></span></summary>
+    <div class="hp-tiles" id="hp-tiles"></div>
+    <div class="hp-charts">
+      <figure class="hp-chart" id="hp-util"></figure>
+      <figure class="hp-chart" id="hp-mem"></figure>
+    </div>
+    <div class="hp-tables">
+      <div class="table-wrap"><table><caption>Models, last hour</caption>
+        <thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>95 %</th></tr></thead><tbody id="hp-models"></tbody></table></div>
+      <div class="table-wrap"><table><caption>Recent checks</caption>
+        <thead><tr><th>Time</th><th>Camera</th><th>Frame</th><th>GPU</th><th>Total</th><th>Result</th></tr></thead><tbody id="hp-recent"></tbody></table></div>
+    </div>
+  </details>
+  {% endif %}
   <div class="hc-grid" id="hc-grid"><div class="empty">Loading…</div></div>
 </div>
 
@@ -29,11 +45,12 @@
     <button class="btn btn-sm" id="hcd-close" type="button" aria-label="Close">✕</button>
   </div>
   <div class="hcd-pics">
-    <figure><figcaption>Reference <span class="muted" id="hcd-ref-when"></span></figcaption><div class="hc-media" id="hcd-ref"></div></figure>
     <figure><figcaption>Now <span class="muted" id="hcd-now-when"></span>
       <label class="hcd-boxes-toggle"><input type="checkbox" id="hcd-boxes" checked> Boxes</label></figcaption>
       <div class="hc-media" id="hcd-now"></div></figure>
+    <div class="hcd-refs" id="hcd-refs"></div>
   </div>
+  <div class="muted hcd-learn" id="hcd-learn"></div>
   <div id="hcd-issues" class="hcd-issues"></div>
   <div class="hcd-actions" id="hcd-actions"></div>
   <details class="hcd-more"><summary>History and numbers</summary>

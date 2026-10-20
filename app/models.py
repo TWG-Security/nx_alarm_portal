@@ -710,3 +710,14 @@ class CameraHealthEvent(Base):
     kind: Mapped[str] = mapped_column(String(30))
     change: Mapped[str] = mapped_column(String(20))                      # raised | cleared | reference | muted | unmuted
     detail: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+
+class VisionStatus(Base):
+    """The camera health worker's processing numbers (GPU, model timings, recent checks): one row, written every 30 s
+    by the vision container; shown to TWG staff only (platform.view)."""
+
+    __tablename__ = "vision_status"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONType, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

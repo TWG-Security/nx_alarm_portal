@@ -18,16 +18,17 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-import cv2
 import httpx
 from sqlalchemy import delete, select
 
 from app.camhealth import analyze as A
 from app.camhealth import state as S
+from app.camhealth.library import Library
 from app.config import get_settings
 from app.db import init_engine, sessionmaker
-from app.models import CameraHealth, CameraHealthEvent, CameraHealthImage, Site
+from app.models import CameraHealth, CameraHealthEvent, CameraHealthImage, Site, VisionStatus
 from app.security import decrypt
+from app.services.arming import zone
 from app.services.sites import describe_http_error, make_client
 
 log = logging.getLogger("portal.camhealth")
@@ -37,6 +38,8 @@ DEVICES_EVERY_S = 600        # re-read each site's cameras from NX
 REQUESTS_EVERY_S = 3         # look for "Check now" / "Accept view"
 TICK_S = 1.0
 EVENTS_KEEP_DAYS = 90
+STATUS_EVERY_S = 30          # TWG's processing panel (vision_status)
+GPU_HISTORY = 240            # samples kept for the panel's charts (2 h)
 VIDEO_TYPES = {"camera", "multisensorcamera", "encoder"}
 OFFLINE = {"Offline", "Unauthorized", "NotDefined"}
 
@@ -59,8 +62,10 @@ def stream_aspect(dev: dict) -> float:
 
 
 def is_ptz(dev: dict) -> bool:
+    """NX can steer it (moved / scene checks off by default; per-camera setting). Not by name: site 2's "Driveway PTZ"
+    has no PTZ control in NX and the user tests moved / scene change with it (2026-10-20)."""
     caps = str((dev.get("ptz") or {}).get("capabilities") or "none").lower()
-    return caps not in ("", "none", "nocapabilities") or "ptz" in (dev.get("name") or "").lower()
+    return caps not in ("", "none", "nocapabilities")
 
 
 @dataclass
@@ -97,8 +102,12 @@ class Worker:
         self.cams: dict[tuple[int, str], Cam] = {}
         self.sem = asyncio.Semaphore(max(1, self.cfg.camhealth_parallel))
         self.refs: dict[tuple[int, str, str], tuple[datetime, A.Frame]] = {}
+        self.library = Library(self.cfg.camhealth_dir)
         self.tasks: set[asyncio.Task] = set()
         self.pass_stats = {"n": 0, "ms": 0.0, "since": time.monotonic()}
+        self.started = utcnow()
+        self.recent: list[dict] = []          # the last checks, newest first (processing panel)
+        self.gpu_history: list[dict] = []
 
     # ---- sites and cameras -------------------------------------------------------------------------------------
     async def refresh_sites(self) -> None:
@@ -192,7 +201,7 @@ class Worker:
         raise last
 
     async def image(self, db, site_id: int, dev: str, kind: str) -> A.Frame | None:
-        """A stored picture (ref_<mode> / bg_<mode>) as a Frame, decoded once per version."""
+        """A stored reference (ref_day / ref_night) as a Frame, decoded once per version."""
         img = await db.scalar(select(CameraHealthImage).where(CameraHealthImage.site_id == site_id,
                                                               CameraHealthImage.device_id == dev,
                                                               CameraHealthImage.kind == kind))
@@ -222,9 +231,19 @@ class Worker:
             except Exception as exc:  # noqa: BLE001
                 error = str(describe_http_error(exc))
             fetch_ms = (time.monotonic() - t0) * 1000
-            await self._record(conn.site, cam, jpeg, frame, error, fetch_ms)
+            n_ai = len(self.ai.timings) if self.ai is not None else 0
+            summary = await self._record(conn.site, cam, jpeg, frame, error, fetch_ms) or {}
+            total = (time.monotonic() - t0) * 1000
             self.pass_stats["n"] += 1
-            self.pass_stats["ms"] += (time.monotonic() - t0) * 1000
+            self.pass_stats["ms"] += total
+            gpu = {}
+            if self.ai is not None:
+                for name, ms, _ in list(self.ai.timings)[n_ai:]:
+                    gpu[name] = round(gpu.get(name, 0) + ms)
+            self.recent.insert(0, {"at": int(time.time() * 1000), "site_id": cam.site_id, "camera": cam.name,
+                                   "fetch_ms": round(fetch_ms), "total_ms": round(total), "gpu_ms": gpu,
+                                   "how": "live stream" if cam.nx_status != "Recording" else "image", **summary})
+            del self.recent[50:]
 
     async def _record(self, site: Site, cam: Cam, jpeg: bytes, frame: A.Frame | None, error: str, fetch_ms: float) -> None:
         now = utcnow()
@@ -243,22 +262,39 @@ class Worker:
             if frame is None:
                 found.append(A.issue("no_picture", detail=error))
             else:
+                sun = A.sun_elevation(site.lat, site.lng, now) if site.lat is not None and site.lng is not None else None
+                frame.mode = A.frame_mode(frame, sun)
+                local = now.astimezone(zone(site.timezone))
+                if self.library.reset_if(cam.site_id, cam.device_id, settings.get("library_reset")):
+                    log.info("site %s camera %s: library cleared (view accepted)", cam.site_id, cam.name)
                 ref = await self.image(db, cam.site_id, cam.device_id, f"ref_{frame.mode}")
-                bg = await self.image(db, cam.site_id, cam.device_id, f"bg_{frame.mode}") if ref is not None else None
+                library = await asyncio.to_thread(self.library.frames, cam.site_id, cam.device_id, local, frame.mono)
                 t = time.monotonic()
-                res = await asyncio.to_thread(A.analyze, frame, ref, bg=bg, ai=self.ai, view_checks=view_checks,
+                res = await asyncio.to_thread(A.analyze, frame, ref, library=library, ai=self.ai, view_checks=view_checks,
                                               lat=site.lat, lng=site.lng, now=now)
-                if res.absorb is not None and res.absorb.any():
-                    await self._store_background(db, cam, bg or ref, frame, res.absorb, now)
-                metrics.update(res.metrics, analyze_ms=round((time.monotonic() - t) * 1000))
+                metrics.update(res.metrics, analyze_ms=round((time.monotonic() - t) * 1000),
+                               library_slots=self.library.slots_learned(cam.site_id, cam.device_id))
                 found = res.issues
                 if A.frozen(frame, cam.previous_small):
                     found.append(A.issue("frozen", detail="The same picture as the last check, to the pixel"))
                 cam.previous_small = frame.small
-                learning = ref is None
+                if res.clean and await asyncio.to_thread(self.library.add, cam.site_id, cam.device_id, local, frame,
+                                                         [o for o in res.objects if o["label"] != "person"]):
+                    metrics["library_added"] = True
+                retake = settings.get("retake") or {}
+                if retake.get("mode") == frame.mode and res.usable_as_reference:
+                    await self._store_image(db, cam, f"ref_{frame.mode}", jpeg, now, source="user", by=retake.get("by"))
+                    db.add(CameraHealthEvent(tenant_id=row.tenant_id, site_id=row.site_id, device_id=row.device_id,
+                                             at=now, kind="reference", change="reference",
+                                             detail={"mode": frame.mode, "source": "user", "by": retake.get("label", "")}))
+                    row.settings = {k: v for k, v in settings.items() if k != "retake"}
+                    found = [i for i in found if i["kind"] not in S.REFERENCE_KINDS]
+                    row.state = S.forget(row.state, S.REFERENCE_KINDS)
+                    log.info("site %s camera %s: %s reference retaken", cam.site_id, cam.name, frame.mode)
+                    ref = True
                 if ref is None:
                     await self._learn(db, row, cam, frame, jpeg, res, now)
-                    learning = await self.image(db, cam.site_id, cam.device_id, f"ref_{frame.mode}") is None
+                learning = await self.image(db, cam.site_id, cam.device_id, f"ref_{frame.mode}") is None
                 await self._store_image(db, cam, "last", jpeg, now)
             issues, row.state, events = S.update(row.state, found, int(now.timestamp() * 1000))
             if row.nx_status in OFFLINE:
@@ -278,6 +314,8 @@ class Worker:
                                          detail={k: v for k, v in e.items() if k not in ("kind", "change")}))
                 log.info("site %s camera %s (%s): %s %s", cam.site_id, cam.name, cam.device_id[:8], e["change"], e["title"])
             await db.commit()
+            return {"status": status, "issues": [i["title"] for i in issues], "analyze_ms": metrics.get("analyze_ms"),
+                    "library": metrics.get("library"), "mode": row.mode, "error": error[:120]}
 
     async def _learn(self, db, row: CameraHealth, cam: Cam, frame: A.Frame, jpeg: bytes, res: A.Result, now) -> None:
         """No reference for this mode yet: keep a candidate and take it once the next frame agrees with it (so a
@@ -297,26 +335,16 @@ class Worker:
                 return
         cam.candidate, cam.candidate_jpeg = frame, jpeg
 
-    async def _store_background(self, db, cam: Cam, base: A.Frame, frame: A.Frame, absorb, now) -> None:
-        def build():
-            bgr = A.compose_background(base, frame, absorb)
-            ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
-            data = buf.tobytes()
-            return data, A.load(data)
-        data, bg = await asyncio.to_thread(build)
-        kind = f"bg_{frame.mode}"
-        await self._store_image(db, cam, kind, data, now)
-        self.refs[(cam.site_id, cam.device_id, kind)] = (now, bg)
-
-    async def _store_image(self, db, cam: Cam, kind: str, jpeg: bytes, now, source: str = "auto") -> None:
+    async def _store_image(self, db, cam: Cam, kind: str, jpeg: bytes, now, source: str = "auto",
+                           by: int | None = None) -> None:
         img = await db.scalar(select(CameraHealthImage).where(CameraHealthImage.site_id == cam.site_id,
                                                               CameraHealthImage.device_id == cam.device_id,
                                                               CameraHealthImage.kind == kind))
         if img is None:
             db.add(CameraHealthImage(site_id=cam.site_id, device_id=cam.device_id, kind=kind, jpeg=jpeg, taken_at=now,
-                                     source=source))
+                                     source=source, by_user_id=by))
         else:
-            img.jpeg, img.taken_at, img.source, img.by_user_id = jpeg, now, source, None
+            img.jpeg, img.taken_at, img.source, img.by_user_id = jpeg, now, source, by
 
     # ---- the loop ----------------------------------------------------------------------------------------------
     async def requests(self) -> None:
@@ -351,6 +379,51 @@ class Worker:
         self.tasks.add(t)
         t.add_done_callback(self.tasks.discard)
 
+    async def write_status(self) -> None:
+        """TWG's processing panel: the card, the models' timings, the queue, the recent checks."""
+        from app.camhealth import ai as ai_mod
+        gpu = await asyncio.to_thread(ai_mod.gpu_stats) if self.ai is not None else {}
+        if gpu and "util" in gpu:
+            self.gpu_history.append({"t": int(time.time() * 1000), "util": gpu["util"], "mem": gpu["mem_used_mb"],
+                                     "temp": gpu.get("temp_c")})
+            del self.gpu_history[:-GPU_HISTORY]
+        hour_ago = time.time() - 3600
+        models = {}
+        if self.ai is not None:
+            for name, ms, at in list(self.ai.timings):
+                if at >= hour_ago:
+                    models.setdefault(name, []).append(ms)
+        timing = {name: {"model": self.ai.MODELS.get(name, name), "calls": len(v), "avg_ms": round(sum(v) / len(v)),
+                         "p95_ms": round(sorted(v)[int(len(v) * 0.95) - 1 if len(v) > 1 else 0])}
+                  for name, v in models.items()}
+        recent_hour = [r for r in self.recent if r["at"] >= hour_ago * 1000]
+        now = time.monotonic()
+        cams = list(self.cams.values())
+        checked = [c for c in cams if c.nx_status not in OFFLINE]
+        rss = 0
+        try:
+            rss = int(next(line for line in open("/proc/self/status") if line.startswith("VmRSS")).split()[1]) // 1024
+        except (OSError, StopIteration, ValueError):
+            pass
+        data = {
+            "started_at": self.started.isoformat(), "interval_s": self.cfg.camhealth_interval_s,
+            "parallel": self.cfg.camhealth_parallel, "ai": self.ai is not None, "gpu": gpu, "gpu_history": self.gpu_history,
+            "models": timing, "cameras": len(cams), "checked_cameras": len(checked),
+            "busy": [c.name for c in cams if c.busy], "due_now": sum(1 for c in checked if c.next_at <= now and not c.busy),
+            "next_in_s": round(max(0.0, min((c.next_at - now for c in checked if not c.busy), default=0))),
+            "checks_last_hour": len(recent_hour) if len(self.recent) < 50 else None,
+            "avg_check_ms": round(sum(r["total_ms"] for r in self.recent) / len(self.recent)) if self.recent else None,
+            "errors_recent": sum(1 for r in self.recent if r.get("error")), "recent": self.recent[:25],
+            "process": {"rss_mb": rss, "cpu_s": round(sum(os.times()[:2]))},
+        }
+        async with sessionmaker()() as db:
+            row = await db.get(VisionStatus, 1)
+            if row is None:
+                db.add(VisionStatus(id=1, data=data, updated_at=utcnow()))
+            else:
+                row.data, row.updated_at = data, utcnow()
+            await db.commit()
+
     async def prune(self) -> None:
         async with sessionmaker()() as db:
             await db.execute(delete(CameraHealthEvent).where(CameraHealthEvent.at < utcnow() - timedelta(days=EVENTS_KEEP_DAYS)))
@@ -359,7 +432,7 @@ class Worker:
     async def run(self) -> None:
         log.info("camera health worker: every %ss, %s at once, AI %s", self.cfg.camhealth_interval_s,
                  self.cfg.camhealth_parallel, "on (GPU)" if self.ai is not None else "off")
-        sites_at = req_at = 0.0
+        sites_at = req_at = status_at = 0.0
         prune_at = time.monotonic()
         while True:
             now = time.monotonic()
@@ -373,6 +446,9 @@ class Worker:
                 if now - req_at > REQUESTS_EVERY_S:
                     req_at = now
                     await self.requests()
+                if now - status_at > STATUS_EVERY_S:
+                    status_at = now
+                    await self.write_status()
                 if now - prune_at > 86400:
                     prune_at = now
                     await self.prune()

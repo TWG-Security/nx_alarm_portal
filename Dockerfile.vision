@@ -22,7 +22,7 @@ COPY app/camhealth/ai.py /tmp/ai.py
 RUN mkdir -p /models && python /tmp/ai.py --download && chmod -R a+rX /models
 
 COPY app ./app
-RUN useradd --create-home --uid 10001 appuser
+RUN useradd --create-home --uid 10001 appuser && mkdir -p /app/camhealth-data && chown appuser:appuser /app/camhealth-data
 USER appuser
 ENV HF_HUB_OFFLINE=1
 

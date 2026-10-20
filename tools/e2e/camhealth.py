@@ -56,7 +56,10 @@ with sync_playwright() as p:
     img = card(pg, "Loading Dock").locator("img").bounding_box()
     rel = [(box["x"] - img["x"]) / img["width"], (box["y"] - img["y"]) / img["height"], box["width"] / img["width"], box["height"] / img["height"]]
     truth = [CHANGE_BOX[0] / W, CHANGE_BOX[1] / H, CHANGE_BOX[2] / W, CHANGE_BOX[3] / H]
-    check(all(abs(a - t) < 0.06 for a, t in zip(rel, truth)), f"the box sits on the pallet ({[round(v, 2) for v in rel]} vs {[round(v, 2) for v in truth]})")
+    from app.camhealth.state import iou
+    cx, cy = rel[0] + rel[2] / 2, rel[1] + rel[3] / 2
+    inside = truth[0] < cx < truth[0] + truth[2] and truth[1] < cy < truth[1] + truth[3]
+    check(inside and iou(rel, truth) > 0.4, f"the box sits on the pallet ({[round(v, 2) for v in rel]} vs {[round(v, 2) for v in truth]}, IoU {iou(rel, truth):.2f})")
 
     # The PTZ camera goes out of focus: a problem (PTZ: no moved / scene checks, but blur counts at its home view).
     scene(GATE, "blur")
@@ -70,13 +73,29 @@ with sync_playwright() as p:
     # Details: Reference | Now with the box; Accept current view.
     card(pg, "Loading Dock").click()
     pg.wait_for_selector("#hc-dialog[open] #hcd-now .hc-box")
-    check(pg.locator("#hcd-ref img").count() == 1, "the dialog shows the reference picture")
+    check(pg.locator(".hcd-ref--now img").count() == 1, "the dialog shows the day reference in use")
+    check("Night reference" in pg.inner_text("#hcd-refs"), "and a night reference pane")
     pg.locator("#hc-dialog").screenshot(path=f"{out}/camhealth-dialog.png")
     pg.once("dialog", lambda d: d.accept())
     pg.click("[data-act=accept]")
     pg.wait_for_function("!document.querySelector('.hc .hc-name') || ![...document.querySelectorAll('.hc .hc-name')].some(e => e.textContent.includes('Loading Dock'))", timeout=15000)
     check(True, "Accept current view: the scene change is gone from Needs attention")
     pg.click("#hcd-close")
+
+    # Retake the day reference of the blurry one: the next clean day check becomes it.
+    card(pg, "Front Gate PTZ").click()
+    pg.wait_for_selector("#hc-dialog[open] [data-ref-act=retake][data-ref=day]")
+    pg.click("[data-ref-act=retake][data-ref=day]")
+    pg.wait_for_selector("#hc-dialog[open] [data-ref-act=cancel][data-ref=day]", timeout=10000)
+    check(True, "Retake now: pending until the next clean day check")
+    pg.click("[data-ref-act=cancel][data-ref=day]")
+    pg.wait_for_selector("#hc-dialog[open] [data-ref-act=retake][data-ref=day]", timeout=10000)
+    pg.click("#hcd-close")
+
+    # TWG's processing panel.
+    pg.wait_for_function("document.querySelectorAll('#hp-tiles .hp-tile').length >= 6", timeout=40000)
+    check("Off (CPU only)" in pg.inner_text("#hp-tiles"), "TWG processing panel: worker numbers (dev: no GPU)")
+    check(pg.locator("#hp-recent tr").count() >= 1, "recent checks listed")
 
     # Mute the blurry one for 24 h.
     card(pg, "Front Gate PTZ").click()

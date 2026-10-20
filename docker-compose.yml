@@ -42,6 +42,11 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@db:5432/portal
+      CAMHEALTH_DIR: /app/camhealth-data
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility         # utility: NVML numbers for TWG's processing panel
+      PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True   # 4 GB card: less fragmentation between the models
+    volumes:
+      - camhealth:/app/camhealth-data   # per-time-of-day frame library (relearns by itself: not in the backups)
     cpus: 1.5
     mem_limit: 3g
     deploy:
@@ -75,5 +80,6 @@ volumes:
   tilecache:
   mediacache:
   sitemodels:
+  camhealth:
   caddy_data:
   caddy_config:

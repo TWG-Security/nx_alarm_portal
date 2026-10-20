@@ -19,14 +19,14 @@ from app.camhealth import state as S
 from app.config import get_settings
 from app.db import get_db, sessionmaker
 from app.deps import client_ip, csrf_protect, current_user, require_admin
-from app.models import CameraHealth, CameraHealthEvent, CameraHealthImage, Site, User
+from app.models import CameraHealth, CameraHealthEvent, CameraHealthImage, Site, User, VisionStatus
 from app.scope import Scope, get_scope, tenant_names
 from app.services.bus import bus
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger("portal.camhealth")
 router = APIRouter(dependencies=[Depends(csrf_protect)])
-IMAGE_KINDS = {"last", "ref_day", "ref_night", "bg_day", "bg_night"}
+IMAGE_KINDS = {"last", "ref_day", "ref_night"}
 CHECK_EVERY_S = 5            # Check now: at most this often per camera
 
 
@@ -110,6 +110,17 @@ async def health_summary(scope: Scope = Depends(get_scope), db: AsyncSession = D
     return {"total": total, "sites": sites}
 
 
+@router.get("/api/camera-health/processing")
+async def processing(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
+    """TWG staff only (platform.view): the vision worker's GPU, model timings, queue and recent checks."""
+    if not user.can("platform.view"):
+        raise HTTPException(403)
+    row = await db.get(VisionStatus, 1)
+    if row is None:
+        return {"data": None, "age_s": None}
+    return {"data": row.data, "age_s": round((_ms(utcnow()) - _ms(row.updated_at)) / 1000)}
+
+
 @router.get("/api/camera-health/{site_id}/{device_id}")
 async def get_health(site_id: int, device_id: str, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     row = await _row(db, scope, site_id, device_id)
@@ -175,11 +186,8 @@ async def accept_view(site_id: int, device_id: str, request: Request, user: User
                                  source="user", by_user_id=user.id))
     else:
         ref.jpeg, ref.taken_at, ref.source, ref.by_user_id = last.jpeg, now, "user", user.id
-    bg = await db.scalar(select(CameraHealthImage).where(CameraHealthImage.site_id == site_id,
-                                                         CameraHealthImage.device_id == device_id,
-                                                         CameraHealthImage.kind == f"bg_{row.mode}"))
-    if bg is not None:                        # the running background starts again from the new reference
-        bg.jpeg, bg.taken_at, bg.source, bg.by_user_id = last.jpeg, now, "user", user.id
+    # The time-of-day library starts over too (the worker clears it when it sees the new marker).
+    row.settings = {**(row.settings or {}), "library_reset": now.isoformat()}
     cleared = [i for i in row.issues or [] if i["kind"] in S.REFERENCE_KINDS]
     row.issues = [i for i in row.issues or [] if i["kind"] not in S.REFERENCE_KINDS]
     row.state = S.forget(row.state, S.REFERENCE_KINDS)
@@ -193,6 +201,46 @@ async def accept_view(site_id: int, device_id: str, request: Request, user: User
     await db.commit()
     _publish(row)
     return {"ok": True}
+
+
+class ReferenceIn(BaseModel):
+    mode: str = Field(pattern="^(day|night)$")
+    action: str = Field(pattern="^(retake|relearn|cancel)$")
+
+
+@router.post("/api/camera-health/{site_id}/{device_id}/reference")
+async def reference(site_id: int, device_id: str, body: ReferenceIn, request: Request, user: User = Depends(require_admin),
+                    scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Day / night reference. retake: the next check in that mode with nobody in view becomes the reference (now if the
+    camera is in that mode, else tonight / in the morning); relearn: forget it, it's learned again automatically;
+    cancel: drop a pending retake."""
+    row = await _row(db, scope, site_id, device_id, write=True)
+    now = utcnow()
+    settings = {k: v for k, v in (row.settings or {}).items() if k != "retake"}
+    if body.action == "retake":
+        settings["retake"] = {"mode": body.mode, "by": user.id, "label": user.label, "at": now.isoformat()}
+        if row.mode == body.mode:
+            row.check_requested_at = now
+    elif body.action == "relearn":
+        ref = await db.scalar(select(CameraHealthImage).where(CameraHealthImage.site_id == site_id,
+                                                              CameraHealthImage.device_id == device_id,
+                                                              CameraHealthImage.kind == f"ref_{body.mode}"))
+        if ref is not None:
+            await db.delete(ref)
+        if row.mode == body.mode:
+            row.issues = [i for i in row.issues or [] if i["kind"] not in S.REFERENCE_KINDS]
+            row.state = S.forget(row.state, S.REFERENCE_KINDS)
+            row.status = "offline" if row.status == "offline" else S.status(row.issues)
+            row.learning = True
+    row.settings, row.changed_at = settings, now
+    if body.action != "cancel":
+        db.add(CameraHealthEvent(tenant_id=row.tenant_id, site_id=site_id, device_id=device_id, at=now, kind="reference",
+                                 change=body.action, detail={"mode": body.mode, "by": user.label}))
+    audit(db, row.tenant_id, f"camera.reference_{body.action}", user_id=user.id, site_id=site_id, ip=client_ip(request),
+          name=row.name, device_id=device_id, mode=body.mode)
+    await db.commit()
+    _publish(row)
+    return {"ok": True, "pending": settings.get("retake")}
 
 
 class MuteIn(BaseModel):

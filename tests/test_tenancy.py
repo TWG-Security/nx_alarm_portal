@@ -124,6 +124,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("GET", f"/api/camera-health/{sb.id}/cam-b", None), ("GET", f"/media/camera-health/{sb.id}/cam-b/last.jpg", None),
         ("POST", f"/api/camera-health/{sb.id}/cam-b/check", None), ("POST", f"/api/camera-health/{sb.id}/cam-b/accept", None),
         ("POST", f"/api/camera-health/{sb.id}/cam-b/mute", {"hours": 24}),
+        ("POST", f"/api/camera-health/{sb.id}/cam-b/reference", {"mode": "day", "action": "relearn"}),
         ("PUT", f"/api/camera-health/{sb.id}/cam-b/settings", {"skip": True}),
     ]:
         r = await client.request(method, path, json=body)

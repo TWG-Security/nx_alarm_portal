@@ -1,22 +1,21 @@
 """Camera health: the checks on one frame. Pure functions (OpenCV + numpy, no I/O); worker.py feeds them frames and
 state.py decides what is shown.
 
-Everything runs on a copy W px wide, compared with the camera's reference picture for the same mode (day = colour,
-night = infrared black-and-white) after lining the reference up with the frame:
+Two kinds of comparison (2026-10-20, after real cameras showed moving sun shadows as "blur", "blocked" and "scene
+changed"):
 
+Whole view, against the camera's DAY or NIGHT reference (day / night by the sun at the site; an infrared black-and-
+white picture is always night; skipped at dusk and dawn, sun between -6 and +3 degrees):
   moved          the reference no longer lines up: shifted, turned or zoomed past the limits (ORB + RANSAC)
-  view_changed   nothing lines up any more (camera turned away, scene replaced)
-  covered / blocked   cells that had detail and are now flat (whole view / an area)
-  dark           cells that were lit and are now black (whole view = problem, an area = warning)
-  glare          cells blown out to white that weren't
-  blur           cells that lost their fine detail but kept their shapes (out of focus, smudge, water)
-  scene_change   cells that differ from the camera's running background (lighting-proof correlation, best of
-                 small shifts; on the GPU DINOv2 patch features must agree and people / vehicles never count),
-                 joined into boxes. The background follows slow drift (sun, shadows): after each check the cells that
-                 did NOT change are copied into it (`Result.absorb`), so a real change stays flagged until someone
-                 accepts the view, while the afternoon sun never adds up.
-  frozen         the very same picture as the last check (cameras always have some sensor noise)
-  ir_day         infrared black-and-white while the sun is up at the site
+  covered        the picture lost its detail;  dark: it went black;  glare: blown out;  blur: out of focus
+Areas, against a LIBRARY of clean frames from the same half hour (and the half hours either side) on earlier days, so
+the 3 pm shadows are compared with 3 pm shadows; an area counts only if it differs from every one of them:
+  blocked / dark / glare / blur   an area that went flat / black / white / soft
+  scene_change   cells whose picture changed (lighting-proof correlation, best of small shifts; on the GPU DINOv2 patch
+                 features must agree), joined into boxes; people and vehicles (detector, GPU) never count
+  view_changed   most of the view changed
+Until the library has frames for this time of day the area checks wait (metrics["area_learning"]).
+Also: frozen (the very same picture as the last check), ir_day (infrared with the sun up).
 
 Boxes are [x, y, w, h] in 0..1 of the frame, so the browser draws them over the stored picture at any size.
 """
@@ -41,11 +40,22 @@ DARK_MEAN, LIT_MEAN = 22, 50
 SAT_NOW, SAT_REF = 0.5, 0.15   # share of blown-out pixels in a glare cell now / in the reference
 BLUR_RATIO = 0.35          # fine detail left vs the reference
 BLUR_SHAPE_NCC = 0.6       # ... while the coarse shapes still match (else it's a change, not blur)
+BLUR_MAX_CONTRAST = 0.95   # ... and the cell's contrast didn't rise (a synthetic defocus takes it to ~0.57)
 CHANGE_NCC = 0.35          # correlation below this = the cell's picture changed
 SHIFTS = (-4, 0, 4)        # px: best correlation over small shifts (wind, vibration, JPEG)
 DINO_CHANGE = 0.45         # GPU: cell's mean patch cosine similarity below this = changed. Measured 2026-10-20 on
                            # cells the correlation flagged: shadows / light on real lawns and drives 0.52-0.66 (10th
                            # percentile; single cells down to 0.39), a new object 0.33-0.63, people/vehicles excluded
+
+BLOCKED_SAME = 0.55        # GPU: an area this similar (DINOv2) to the library isn't blocked (shadowed asphalt measured
+                           # 0.62-0.65, a real flat patch 0.43, 2026-10-20)
+SEM_CHANGE = 0.25          # GPU: share of a cell whose ADE20K class changed = what's there changed (not its lighting).
+                           # Chosen 2026-10-20 by a sweep: 27 real objects / cardboard pasted into real frames, 26 real
+                           # untouched frames vs a 25-min-old reference: correlation < 0.35 AND DINOv2 < 0.45 AND class
+                           # change > 0.25 found 23/27 with 1 false flag (a PTZ, which skips scene checks anyway)
+MOVABLE = {"person", "car", "truck", "bus", "van", "bicycle", "minibike", "boat", "animal", "airplane", "ship"}
+TWILIGHT = (-6.0, 3.0)     # sun elevation: dusk / dawn, the light changes too fast for the whole-view comparison
+LIBRARY_MAX = 8            # library frames compared per check
 
 MIN_REGION_CELLS = 2
 MIN_REGION_AREA = 0.008    # of the frame
@@ -70,9 +80,10 @@ TITLES = {
 class Frame:
     bgr: np.ndarray
     gray: np.ndarray
-    mode: str                  # day | night
+    mode: str                  # day | night (load() guesses from the colour; frame_mode() decides with the sun)
     chroma: float
     small: np.ndarray          # 160 px wide grey, for the frozen check
+    mono: bool = False         # black-and-white (infrared)
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -92,7 +103,26 @@ def load(jpeg: bytes) -> Frame:
     # Black-and-white = infrared night mode, unless the picture is black, flat or blown out (those have no colour
     # either): they're compared with the day reference, which then reports them for what they are.
     usable = gray.mean() >= DARK_MEAN and gray.std() >= 6 and (gray >= 250).mean() < 0.6
-    return Frame(bgr, gray, "night" if chroma < MONO_CHROMA and usable else "day", round(chroma, 2), small)
+    mono = chroma < MONO_CHROMA and usable
+    return Frame(bgr, gray, "night" if mono else "day", round(chroma, 2), small, mono)
+
+
+def frame_mode(f: Frame, sun: float | None) -> str:
+    """night: infrared, or the sun 6 degrees below the horizon at the site; else day. Without a site location: by
+    colour only."""
+    return "night" if f.mono or (sun is not None and sun < TWILIGHT[0]) else "day"
+
+
+def twilight(sun: float | None) -> bool:
+    return sun is not None and TWILIGHT[0] <= sun < TWILIGHT[1]
+
+
+@dataclass
+class LibFrame:
+    """A clean frame from the library (worker.py): the frame and the people / vehicles the detector saw in it."""
+    frame: Frame
+    objects: list = field(default_factory=list)
+    seg: np.ndarray | None = None          # GPU: ADE20K classes, computed once and kept with the cached frame
 
 
 def grid(shape: tuple[int, int]) -> tuple[int, int]:
@@ -274,8 +304,9 @@ class Result:
     mode: str
     issues: list[dict] = field(default_factory=list)
     metrics: dict = field(default_factory=dict)
-    usable_as_reference: bool = False      # nothing wrong on its own: may become the first reference
-    absorb: np.ndarray | None = None       # cells to copy into the running background (None = leave it alone)
+    usable_as_reference: bool = False      # nothing wrong on its own, nobody in view: may become a reference
+    clean: bool = False                    # nothing found, nobody in view: goes into the library
+    objects: list = field(default_factory=list)   # people / vehicles in view (GPU)
 
 
 def check_alone(f: Frame) -> list[dict]:
@@ -300,40 +331,67 @@ def _object_cells(objects: list[dict], g: tuple[int, int]) -> np.ndarray:
     return m
 
 
-def compose_background(bg: Frame, f: Frame, absorb: np.ndarray) -> np.ndarray:
-    """The new running background (BGR): the frame's pixels in the absorbed cells, the old background elsewhere."""
-    mask = cv2.resize(absorb.astype(np.uint8), (f.shape[1], f.shape[0]), interpolation=cv2.INTER_NEAREST).astype(bool)
-    out = bg.bgr.copy()
-    out[mask] = f.bgr[mask]
-    return out
-
-
 def frame_from_bgr(bgr: np.ndarray) -> Frame:
     ok, buf = cv2.imencode(".jpg", bgr, [cv2.IMWRITE_JPEG_QUALITY, 92])
     return load(buf.tobytes())
 
 
-def analyze(f: Frame, ref: Frame | None, *, bg: Frame | None = None, ai=None, view_checks: bool = True,
+@dataclass
+class Quality:
+    textured: np.ndarray
+    flat: np.ndarray
+    dark: np.ndarray
+    glare: np.ndarray
+    blur: np.ndarray
+    ratio: np.ndarray
+    lit: np.ndarray
+
+
+def quality(f: Frame, cs: Stats, base_gray: np.ndarray, inside: np.ndarray, g: tuple[int, int]) -> Quality:
+    """Cells that went flat / black / blown out / blurry compared with `base_gray`."""
+    bs = stats(base_gray, g)
+    textured = (bs.std > TEXTURED_STD) & inside
+    dark = inside & (cs.mean < DARK_MEAN) & (bs.mean > LIT_MEAN)
+    glare = inside & (cs.sat > SAT_NOW) & (bs.sat < SAT_REF) & ~dark
+    flat = textured & (cs.std < FLAT_STD) & ~dark & ~glare
+    coarse = best_ncc(cv2.resize(f.gray, None, fx=0.25, fy=0.25), cv2.resize(base_gray, None, fx=0.25, fy=0.25), g)
+    ratio = cs.sharp / np.maximum(bs.sharp, 1e-3)
+    # Blur lowers a cell's contrast. A shadow edge moving into a cell raises it, and fooled the sharpness ratio on
+    # real lawns and drives (contrast 12 -> 45, "out of focus", 2026-10-20): blur needs the contrast not to rise.
+    blur = (textured & ~flat & ~dark & ~glare & (ratio < BLUR_RATIO) & (coarse > BLUR_SHAPE_NCC) & (cs.std > FLAT_STD)
+            & (cs.std <= bs.std * BLUR_MAX_CONTRAST))
+    return Quality(textured, flat, dark, glare, blur, ratio, inside & (bs.mean > LIT_MEAN))
+
+
+def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = None, ai=None, view_checks: bool = True,
             lat: float | None = None, lng: float | None = None, now: datetime | None = None) -> Result:
-    """All checks on one frame. `ref` is the reference for the same mode (None while learning), `bg` the running
-    background (None = the reference). `ai` is app.camhealth.ai.AI or None. `view_checks` False skips moved / view
-    changed / scene change (PTZ cameras)."""
+    """All checks on one frame. `ref`: the day or night reference for f.mode (None while learning); `library`: clean
+    frames from this time of day (None / empty = the area checks wait). `ai`: app.camhealth.ai.AI or None.
+    `view_checks` False (PTZ): no moved / area / scene checks."""
+    sun = sun_elevation(lat, lng, now or datetime.now(timezone.utc)) if lat is not None and lng is not None else None
     res = Result(f.mode, metrics={"chroma": f.chroma, "mean": round(float(f.gray.mean()), 1),
                                   "std": round(float(f.gray.std()), 1)})
+    if sun is not None:
+        res.metrics["sun"] = round(sun, 1)
     alone = check_alone(f)
-    if lat is not None and lng is not None and f.mode == "night":
-        elev = sun_elevation(lat, lng, now or datetime.now(timezone.utc))
-        res.metrics["sun"] = round(elev, 1)
-        if elev > 8 and f.gray.mean() > 40:
-            alone.append(issue("ir_day", detail=f"Black-and-white (infrared) picture with the sun {elev:.0f}° up"))
-    if ref is None or ref.shape != f.shape:
+    if f.mono and sun is not None and sun > 8 and f.gray.mean() > 40:
+        alone.append(issue("ir_day", detail=f"Black-and-white (infrared) picture with the sun {sun:.0f}° up"))
+    people = []
+    if ai is not None and not alone:
+        try:
+            res.objects = ai.objects(f.bgr)
+            people = [o for o in res.objects if o["label"] == "person"]
+        except Exception as exc:  # noqa: BLE001 - the CPU checks still count
+            res.metrics["ai_error"] = str(exc)[:200]
+    res.metrics.update(people=len(people), objects=len(res.objects))
+    res.usable_as_reference = not alone and not people    # never a reference with someone standing in it
+    if ref is None or ref.shape != f.shape or twilight(sun):
         res.issues += alone
-        res.usable_as_reference = not alone
+        if twilight(sun):
+            res.metrics["twilight"] = True
         return res
 
-    gshape = grid(f.shape)
-    ref_gray, ref_bgr = ref.gray, ref.bgr
-    valid = np.ones(f.shape, np.uint8)
+    g = grid(f.shape)
     a = align(ref.gray, f.gray)
     res.metrics.update(inliers=a.inliers, shift=round(a.shift_px / W, 3), rot=round(a.rotation, 2),
                        scale=round(a.scale, 3))
@@ -341,9 +399,9 @@ def analyze(f: Frame, ref: Frame | None, *, bg: Frame | None = None, ai=None, vi
         # A PTZ camera looking somewhere else: comparing it with the reference means nothing, the plain checks stay.
         res.issues += alone
         return res
+    ref_gray, valid = ref.gray, np.ones(f.shape, np.uint8)
     if a.ok:
         ref_gray = cv2.warpAffine(ref.gray, a.matrix, (f.shape[1], f.shape[0]), borderMode=cv2.BORDER_REFLECT)
-        ref_bgr = cv2.warpAffine(ref.bgr, a.matrix, (f.shape[1], f.shape[0]), borderMode=cv2.BORDER_REFLECT)
         valid = cv2.warpAffine(np.ones(ref.shape, np.uint8), a.matrix, (f.shape[1], f.shape[0]))
         if a.moved:
             h, w = ref.shape
@@ -351,90 +409,117 @@ def analyze(f: Frame, ref: Frame | None, *, bg: Frame | None = None, ai=None, vi
             poly = (corners @ a.matrix[:, :2].T + a.matrix[:, 2]) / np.float32([w, h])
             res.issues.append(issue("moved", detail=_direction(a),
                                     poly=[[round(float(x), 4), round(float(y), 4)] for x, y in poly]))
-    rs = stats(ref_gray, gshape)
-    cs = stats(f.gray, gshape)
-    inside = _cells(valid.astype(np.float32), gshape) > 0.9          # cells the shifted reference still covers
-    textured = (rs.std > TEXTURED_STD) & inside
-    n_tex = max(int(textured.sum()), 1)
-
-    dark = inside & (cs.mean < DARK_MEAN) & (rs.mean > LIT_MEAN)
-    glare = inside & (cs.sat > SAT_NOW) & (rs.sat < SAT_REF) & ~dark
-    flat = textured & (cs.std < FLAT_STD) & ~dark & ~glare
-    coarse = best_ncc(cv2.resize(f.gray, None, fx=0.25, fy=0.25), cv2.resize(ref_gray, None, fx=0.25, fy=0.25), gshape)
-    ncc = best_ncc(f.gray, ref_gray, gshape)
-    ratio = cs.sharp / np.maximum(rs.sharp, 1e-3)
-    blur = textured & ~flat & ~dark & ~glare & (ratio < BLUR_RATIO) & (coarse > BLUR_SHAPE_NCC) & (cs.std > FLAT_STD)
-    res.metrics.update(cells=int(gshape[0] * gshape[1]), textured=int(textured.sum()),
-                       sharp_ratio=round(float(np.median(ratio[textured])) if textured.any() else 1.0, 3),
-                       flat=int(flat.sum()), dark=int(dark.sum()), glare=int(glare.sum()),
-                       blur=int(blur.sum()), ncc_median=round(float(np.median(ncc[textured])) if textured.any() else 1, 3))
+    cs = stats(f.gray, g)
+    inside = _cells(valid.astype(np.float32), g) > 0.9          # cells the shifted reference still covers
     full = [[0, 0, 1, 1]]
 
-    if flat.sum() >= WHOLE * n_tex:
+    # Whole view, against the day / night reference.
+    wq = quality(f, cs, ref_gray, inside, g)
+    n_tex = max(int(wq.textured.sum()), 1)
+    sharp_ratio = round(float(np.median(wq.ratio[wq.textured])) if wq.textured.any() else 1.0, 3)
+    res.metrics.update(cells=int(g[0] * g[1]), textured=int(wq.textured.sum()), sharp_ratio=sharp_ratio)
+    if wq.flat.sum() >= WHOLE * n_tex:
         res.issues.append(issue("covered", boxes=full, detail="The picture lost almost all its detail"))
-    elif (b := regions(flat, gshape)):
-        res.issues.append(issue("blocked", boxes=b, detail=f"{_area(b) * 100:.0f}% of the view has no detail any more"))
-    if dark.sum() >= WHOLE * max(int((rs.mean > LIT_MEAN).sum()), 1) and dark.sum() > 0:
+    if wq.dark.sum() and wq.dark.sum() >= WHOLE * max(int(wq.lit.sum()), 1):
         res.issues.append(issue("dark", severity="problem", boxes=full, detail="The picture went black"))
-    elif (b := regions(dark, gshape)):
-        res.issues.append(issue("dark", boxes=b, detail="An area that was lit is black (a light out?)"))
-    if glare.sum() >= WHOLE * gshape[0] * gshape[1]:
+    if wq.glare.sum() >= WHOLE * g[0] * g[1]:
         res.issues.append(issue("glare", severity="problem", boxes=full, detail="The picture is blown out to white"))
-    elif (b := regions(glare, gshape)):
-        res.issues.append(issue("glare", boxes=b, detail="Glare is washing out part of the view"))
-    if blur.sum() >= WHOLE * n_tex:
-        res.issues.append(issue("blur", severity="problem", boxes=full, detail=f"Fine detail down to {res.metrics['sharp_ratio'] * 100:.0f}% "
-                                                         "of the reference"))
-    elif (b := regions(blur, gshape)):
-        res.issues.append(issue("blur", boxes=b, detail="Part of the view is blurry (a smudge or water on the lens?)"))
+    if wq.blur.sum() >= WHOLE * n_tex:
+        res.issues.append(issue("blur", severity="problem", boxes=full,
+                                detail=f"Fine detail down to {sharp_ratio * 100:.0f}% of the reference"))
 
-    if view_checks and not any(i["kind"] in ("covered", "moved") for i in res.issues):
-        _scene_change(res, f, bg if bg is not None and bg.shape == f.shape else Frame(ref_bgr, ref_gray, ref.mode, 0, ref.small),
-                      ai, gshape, inside, cs, flat | dark | glare | blur)
+    # Areas, against the library for this time of day.
+    lib = [x for x in (library or []) if x.frame.shape == f.shape and x.frame.mono == f.mono][:LIBRARY_MAX]
+    res.metrics["library"] = len(lib)
+    if view_checks and not res.issues:
+        if lib:
+            _areas(res, f, cs, lib, ai, g, inside)
+        else:
+            res.metrics["area_learning"] = True
     res.issues += [i for i in alone if i["kind"] == "ir_day"]
     if not any(i["kind"] in ("covered", "dark", "glare") for i in res.issues):
         res.issues += [i for i in alone if i["kind"] in ("covered", "dark", "glare")]
+    res.clean = (not res.issues and not people and view_checks and "ai_error" not in res.metrics)
     return res
 
 
-def _scene_change(res: Result, f: Frame, base: Frame, ai, g: tuple[int, int], inside: np.ndarray, cs: Stats,
-                  others: np.ndarray) -> None:
-    """Scene change against the running background; sets res.absorb (what the background takes from this frame)."""
-    bs = stats(base.gray, g)
-    textured = (bs.std > TEXTURED_STD) & inside
-    n_tex = max(int(textured.sum()), 1)
-    ncc = best_ncc(f.gray, base.gray, g)
-    others = others | cv2.dilate(others.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)   # their edges too
-    changed = textured & ~others & (ncc < CHANGE_NCC)
-    # A cell that had no detail but has some now (something new in front of a plain wall) changed too.
-    changed |= inside & ~textured & ~others & (cs.std > TEXTURED_STD * 1.5) & (ncc < CHANGE_NCC)
-    held = np.zeros(g, bool)                   # people / vehicles now: never taken into the background
-    res.metrics["ncc_changed"] = int(changed.sum())
-    if ai is not None and changed.any():
-        try:
-            cur_feat, base_feat = ai.patch_features(f.bgr), ai.patch_features(base.bgr)
-            sim = (cur_feat * base_feat).sum(-1).astype(np.float32)
-            sim_cells = cv2.resize(sim, (g[1], g[0]), interpolation=cv2.INTER_AREA)
-            changed &= sim_cells < DINO_CHANGE
-            now_objs, base_objs = ai.objects(f.bgr), ai.objects(base.bgr)
-            held = _object_cells(now_objs, g)
-            changed &= ~held & ~_object_cells(base_objs, g)   # a car that left the background isn't a change either
-            res.metrics.update(dino_p5=round(float(np.percentile(sim, 5)), 3), objects=len(now_objs),
-                               objects_bg=len(base_objs))
-        except Exception as exc:  # noqa: BLE001 - the CPU result stands
-            res.metrics["ai_error"] = str(exc)[:200]
-    res.metrics["changed"] = int(changed.sum())
+def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[int, int], inside: np.ndarray) -> None:
+    """Area checks and scene change: a cell counts only if it's flagged against EVERY library frame in which that cell
+    is free of people / vehicles (and at least one is); people / vehicles in view now never count."""
+    now_cells = _object_cells(res.objects, g)
+    keys = ("flat", "dark", "glare", "blur", "changed")
+    hit = {k: np.ones(g, bool) for k in keys}
+    seen = np.zeros(g, bool)                   # cells some library frame could judge
+    sims, sems = [], []
+    feat = seg = movable = None
+    for x in lib:
+        busy = _object_cells(x.objects, g)
+        seen |= ~busy
+        q = quality(f, cs, x.frame.gray, inside, g)
+        others = q.flat | q.dark | q.glare | q.blur
+        others_wide = others | cv2.dilate(others.astype(np.uint8), np.ones((3, 3), np.uint8)).astype(bool)
+        ncc = best_ncc(f.gray, x.frame.gray, g)
+        changed = q.textured & ~others_wide & (ncc < CHANGE_NCC)
+        # A cell that had no detail but has some now (something new in front of a plain wall) changed too.
+        changed |= inside & ~q.textured & ~others_wide & (cs.std > TEXTURED_STD * 1.5) & (ncc < CHANGE_NCC)
+        if ai is not None and (changed.any() or q.flat.any()):
+            try:
+                if feat is None:
+                    feat = ai.patch_features(f.bgr)
+                    if hasattr(ai, "segment"):
+                        seg = ai.segment(f.bgr)
+                        movable = np.isin(seg, [i for i, n in enumerate(ai.seg_labels) if n in MOVABLE])
+                sim = cv2.resize((feat * ai.patch_features(x.frame.bgr)).sum(-1).astype(np.float32), (g[1], g[0]),
+                                 interpolation=cv2.INTER_AREA)
+                sims.append(sim)
+                changed &= sim < DINO_CHANGE
+                if seg is not None:
+                    if x.seg is None:
+                        x.seg = ai.segment(x.frame.bgr)
+                    if x.seg.shape == seg.shape:
+                        moved_thing = movable | np.isin(x.seg, [i for i, n in enumerate(ai.seg_labels) if n in MOVABLE])
+                        sem = _cells(((seg != x.seg) & ~moved_thing).astype(np.float32), g)
+                        sems.append(sem)
+                        changed &= sem > SEM_CHANGE
+            except Exception as exc:  # noqa: BLE001 - the CPU result stands
+                res.metrics["ai_error"] = str(exc)[:200]
+        for k, m in zip(keys, (q.flat, q.dark, q.glare, q.blur, changed)):
+            hit[k] &= m | busy
+    for k in keys:
+        hit[k] &= seen & ~now_cells
+    best_sim = np.max(sims, axis=0) if sims else None
+    res.metrics.update(flat=int(hit["flat"].sum()), dark=int(hit["dark"].sum()), glare=int(hit["glare"].sum()),
+                       blur=int(hit["blur"].sum()), changed=int(hit["changed"].sum()))
+    for kind, key, detail in (("blocked", "flat", "of the view has no detail any more"),
+                              ("dark", "dark", "An area that is normally lit at this time is black (a light out?)"),
+                              ("glare", "glare", "Glare is washing out part of the view"),
+                              ("blur", "blur", "Part of the view is blurry (a smudge or water on the lens?)")):
+        boxes = regions(hit[key], g)
+        if kind == "blocked" and best_sim is not None:    # still the same thing (shadowed asphalt is asphalt)
+            boxes = [b for b in boxes if np.median(_box_cells(best_sim, b, g)) < BLOCKED_SAME]
+        if kind == "blocked" and sems:                     # ... and still labelled the same
+            least = np.min(sems, axis=0)
+            boxes = [b for b in boxes if np.median(_box_cells(least, b, g)) > SEM_CHANGE]
+        if boxes:
+            res.issues.append(issue(kind, boxes=boxes, detail=f"{_area(boxes) * 100:.0f}% {detail}" if kind == "blocked" else detail))
+    changed = hit["changed"]
+    n_tex = max(int((stats(lib[0].frame.gray, g).std > TEXTURED_STD).sum()), 1)
     if changed.sum() >= VIEW_CHANGED * n_tex:
         res.issues.append(issue("view_changed", boxes=[[0, 0, 1, 1]], detail="Most of the view no longer matches"))
-        return                                 # the background stays as it was
-    diff = cv2.absdiff(cv2.GaussianBlur(f.gray, (0, 0), 2), cv2.GaussianBlur(base.gray, (0, 0), 2))
+        return
+    diff = cv2.absdiff(cv2.GaussianBlur(f.gray, (0, 0), 2), cv2.GaussianBlur(lib[0].frame.gray, (0, 0), 2))
     diff = cv2.morphologyEx((diff > 30).astype(np.uint8), cv2.MORPH_OPEN, np.ones((5, 5), np.uint8))
     boxes = [tighten(b, diff) for b in regions(changed, g)]
     if boxes:
         res.issues.append(issue("scene_change", boxes=boxes,
-                                detail=f"{len(boxes)} area{'s' if len(boxes) > 1 else ''} changed and stayed "
-                                       f"({_area(boxes) * 100:.0f}% of the view)"))
-    res.absorb = inside & ~changed & ~held & ~others
+                                detail=f"{len(boxes)} area{'s differ' if len(boxes) > 1 else ' differs'} from earlier "
+                                       f"pictures at this time of day ({_area(boxes) * 100:.0f}% of the view)"))
+
+
+def _box_cells(m: np.ndarray, box: list[float], g: tuple[int, int]) -> np.ndarray:
+    rows, cols = g
+    y0, x0 = int(box[1] * rows), int(box[0] * cols)
+    return m[y0:max(y0 + 1, round((box[1] + box[3]) * rows)), x0:max(x0 + 1, round((box[0] + box[2]) * cols))]
 
 
 def frozen(f: Frame, previous_small: np.ndarray | None) -> bool:

@@ -32,35 +32,41 @@ def ref():
     return REF
 
 
+def check(f, **kw):
+    """With the reference as the day reference and as the one library frame for this time of day."""
+    return A.analyze(f, ref(), library=[A.LibFrame(ref())], **kw)
+
+
 @pytest.mark.parametrize("mode,expected,severity", [
     ("blur", ["blur"], "problem"), ("covered", ["covered"], "problem"), ("dark", ["dark"], "problem"),
     ("glare", ["glare"], "problem"), ("moved", ["moved"], "problem"), ("change", ["scene_change"], "warning"),
     ("blocked", ["blocked"], "warning"),
 ])
 def test_each_defect_is_found(mode, expected, severity):
-    res = A.analyze(frame(mode, 2), ref())
+    res = check(frame(mode, 2))
     assert kinds(res) == expected, res.issues
     assert res.issues[0]["severity"] == severity
 
 
 @pytest.mark.parametrize("mode", ["normal", "dusk"])
 def test_noise_and_lighting_are_not_problems(mode):
-    assert A.analyze(frame(mode, 3), ref()).issues == []
+    res = check(frame(mode, 3))
+    assert res.issues == [] and res.clean
 
 
 def test_boxes_sit_on_the_changed_area():
-    [i] = A.analyze(frame("change", 4), ref()).issues
+    [i] = check(frame("change", 4)).issues
     [box] = i["boxes"]
     x, y, w, h = H.CHANGE_BOX
     truth = [x / H.W, y / H.H, w / H.W, h / H.H]
     assert S.iou(box, truth) > 0.6, (box, truth)
-    [blocked] = A.analyze(frame("blocked", 4), ref()).issues
+    [blocked] = check(frame("blocked", 4)).issues
     x, y, w, h = H.BLOCKED_BOX
     assert S.iou(blocked["boxes"][0], [x / H.W, y / H.H, w / H.W, h / H.H]) > 0.7
 
 
 def test_moved_reports_where_the_reference_view_went():
-    [i] = A.analyze(frame("moved", 5), ref()).issues
+    [i] = check(frame("moved", 5)).issues
     assert "right" in i["detail"] and "down" in i["detail"]
     (x0, y0) = i["poly"][0]                       # the reference's top-left corner, now 90 px right / 40 px down
     assert abs(x0 - 90 / H.W) < 0.01 and abs(y0 - 40 / H.H) < 0.01
@@ -95,31 +101,73 @@ def test_ir_in_daylight():
 
 
 def test_ptz_cameras_skip_the_view_checks():
-    """Looking elsewhere: only the plain checks. Back at the reference position: blur etc. still count."""
-    assert A.analyze(frame("moved", 9), ref(), view_checks=False).issues == []
-    assert A.analyze(frame("change", 9), ref(), view_checks=False).issues == []
-    assert kinds(A.analyze(frame("blocked", 9), ref(), view_checks=False)) == ["blocked"]
-    assert kinds(A.analyze(frame("covered", 9), ref(), view_checks=False)) == ["covered"]
+    """Looking elsewhere: only the plain checks. Back at the reference position: whole-view problems still count."""
+    assert check(frame("moved", 9), view_checks=False).issues == []
+    assert check(frame("change", 9), view_checks=False).issues == []
+    assert kinds(check(frame("blur", 9), view_checks=False)) == ["blur"]
+    assert kinds(check(frame("covered", 9), view_checks=False)) == ["covered"]
 
 
-def test_the_background_follows_slow_light_but_keeps_a_real_change():
-    """Ten checks while the light fades (dusk-like gain sweeping across): nothing; then an object that stays: it's
-    raised after three checks and stays raised (its cells are never taken into the background)."""
+def shadowed(seed, band=(300, 700)):
+    """The scene with a long diagonal shadow across the ground, like a pole's in the afternoon."""
     import cv2
     import numpy as np
-    base, bg, st, raised = ref(), None, None, []
-    for i in range(16):
-        img = H.render("change" if i >= 10 else "normal", 100 + i).astype(np.float32)
-        img *= np.linspace(1.0 - i * 0.03, 1.0, H.W, dtype=np.float32)[None, :, None]
-        f = A.load(cv2.imencode(".jpg", np.clip(img, 0, 255).astype(np.uint8))[1].tobytes())
-        res = A.analyze(f, base, bg=bg)
-        if res.absorb is not None:
-            bg = A.frame_from_bgr(A.compose_background(bg or base, f, res.absorb))
-        issues, st, events = S.update(st, res.issues, i * 300_000)
-        raised += [(i, e["kind"]) for e in events if e["change"] == "raised"]
-        if i == 15:
-            assert [x["kind"] for x in issues] == ["scene_change"]
-    assert raised == [(12, "scene_change")], raised
+    img = H.render("normal", seed).astype(np.float32)
+    mask = np.zeros(img.shape[:2], np.uint8)
+    cv2.line(mask, (band[0], H.H), (band[1], H.H // 2), 1, 60)
+    img[mask.astype(bool)] *= 0.4
+    return A.load(cv2.imencode(".jpg", np.clip(img, 0, 255).astype(np.uint8))[1].tobytes())
+
+
+def test_area_checks_compare_with_the_same_time_of_day():
+    """A shadow the camera sees every afternoon: flagged against the noon frame alone, nothing once the library holds
+    an afternoon frame from an earlier day with that shadow."""
+    noon = A.LibFrame(ref())
+    yesterday_3pm = A.LibFrame(shadowed(50))
+    assert A.analyze(shadowed(51), ref(), library=[noon]).issues != []
+    res = A.analyze(shadowed(51), ref(), library=[yesterday_3pm, noon])
+    assert res.issues == [] and res.clean
+    # ... while a real change still differs from every one of them.
+    assert kinds(A.analyze(frame("change", 52), ref(), library=[noon, A.LibFrame(frame("normal", 53))])) == ["scene_change"]
+
+
+def test_area_checks_wait_for_the_library():
+    res = A.analyze(frame("change", 60), ref())
+    assert res.issues == [] and res.metrics["area_learning"] and res.clean
+    assert kinds(A.analyze(frame("covered", 60), ref())) == ["covered"]          # whole view: from the start
+
+
+def test_day_and_night_by_the_sun():
+    noon = datetime(2026, 6, 21, 17, 0, tzinfo=timezone.utc)
+    dusk = datetime(2026, 6, 22, 0, 45, tzinfo=timezone.utc)           # just after sunset in Pennsylvania
+    night = datetime(2026, 6, 21, 4, 0, tzinfo=timezone.utc)
+    sun = lambda t: A.sun_elevation(40.6, -75.4, t)  # noqa: E731
+    colour = frame("normal", 70)
+    assert A.frame_mode(colour, sun(noon)) == "day"
+    assert A.frame_mode(colour, sun(night)) == "night"           # lights at night: its own night reference
+    assert A.frame_mode(frame("night", 70), sun(noon)) == "night"    # infrared is always night
+    assert A.frame_mode(colour, None) == "day"
+    assert A.twilight(sun(dusk)) and not A.twilight(sun(noon))
+    res = A.analyze(frame("blur", 71), ref(), library=[A.LibFrame(ref())], lat=40.6, lng=-75.4, now=dusk)
+    assert res.issues == [] and res.metrics["twilight"]                 # dusk: the light changes too fast
+
+
+def test_library_one_frame_per_half_hour_per_day(tmp_path):
+    from app.camhealth.library import KEEP, Library
+    lib = Library(tmp_path)
+    t = datetime(2026, 10, 20, 15, 5)
+    assert lib.add(1, "cam", t, frame("normal", 80), [])
+    assert not lib.add(1, "cam", t.replace(minute=20), frame("normal", 81), [])      # same slot, same day
+    for d in range(1, KEEP + 2):
+        assert lib.add(1, "cam", t.replace(day=20 + d), frame("normal", 82 + d), [{"label": "car", "box": [0, 0, .1, .1]}])
+    assert len(list((tmp_path / "1" / "cam" / "30").glob("*.jpg"))) == KEEP
+    lib.add(1, "cam", t.replace(hour=14, minute=40), frame("normal", 90), [])           # the slot before
+    got = lib.frames(1, "cam", t, mono=False)
+    assert len(got) == KEEP + 1 and got[0].objects and not got[-1].objects             # own slot first, newest first
+    assert lib.frames(1, "cam", t, mono=True) == []
+    assert lib.slots_learned(1, "cam") == 2
+    assert lib.reset_if(1, "cam", "accept-1") and lib.frames(1, "cam", t, mono=False) == []
+    assert not lib.reset_if(1, "cam", "accept-1")
 
 
 # ---- raise / clear -----------------------------------------------------------------------------------------------
@@ -176,8 +224,11 @@ class FakeNX:
         return self._frame()
 
 
-async def _worker(session, site):
+async def _worker(session, site, tmp_path=None):
     w = Worker()
+    if tmp_path is not None:
+        from app.camhealth.library import Library
+        w.library = Library(tmp_path)
     nx = FakeNX()
     conn = SiteConn(site, nx)
     w.sites[site.id] = conn
@@ -190,10 +241,12 @@ async def _row(session, site, dev):
     return await session.scalar(q.execution_options(populate_existing=True))      # the worker wrote it elsewhere
 
 
-async def test_worker_learns_a_reference_then_raises_and_clears(session):
+async def test_worker_learns_a_reference_then_raises_and_clears(session, tmp_path):
     tenant, _ = await make_tenant_user(session)
     site = await make_site(session, tenant)
-    w, nx = await _worker(session, site)
+    site.lat = site.lng = None                 # by colour only: the test mustn't depend on the time of day
+    await session.commit()
+    w, nx = await _worker(session, site, tmp_path)
     assert sorted(dev for _, dev in w.cams) == ["cam-live", "cam-off", "cam-rec"]       # video only, no horn
     assert (await _row(session, site, "cam-off")).status == "offline"
     cam = w.cams[(site.id, "cam-rec")]
@@ -220,15 +273,29 @@ async def test_worker_learns_a_reference_then_raises_and_clears(session):
     events = (await session.scalars(select(CameraHealthEvent.change).where(CameraHealthEvent.device_id == "cam-rec")
                                     .order_by(CameraHealthEvent.id))).all()
     assert events == ["reference", "raised", "cleared"]
+    assert w.library.slots_learned(site.id, "cam-rec") == 1            # clean frames went into the library
+
+    # Retake the day reference: the next clean day frame becomes it, marked as taken by that person.
+    row = await _row(session, site, "cam-rec")
+    row.settings = {"retake": {"mode": "day", "by": None, "label": "Admin"}}
+    await session.commit()
+    nx.mode = "change"
+    await w.check(cam)
+    ref_img = await session.scalar(select(CameraHealthImage).where(CameraHealthImage.device_id == "cam-rec",
+                                                                   CameraHealthImage.kind == "ref_day")
+                                   .execution_options(populate_existing=True))
+    assert ref_img.source == "user" and ref_img.jpeg == (await session.scalar(
+        select(CameraHealthImage.jpeg).where(CameraHealthImage.device_id == "cam-rec", CameraHealthImage.kind == "last")))
+    assert "retake" not in (await _row(session, site, "cam-rec")).settings
     # Recording camera: NX's /image; the others: one frame off the live stream at their own aspect.
     await w.check(w.cams[(site.id, "cam-live")])
     assert ("image", "cam-rec", 1280) in nx.calls and ("mjpeg", "cam-live", "1280x720") in nx.calls
 
 
-async def test_worker_no_picture_and_nx_errors(session):
+async def test_worker_no_picture_and_nx_errors(session, tmp_path):
     tenant, _ = await make_tenant_user(session)
     site = await make_site(session, tenant)
-    w, nx = await _worker(session, site)
+    w, nx = await _worker(session, site, tmp_path)
     cam = w.cams[(site.id, "cam-rec")]
     nx.mode = "none"
     await w.check(cam)
@@ -238,10 +305,10 @@ async def test_worker_no_picture_and_nx_errors(session):
     assert row.status == "problem" and row.issues[0]["kind"] == "no_picture" and "reach" in row.error
 
 
-async def test_worker_drops_cameras_nx_no_longer_has(session):
+async def test_worker_drops_cameras_nx_no_longer_has(session, tmp_path):
     tenant, _ = await make_tenant_user(session)
     site = await make_site(session, tenant)
-    w, nx = await _worker(session, site)
+    w, nx = await _worker(session, site, tmp_path)
     nx.devices = nx.devices[:1]
     await w.refresh_devices(w.sites[site.id])
     devs = (await session.scalars(select(CameraHealth.device_id).where(CameraHealth.site_id == site.id))).all()
@@ -296,10 +363,24 @@ async def test_page_api_and_who_may_do_what(client, session):
     r = await client.post(f"/api/camera-health/{site.id}/cam-1/mute", json={"hours": 24})
     assert r.json()["muted_until"] > 0
     assert (await client.get("/api/camera-health")).json()["cameras"][0]["muted"]
+    assert (await _row(session, site, "cam-1")).settings.get("library_reset")      # the worker clears the library
     r = await client.put(f"/api/camera-health/{site.id}/cam-1/settings", json={"view_checks": False})
-    assert r.json()["settings"] == {"view_checks": False}
+    assert r.json()["settings"]["view_checks"] is False
+    # Day / night references: retake now (day: the camera is in day mode -> checks at once), relearn the night one.
+    r = await client.post(f"/api/camera-health/{site.id}/cam-1/reference", json={"mode": "day", "action": "retake"})
+    assert r.json()["pending"]["mode"] == "day"
+    assert (await _row(session, site, "cam-1")).check_requested_at is not None
+    session.add(CameraHealthImage(site_id=site.id, device_id="cam-1", kind="ref_night", jpeg=H.scene("night", 1)))
+    await session.commit()
+    assert (await client.post(f"/api/camera-health/{site.id}/cam-1/reference", json={"mode": "night", "action": "relearn"})).status_code == 200
+    kinds_left = (await session.scalars(select(CameraHealthImage.kind).where(CameraHealthImage.device_id == "cam-1"))).all()
+    assert "ref_night" not in kinds_left and "ref_day" in kinds_left
+    assert (await client.post(f"/api/camera-health/{site.id}/cam-1/reference", json={"mode": "dusk", "action": "retake"})).status_code == 422
+    await login(client, op.email)
+    assert (await client.post(f"/api/camera-health/{site.id}/cam-1/reference", json={"mode": "day", "action": "retake"})).status_code == 403
     actions = (await session.scalars(select(AuditLog.action).where(AuditLog.action.like("camera.%")))).all()
-    assert sorted(actions) == ["camera.health_muted", "camera.health_settings", "camera.reference_accepted"]
+    assert sorted(actions) == ["camera.health_muted", "camera.health_settings", "camera.reference_accepted",
+                               "camera.reference_relearn", "camera.reference_retake"]
 
 
 async def test_watch_publishes_changes(session, monkeypatch):
@@ -317,3 +398,25 @@ async def test_watch_publishes_changes(session, monkeypatch):
     task.cancel()
     bus.unsubscribe(sub)
     assert event == "camera.health" and data["device_id"] == "cam-1" and data["kinds"] == ["scene_change"]
+
+
+async def test_processing_panel_is_twg_only(client, session):
+    from app.models import Tenant, VisionStatus
+    twg, admin = await make_tenant_user(session)
+    twg.kind = "platform"
+    _, cust = await make_tenant_user(session, tenant_name="Acme", email="admin@acme.test")
+    session.add(VisionStatus(id=1, data={"gpu": {"name": "NVIDIA T1000", "util": 12}, "recent": []}))
+    await session.commit()
+    await login(client, cust.email)
+    assert (await client.get("/api/camera-health/processing")).status_code == 403
+    assert 'id="hp"' not in (await client.get("/health")).text
+    await login(client, admin.email)
+    r = (await client.get("/api/camera-health/processing")).json()
+    assert r["data"]["gpu"]["name"] == "NVIDIA T1000" and r["age_s"] is not None
+    assert 'id="hp"' in (await client.get("/health")).text
+
+
+def test_ptz_means_nx_can_steer_it():
+    from app.camhealth.worker import is_ptz
+    assert is_ptz({"name": "Lot", "ptz": {"capabilities": "continuousPanCapability|continuousTiltCapability"}})
+    assert not is_ptz({"name": "Driveway PTZ", "ptz": {"capabilities": "none"}})     # the user tests with this one
