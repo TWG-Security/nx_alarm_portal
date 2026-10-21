@@ -404,6 +404,21 @@ Live, on the guard's own `/api/events` stream only (never anyone else's):
 
 Keep the 15 s re-read of `/api/mobile/dispatches` as the backstop after a reconnect.
 
+### 6.8 Apps: download and invites (built 2026-10-21, iPhone and Android)
+- `GET /apps` (web page), `GET /apps/android.apk` (cookie or Bearer; newest APK from the latest GitHub release of
+  TWG-Security/twg-alarm-android, attachment `TWG-Alarms-<version>.apk`; asset names must stay `TWG-Alarms-<version>.apk`).
+- `GET /api/apps` (any signed-in user):
+  `{"ios": {"testflight_url": "https://testflight.apple.com/join/…" | null, "invites": bool},
+    "android": {"version": "0.1", "released_at": "2026-10-21T16:33:26Z", "size": 11367894, "page": "/apps", "apk": "/apps/android.apk"},
+    "can_invite": bool}` — `invites` = App Store Connect is set up (Platform → Phone apps + the .p8); `can_invite` = this
+  user holds `users.invite` (admins do). Show the Invite action only when `can_invite`.
+- `POST /api/apps/invite` `{"email", "name"?, "platform": "ios"|"android"|"both"}` (needs `users.invite`, else 403;
+  bad email 422; more than 30 an hour per user 429). Answers only the platforms asked:
+  `{"ios": "invited" | "already_tester" | "<error text to show>", "android": "emailed" | "share_link", "url": "https://alarmportal.twgsecurity.net/apps"}`.
+  iOS: the person becomes a TestFlight tester in the beta group (Apple emails them). Android `emailed`: the portal sent
+  a branded email with the /apps link; `share_link`: no email set up, open the share sheet with `url`. `url` is always
+  there when Android was asked. Audit `app.invited`.
+
 ## 7. Suggested structure
 
 - `APIClient` (async/await, Bearer from Keychain, one place that maps 401 to sign-out and `detail` to errors).
