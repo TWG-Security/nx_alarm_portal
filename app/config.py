@@ -102,6 +102,11 @@ class Settings(BaseSettings):
     camhealth_interval_s: int = 900      # one frame per camera this often (the user, 2026-10-20: 15 min is fine)
     camhealth_parallel: int = 1          # cameras checked at once over all sites (one at a time: the GPU has 4 GB)
     camhealth_frame_width: int = 1280    # px asked from NX
+    # Phone apps (/apps): the Android APK from the latest GitHub release (app/app_releases.py). The token stays on the
+    # server (env GITHUB_RELEASES_TOKEN); best a fine-grained read-only token for this one repository.
+    github_releases_token: str = ""
+    github_api_base: str = "https://api.github.com"
+    android_repo: str = "TWG-Security/twg-alarm-android"
     camhealth_dir: str = "camhealth-data"   # the per-time-of-day frame library (vision container volume)
     camhealth_ai: str = "auto"           # auto (GPU if there is one) | off
     camhealth_watch_s: float = 10.0      # the web app looks for changed cameras this often (-> camera.health events)

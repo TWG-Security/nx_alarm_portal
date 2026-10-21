@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% block title %}TWG Alarms on your phone{% endblock %}
+{% block content %}
+<div class="page apps-page">
+  <div class="page-head"><h1>TWG Alarms on your phone</h1></div>
+  <div class="apps-grid">
+    <section class="card app-card" aria-labelledby="android-h">
+      <div class="app-head">
+        <svg class="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="2"/><path d="M11 18h2"/></svg>
+        <div>
+          <h2 id="android-h">Android</h2>
+          {% if android %}<div class="muted">Version {{ android.version }}{% if android_date %} · released {{ android_date }}{% endif %} · {{ "%.1f"|format(android.size / 1048576) }} MB</div>{% endif %}
+        </div>
+      </div>
+      {% if android %}
+      <a class="btn btn-primary app-download" href="/apps/android.apk" download="{{ android.filename }}">Download APK</a>
+      {% else %}
+      <div class="alert alert-warn">The Android app can't be downloaded right now. Try again in a few minutes.</div>
+      {% endif %}
+      <ol class="app-steps">
+        <li><b>Download</b> the APK on your Android phone (sign in to this portal on the phone first).</li>
+        <li><b>Open</b> the downloaded file from the notification or your Downloads folder.</li>
+        <li>The first time only, Android asks to <b>allow "Install unknown apps"</b> for your browser or file manager: allow it, go back, and tap <b>Install</b>.</li>
+      </ol>
+      <p class="muted app-note">Updates: download the newest APK here and install it over the old one; your sign-in stays.</p>
+    </section>
+    <section class="card app-card" aria-labelledby="ios-h">
+      <div class="app-head">
+        <svg class="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="3"/><path d="M10 5h4"/></svg>
+        <div><h2 id="ios-h">iPhone</h2><div class="muted">Through Apple's TestFlight</div></div>
+      </div>
+      <p><b>Ask TWG for a TestFlight invite.</b> TWG sends one to your Apple ID email; open it on your iPhone, install TestFlight from the App Store if asked, then install TWG Alarms.</p>
+    </section>
+  </div>
+</div>
+{% endblock %}

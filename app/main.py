@@ -15,7 +15,7 @@ from app import mcp_server, platform_settings, security_guard
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, camhealth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles
+from app.routers import account, api, apps, auth, camhealth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -109,7 +109,8 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(NotAuthenticated)
     async def _not_authenticated(request: Request, exc: NotAuthenticated):
-        if request.url.path.startswith(API_PREFIXES):
+        # An app (Bearer token) gets a 401 it can act on, never the sign-in page; so do API paths.
+        if request.url.path.startswith(API_PREFIXES) or request.headers.get("authorization"):
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
         return RedirectResponse("/login" if target == "/" else f"/login?next={quote(target)}", 303)
@@ -156,6 +157,7 @@ def create_app() -> FastAPI:
     app.include_router(mcp_server.router)
     app.include_router(mobile.router)
     app.include_router(camhealth.router)
+    app.include_router(apps.router)
     return app
 
 

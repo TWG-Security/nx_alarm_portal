@@ -231,8 +231,10 @@ What is pushed (apns-push-type `alert`, `apns-expiration` = now + 1 h). **Sounds
 | `alarm_closed` | someone closed an alarm they were pushed (ack, bulk) | title `CLOSED · <site>`, body `<caption>: Real event / False alarm / Dismissed (by …)`, **no sound** | passive | `alarm-<id>` / 5 (replaces the alarm notification) | `alarm_id`, `verdict` |
 | `test` | Account page → Send a test notification | `TWG Alarm Portal` / `Test notification…` | active | `test` | |
 
-`thread-id` is `alarm-<id>` on all of them (`alarm-summary` for summaries). No `category` and no `mutable-content` yet:
-tell the server when the app has categories / a Notification Service Extension, and they'll be added. Not built:
+`thread-id` is `alarm-<id>` on all of them (`alarm-summary` for summaries). **Since 2026-10-21:** `alarm` (incl. CONFIRMED)
+and `call_update` carry `"mutable-content": 1, "category": "ALARM"`; `dispatch` carries `"mutable-content": 1,
+"category": "DISPATCH"` (the app's Notification Service Extension adds the picture; buttons Open / False alarm… / En
+route). The others (summaries, stand down, call ended, closed, test) have neither. Not built:
 `guard_update` pushes, Critical Alerts (`"interruption-level": "critical"` needs the entitlement first).
 
 Every push is logged and shows on the alarm's timeline ("App notification sent · to their iPhone (iOS …), accepted by
