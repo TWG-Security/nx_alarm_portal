@@ -48,6 +48,21 @@ def test_each_defect_is_found(mode, expected, severity):
     assert res.issues[0]["severity"] == severity
 
 
+def test_out_of_focus_with_the_light_changed_too():
+    """The user defocused a camera on a morning whose reference was a hard-shadow afternoon (2026-10-21): many cells
+    failed the per-cell rules (contrast up, shapes moved, cells gone flat) but the whole view's fine detail was at 8 %."""
+    import cv2
+    import numpy as np
+    img = cv2.GaussianBlur(H.render("normal", 40), (0, 0), 3).astype(np.float32)
+    img *= np.linspace(1.3, 0.7, H.W, dtype=np.float32)[None, :, None]          # very different light across the view
+    res = check(A.frame_from_bgr(np.clip(img, 0, 255).astype(np.uint8)))
+    assert "blur" in kinds(res) and res.metrics["sharp_ratio"] < A.WHOLE_BLUR_RATIO, (res.issues, res.metrics)
+    assert not res.clean                       # never into the library (it would make the blur look normal)
+    mild = cv2.GaussianBlur(H.render("normal", 41), (0, 0), 1.2)   # softer, under the alarm line: still not "clean"
+    soft = A.analyze(A.frame_from_bgr(mild), ref(), library=[A.LibFrame(ref())])
+    assert soft.metrics["sharp_ratio"] < A.LIBRARY_MIN_SHARP and not soft.clean, soft.metrics
+
+
 @pytest.mark.parametrize("mode", ["normal", "dusk"])
 def test_noise_and_lighting_are_not_problems(mode):
     res = check(frame(mode, 3))
@@ -321,6 +336,20 @@ async def test_worker_no_picture_and_nx_errors(session, tmp_path):
     assert row.status == "problem" and row.issues[0]["kind"] == "no_picture" and "reach" in row.error
 
 
+async def test_worker_publishes_its_queue(session, tmp_path):
+    from app.models import VisionStatus
+    tenant, _ = await make_tenant_user(session)
+    site = await make_site(session, tenant)
+    w, nx = await _worker(session, site, tmp_path)
+    w.cams[(site.id, "cam-live")].next_at = 0.0             # "Check now"
+    w.cams[(site.id, "cam-rec")].busy = True
+    await w.write_status()
+    data = (await session.scalar(select(VisionStatus).execution_options(populate_existing=True))).data
+    states = [(q["camera"], q["state"]) for q in data["queue"]]
+    assert states == [("Gate", "checking"), ("Dock", "requested"), ("Roof", "offline")]
+    assert all(q["next_ms"] > 0 and q["site"] == "Test Site" for q in data["queue"])
+
+
 async def test_worker_drops_cameras_nx_no_longer_has(session, tmp_path):
     tenant, _ = await make_tenant_user(session)
     site = await make_site(session, tenant)
@@ -430,6 +459,15 @@ async def test_processing_panel_is_twg_only(client, session):
     r = (await client.get("/api/camera-health/processing")).json()
     assert r["data"]["gpu"]["name"] == "NVIDIA T1000" and r["age_s"] is not None
     assert 'id="hp"' in (await client.get("/health")).text
+    # Every user sees their camera's next check (from the worker's queue), never the whole queue.
+    site = await make_site(session, twg)
+    await _seed(session, twg, site)
+    row = await session.get(VisionStatus, 1)
+    row.data = {**row.data, "queue": [{"site_id": site.id, "device_id": "cam-1", "camera": "Gate", "site": "x",
+                                       "state": "waiting", "next_ms": 1_900_000_000_000}]}
+    await session.commit()
+    d = (await client.get(f"/api/camera-health/{site.id}/cam-1")).json()
+    assert d["next_check"] == {"at": 1_900_000_000_000, "state": "waiting"} and d["interval_s"] == 900
 
 
 def test_ptz_means_nx_can_steer_it():

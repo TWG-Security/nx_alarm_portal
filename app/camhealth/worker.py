@@ -108,6 +108,7 @@ class Worker:
         self.started = utcnow()
         self.recent: list[dict] = []          # the last checks, newest first (processing panel)
         self.gpu_history: list[dict] = []
+        self.status_dirty = False              # a check finished: republish the queue soon (not only every 30 s)
 
     # ---- sites and cameras -------------------------------------------------------------------------------------
     async def refresh_sites(self) -> None:
@@ -244,6 +245,7 @@ class Worker:
                                    "fetch_ms": round(fetch_ms), "total_ms": round(total), "gpu_ms": gpu,
                                    "how": "live stream" if cam.nx_status != "Recording" else "image", **summary})
             del self.recent[50:]
+            self.status_dirty = True
 
     async def _record(self, site: Site, cam: Cam, jpeg: bytes, frame: A.Frame | None, error: str, fetch_ms: float) -> None:
         now = utcnow()
@@ -396,6 +398,19 @@ class Worker:
         now = time.monotonic()
         cams = list(self.cams.values())
         checked = [c for c in cams if c.nx_status not in OFFLINE]
+        async with sessionmaker()() as db:
+            off = {(sid, dev) for sid, dev, st in (await db.execute(
+                select(CameraHealth.site_id, CameraHealth.device_id, CameraHealth.settings))).all() if (st or {}).get("skip")}
+        wall, mono = time.time(), time.monotonic()
+        queue = []
+        for c in cams:
+            state = ("offline" if c.nx_status in OFFLINE else "off" if (c.site_id, c.device_id) in off
+                     else "checking" if c.busy else "requested" if c.next_at == 0.0 else "waiting")
+            queue.append({"site_id": c.site_id, "device_id": c.device_id, "camera": c.name,
+                          "site": self.sites[c.site_id].site.name if c.site_id in self.sites else "",
+                          "state": state, "next_ms": int((wall + max(0.0, c.next_at - mono)) * 1000)})
+        order = {"checking": 0, "requested": 1, "waiting": 2, "off": 3, "offline": 4}
+        queue.sort(key=lambda q: (order[q["state"]], q["next_ms"]))
         rss = 0
         try:
             rss = int(next(line for line in open("/proc/self/status") if line.startswith("VmRSS")).split()[1]) // 1024
@@ -409,7 +424,7 @@ class Worker:
             "next_in_s": round(max(0.0, min((c.next_at - now for c in checked if not c.busy), default=0))),
             "checks_last_hour": len(recent_hour) if len(self.recent) < 50 else None,
             "avg_check_ms": round(sum(r["total_ms"] for r in self.recent) / len(self.recent)) if self.recent else None,
-            "errors_recent": sum(1 for r in self.recent if r.get("error")), "recent": self.recent[:25],
+            "errors_recent": sum(1 for r in self.recent if r.get("error")), "recent": self.recent[:25], "queue": queue,
             "process": {"rss_mb": rss, "cpu_s": round(sum(os.times()[:2]))},
         }
         async with sessionmaker()() as db:
@@ -442,8 +457,8 @@ class Worker:
                 if now - req_at > REQUESTS_EVERY_S:
                     req_at = now
                     await self.requests()
-                if now - status_at > STATUS_EVERY_S:
-                    status_at = now
+                if now - status_at > STATUS_EVERY_S or (self.status_dirty and now - status_at > 3):
+                    status_at, self.status_dirty = now, False
                     await self.write_status()
                 if now - prune_at > 86400:
                     prune_at = now

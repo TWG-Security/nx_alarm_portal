@@ -1244,7 +1244,10 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 .hp-tip { position: absolute; top: -6px; transform: translate(-50%, -100%); background: var(--surface-3); color: var(--text);
   font-size: 12px; padding: 2px 6px; border-radius: 4px; white-space: nowrap; pointer-events: none; }
 .hp-empty { font-size: 12px; padding: 20px 0; }
-.hp-tables { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px; margin-top: 12px; }
+.hp-tables { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 2fr); gap: 12px; margin-top: 12px; align-items: start; }
+.hp-col { display: grid; gap: 12px; min-width: 0; }
+.hcd-next { margin-top: 4px; font-size: 13px; }
+.hcd-busy { color: var(--orange); }
 .hp-tables caption { text-align: left; font-weight: 700; padding: 4px 0; }
 .hp-tables td, .hp-tables th { font-size: 12px; }
 .hp-gpu, .hp-nw { white-space: nowrap; }

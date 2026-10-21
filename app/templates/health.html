@@ -26,8 +26,12 @@
       <figure class="hp-chart" id="hp-mem"></figure>
     </div>
     <div class="hp-tables">
-      <div class="table-wrap"><table><caption>Models, last hour</caption>
-        <thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>95 %</th></tr></thead><tbody id="hp-models"></tbody></table></div>
+      <div class="hp-col">
+        <div class="table-wrap"><table><caption>Queue <span class="muted" id="hp-queue-sum"></span></caption>
+          <thead><tr><th>Camera</th><th>Site</th><th>When</th></tr></thead><tbody id="hp-queue"></tbody></table></div>
+        <div class="table-wrap"><table><caption>Models, last hour</caption>
+          <thead><tr><th>Model</th><th>Calls</th><th>Avg</th><th>95 %</th></tr></thead><tbody id="hp-models"></tbody></table></div>
+      </div>
       <div class="table-wrap"><table><caption>Recent checks</caption>
         <thead><tr><th>Time</th><th>Camera</th><th>Frame</th><th>GPU</th><th>Total</th><th>Result</th></tr></thead><tbody id="hp-recent"></tbody></table></div>
     </div>
@@ -41,6 +45,7 @@
     <div>
       <h2 id="hcd-title">Camera</h2>
       <div class="muted" id="hcd-sub"></div>
+      <div class="hcd-next" id="hcd-next" aria-live="polite"></div>
     </div>
     <button class="btn btn-sm" id="hcd-close" type="button" aria-label="Close">✕</button>
   </div>

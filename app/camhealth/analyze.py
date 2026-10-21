@@ -41,6 +41,9 @@ SAT_NOW, SAT_REF = 0.5, 0.15   # share of blown-out pixels in a glare cell now /
 BLUR_RATIO = 0.35          # fine detail left vs the reference
 BLUR_SHAPE_NCC = 0.6       # ... while the coarse shapes still match (else it's a change, not blur)
 BLUR_MAX_CONTRAST = 0.95   # ... and the cell's contrast didn't rise (a synthetic defocus takes it to ~0.57)
+WHOLE_BLUR_RATIO = 0.2     # whole view out of focus: median fine detail vs the reference (and every same-time frame)
+                           # below this. Measured 2026-10-21: the user's deliberately defocused AXISQ1798LE 0.079,
+                           # synthetic defocus 0.03-0.07, healthy cameras incl. low-sun haze 1.0-1.8
 CHANGE_NCC = 0.35          # correlation below this = the cell's picture changed
 SHIFTS = (-4, 0, 4)        # px: best correlation over small shifts (wind, vibration, JPEG)
 DINO_CHANGE = 0.45         # GPU: cell's mean patch cosine similarity below this = changed. Measured 2026-10-20 on
@@ -57,6 +60,8 @@ MOVABLE = {"person", "car", "truck", "bus", "van", "bicycle", "minibike", "boat"
 TWILIGHT = (-6.0, 3.0)
 IR_DAY_SUN = 20.0          # infrared with the sun this high = stuck in night mode (indoor cameras switch earlier)     # sun elevation: dusk / dawn, the light changes too fast for the whole-view comparison
 LIBRARY_MAX = 8            # library frames compared per check
+LIBRARY_MIN_SHARP = 0.5    # a frame joins the library only this sharp vs the reference (2026-10-21: a defocused frame the
+                           # old blur rule missed joined it and then made the blur look normal)
 
 MIN_REGION_CELLS = 2
 MIN_REGION_AREA = 0.008    # of the frame
@@ -441,9 +446,11 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
     n_tex = max(int(wq.textured.sum()), 1)
     sharp_ratio = round(float(np.median(wq.ratio[wq.textured])) if wq.textured.any() else 1.0, 3)
     flat, dark, glare, blur = wq.flat, wq.dark, wq.glare, wq.blur
+    soft = sharp_ratio < WHOLE_BLUR_RATIO      # the whole view lost its fine detail (cells may also have gone flat)
     for x in lib:
         lq = quality(f, cs, x.frame.gray, inside, g)
         flat, dark, glare, blur = flat & lq.flat, dark & lq.dark, glare & lq.glare, blur & lq.blur
+        soft = soft and lq.textured.any() and float(np.median(lq.ratio[lq.textured])) < WHOLE_BLUR_RATIO
     res.metrics.update(cells=int(g[0] * g[1]), textured=int(wq.textured.sum()), sharp_ratio=sharp_ratio)
     if flat.sum() >= WHOLE * n_tex:
         res.issues.append(issue("covered", boxes=full, detail="The picture lost almost all its detail"))
@@ -451,7 +458,8 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
         res.issues.append(issue("dark", severity="problem", boxes=full, detail="The picture went black"))
     if glare.sum() >= WHOLE * g[0] * g[1]:
         res.issues.append(issue("glare", severity="problem", boxes=full, detail="The picture is blown out to white"))
-    if blur.sum() >= WHOLE * n_tex:
+    whole_flat = flat.sum() >= WHOLE * n_tex
+    if blur.sum() >= WHOLE * n_tex or (soft and not whole_flat and not any(i["kind"] in ("dark", "glare") for i in res.issues)):
         res.issues.append(issue("blur", severity="problem", boxes=full,
                                 detail=f"Fine detail down to {sharp_ratio * 100:.0f}% of the reference"))
 
@@ -466,7 +474,8 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
     res.issues += [i for i in alone if i["kind"] == "ir_day"]
     if not any(i["kind"] in ("covered", "dark", "glare") for i in res.issues):
         res.issues += [i for i in alone if i["kind"] in ("covered", "dark", "glare")]
-    res.clean = (not res.issues and not people and view_checks and "ai_error" not in res.metrics)
+    res.clean = (not res.issues and not people and view_checks and "ai_error" not in res.metrics
+                 and res.metrics.get("sharp_ratio", 1.0) >= LIBRARY_MIN_SHARP)
     return res
 
 

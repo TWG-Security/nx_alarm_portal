@@ -131,6 +131,11 @@ async def get_health(site_id: int, device_id: str, scope: Scope = Depends(get_sc
                                                                CameraHealthEvent.device_id == device_id)
                                .order_by(CameraHealthEvent.id.desc()).limit(40))).all()
     out = camera_dict(row, await _site_names(db, scope), refs=refs)
+    status = await db.get(VisionStatus, 1)        # the worker's schedule: when this camera is checked next
+    queue = ((status.data or {}).get("queue") or []) if status is not None else []
+    q = next((x for x in queue if x.get("site_id") == site_id and x.get("device_id") == device_id), None)
+    out["next_check"] = {"at": q["next_ms"], "state": q["state"]} if q else None
+    out["interval_s"] = get_settings().camhealth_interval_s
     out["events"] = [{"at": _ms(e.at), "kind": e.kind, "change": e.change, **(e.detail or {})} for e in events]
     return out
 

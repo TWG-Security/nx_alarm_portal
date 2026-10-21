@@ -16,6 +16,23 @@ let reloadTimer = null;
 
 const STATUS = { problem: "Problem", warning: "Warning", ok: "OK", offline: "Offline in NX", pending: "Not checked yet" };
 const key = (c) => `${c.site_id}:${c.device_id}`;
+
+// Countdowns: any element with data-until (ms) shows the time left, every second.
+const left = (until) => {
+  const s = Math.round((until - Date.now()) / 1000);
+  if (s <= 0) return "any moment";
+  const m = Math.floor(s / 60), r = s % 60;
+  return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m}:${String(r).padStart(2, "0")}`;
+};
+setInterval(() => document.querySelectorAll("[data-until]").forEach((el) => { el.textContent = left(Number(el.dataset.until)); }), 1000);
+function nextHtml(n) {
+  if (!n) return "Waiting for the camera checker";
+  if (n.state === "checking") return '<b class="hcd-busy">Checking now…</b>';
+  if (n.state === "requested") return "<b>In the queue</b>: checked next (one camera at a time)";
+  if (n.state === "off") return "Checks are off for this camera";
+  if (n.state === "offline") return "Offline in NX: not checked";
+  return `Next check in <b data-until="${n.at}">${left(n.at)}</b>`;
+}
 const imgUrl = (c, kind, t) => `/media/camera-health/${c.site_id}/${encodeURIComponent(c.device_id)}/${kind}.jpg?t=${t || 0}`;
 const shown = (c) => (c.settings?.skip ? "off" : c.muted && (c.status === "problem" || c.status === "warning") ? "muted" : c.status);
 const statusText = (c) => (c.settings?.skip ? "Checks off" : STATUS[c.status] || c.status);
@@ -99,6 +116,8 @@ async function openCamera(siteId, deviceId, show = true) {
   open = { site_id: siteId, device_id: deviceId };
   const c = await api(`/api/camera-health/${siteId}/${encodeURIComponent(deviceId)}`);
   document.getElementById("hcd-title").textContent = c.name;
+  document.getElementById("hcd-next").innerHTML = nextHtml(c.next_check)
+    + ` <span class="muted">· every ${(c.interval_s || 900) < 60 ? `${c.interval_s} s` : `${Math.round((c.interval_s || 900) / 60)} min`}</span>`;
   document.getElementById("hcd-sub").innerHTML = `${esc(c.site_name)} · ${esc(statusText(c))}${c.muted ? ` · muted until ${esc(fmtTime(c.muted_until))}` : ""}`
     + ` · NX: ${esc(c.nx_status || "?")}${c.mode ? ` · ${c.mode === "night" ? "night (IR)" : "day"}` : ""}${c.ai ? " · AI checked" : ""}`;
   const admin = CFG.isAdmin, pending = c.settings.retake;
@@ -164,7 +183,12 @@ dlg.addEventListener("click", async (e) => {
   const base = `/api/camera-health/${open.site_id}/${encodeURIComponent(open.device_id)}`;
   b.disabled = true;
   try {
-    if (b.dataset.act === "check") { await api(`${base}/check`, { method: "POST" }); b.textContent = "Checking…"; return; }
+    if (b.dataset.act === "check") {
+      await api(`${base}/check`, { method: "POST" });
+      b.textContent = "Checking…";
+      document.getElementById("hcd-next").innerHTML = nextHtml({ state: "requested" });
+      return;
+    }
     if (b.dataset.act === "accept") {
       if (!confirm("Use the current picture as this camera's reference? Anything it shows now (a moved view, a change) becomes normal.")) { b.disabled = false; return; }
       await api(`${base}/accept`, { method: "POST" });
@@ -260,6 +284,13 @@ async function loadProcessing() {
   spark(document.getElementById("hp-util"), "GPU busy", hist.map((p) => ({ t: p.t, v: p.util })), { max: 100, unit: "%" });
   spark(document.getElementById("hp-mem"), "GPU memory", hist.map((p) => ({ t: p.t, v: p.mem })),
     { max: g.mem_total_mb || Math.max(1, ...hist.map((p) => p.mem)), unit: "", fmt: (v) => `${(v / 1024).toFixed(2)} GB` });
+  const q = d.queue || [];
+  const count = (st) => q.filter((x) => x.state === st).length;
+  document.getElementById("hp-queue-sum").textContent = `· ${count("waiting")} waiting${count("off") ? ` · ${count("off")} checks off` : ""}${count("offline") ? ` · ${count("offline")} offline` : ""}`;
+  const shownQ = [...q.filter((x) => x.state === "checking" || x.state === "requested"), ...q.filter((x) => x.state === "waiting").slice(0, 10)];
+  document.getElementById("hp-queue").innerHTML = shownQ.map((x) => `<tr><td>${esc(x.camera)}</td><td class="muted">${esc(x.site)}</td><td class="hp-nw">${
+    x.state === "checking" ? '<b class="hcd-busy">checking now</b>' : x.state === "requested" ? "<b>next (Check now)</b>" : `<span data-until="${x.next_ms}">${left(x.next_ms)}</span>`}</td></tr>`).join("")
+    || `<tr><td colspan="3" class="muted">Nothing queued</td></tr>`;
   document.getElementById("hp-models").innerHTML = Object.values(d.models || {}).map((m) =>
     `<tr><td>${esc(m.model)}</td><td>${m.calls}</td><td>${ms(m.avg_ms)}</td><td>${ms(m.p95_ms)}</td></tr>`).join("")
     || `<tr><td colspan="4" class="muted">${d.ai ? "No model calls in the last hour" : "AI off: CPU checks only"}</td></tr>`;

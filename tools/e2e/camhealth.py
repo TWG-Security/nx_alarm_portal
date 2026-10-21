@@ -75,6 +75,8 @@ with sync_playwright() as p:
     pg.wait_for_selector("#hc-dialog[open] #hcd-now .hc-box")
     check(pg.locator(".hcd-ref--now img").count() == 1, "the dialog shows the day reference in use")
     check("Night reference" in pg.inner_text("#hcd-refs"), "and a night reference pane")
+    nxt = pg.inner_text("#hcd-next")
+    check(any(w in nxt for w in ("Next check in", "Checking now", "In the queue")), f"countdown to the next check ({nxt!r})")
     pg.locator("#hc-dialog").screenshot(path=f"{out}/camhealth-dialog.png")
     pg.once("dialog", lambda d: d.accept())
     pg.click("[data-act=accept]")
@@ -96,6 +98,8 @@ with sync_playwright() as p:
     pg.wait_for_function("document.querySelectorAll('#hp-tiles .hp-tile').length >= 6", timeout=40000)
     check("Off (CPU only)" in pg.inner_text("#hp-tiles"), "TWG processing panel: worker numbers (dev: no GPU)")
     check(pg.locator("#hp-recent tr").count() >= 1, "recent checks listed")
+    pg.wait_for_function("document.querySelectorAll('#hp-queue tr').length >= 2", timeout=40000)
+    check(True, f"queue: {pg.inner_text('#hp-queue').splitlines()[:2]} {pg.inner_text('#hp-queue-sum')!r}")
 
     # Mute the blurry one for 24 h.
     card(pg, "Front Gate PTZ").click()
