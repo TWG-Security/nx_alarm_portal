@@ -105,6 +105,9 @@ class Settings(BaseSettings):
     # Phone apps (/apps): the Android APK from the latest GitHub release (app/app_releases.py). The token stays on the
     # server (env GITHUB_RELEASES_TOKEN); best a fine-grained read-only token for this one repository.
     github_releases_token: str = ""
+    asc_key_path: str = ""               # App Store Connect API key (.p8) for TestFlight invites (tools/install_asc_key.sh)
+    asc_key_id: str = ""
+    asc_api_base: str = "https://api.appstoreconnect.apple.com"   # tests point it at a fake
     github_api_base: str = "https://api.github.com"
     android_repo: str = "TWG-Security/twg-alarm-android"
     camhealth_dir: str = "camhealth-data"   # the per-time-of-day frame library (vision container volume)

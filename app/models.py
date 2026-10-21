@@ -505,6 +505,12 @@ class PlatformSettings(Base):
     google_client_id: Mapped[str] = mapped_column(String(300), default="")
     google_client_secret_enc: Mapped[str] = mapped_column(Text, default="")
     google_domains: Mapped[str] = mapped_column(String(500), default="")       # "" = any domain
+    # Phone apps (app/routers/apps.py): TestFlight public link and App Store Connect for TestFlight invites (the API key
+    # itself is a .p8 file in secrets/, ASC_KEY_PATH / ASC_KEY_ID, tools/install_asc_key.sh)
+    testflight_url: Mapped[str] = mapped_column(String(300), default="")
+    asc_issuer_id: Mapped[str] = mapped_column(String(64), default="")
+    asc_app_id: Mapped[str] = mapped_column(String(32), default="")
+    asc_beta_group: Mapped[str] = mapped_column(String(100), default="TWG Testers")
     # Text messages through Twilio (app/sms.py)
     sms_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     twilio_sid: Mapped[str] = mapped_column(String(64), default="")

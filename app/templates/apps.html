@@ -29,7 +29,16 @@
         <svg class="app-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="5" y="2" width="14" height="20" rx="3"/><path d="M10 5h4"/></svg>
         <div><h2 id="ios-h">iPhone</h2><div class="muted">Through Apple's TestFlight</div></div>
       </div>
+      {% if testflight_url %}
+      <a class="btn btn-primary app-download" href="{{ testflight_url }}" rel="noopener">Join on TestFlight</a>
+      <ol class="app-steps">
+        <li>Open this page on your <b>iPhone</b> and tap <b>Join on TestFlight</b>.</li>
+        <li>Install <b>TestFlight</b> from the App Store if it asks, then tap <b>Accept</b> and <b>Install</b>.</li>
+        <li>Open TWG Alarms and sign in with your portal account.</li>
+      </ol>
+      {% else %}
       <p><b>Ask TWG for a TestFlight invite.</b> TWG sends one to your Apple ID email; open it on your iPhone, install TestFlight from the App Store if asked, then install TWG Alarms.</p>
+      {% endif %}
     </section>
   </div>
 </div>

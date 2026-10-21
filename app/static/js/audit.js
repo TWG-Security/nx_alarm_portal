@@ -14,7 +14,7 @@ const LABELS = {
   "support.viewed": "TWG support opened this company", "tenant.created": "Company created", "tenant.updated": "Company edited", "tenant.logo": "Logo changed",
   "group.created": "Group created", "group.updated": "Group edited", "group.deleted": "Group deleted",
   "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "location.test": "Location test (phone)", "tracker.location_requested": "Location requested", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
-  "app.downloaded": "App downloaded", login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited", "user.deleted": "User deleted",
+  "app.downloaded": "App downloaded", "app.invited": "Invited to the app", login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited", "user.deleted": "User deleted",
 };
 
 function details(r) {
@@ -38,6 +38,8 @@ function details(r) {
         + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
     case "app.downloaded": return `${esc(d.platform === "android" ? "Android" : d.platform || "")} ${esc(d.version || "")} <span class="muted">${esc(d.via || "")}</span>`
         + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
+    case "app.invited": return `${esc(d.target || "")} · ${esc({ ios: "iPhone", android: "Android", both: "iPhone and Android" }[d.platform] || d.platform || "")}`
+        + ` <span class="muted">${esc(Object.entries(d.outcome || {}).map(([k, v]) => `${k}: ${v}`).join(" · "))}</span>`;
     case "user.deleted": return esc([d.name !== d.target ? d.name : "", d.target].filter(Boolean).join(" · "));
     case "user.created": case "user.updated": return esc([d.email || d.target, d.role, (d.fields || []).join(", ")].filter(Boolean).join(" · "));
     default: return esc(d.detail_text || d.name || "") + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");

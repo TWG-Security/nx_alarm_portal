@@ -1,5 +1,5 @@
 // Users page: accounts, their sign-in security (two-step, passkeys, signed-in browsers), groups & permissions.
-import { api, esc, fmtTime, relTime, toast } from "./common.js";
+import { api, CFG, esc, fmtTime, relTime, toast } from "./common.js";
 
 const $ = (id) => document.getElementById(id);
 const tbody = $("user-rows");
@@ -148,7 +148,10 @@ function paintEditExtras() {
       <button class="btn btn-sm" type="button" data-toggle="${u.id}">${u.is_active ? "Disable" : "Enable"}</button>
       ${u.invited ? `<button class="btn btn-sm" type="button" data-invite="${u.id}">New invite link</button>` : `<button class="btn btn-sm" type="button" data-reset="${u.id}">Reset password</button>`}
       <button class="btn btn-sm" type="button" data-security="${u.id}">Sign-in security…</button>
-      <button class="btn btn-sm btn-danger" type="button" data-delete="${u.id}" style="margin-left:auto">Delete user</button></div>`;
+      <button class="btn btn-sm btn-danger" type="button" data-delete="${u.id}" style="margin-left:auto">Delete user</button></div>
+    ${(CFG.perms || []).includes("users.invite") ? `<div class="ed-line"><span class="muted small-print">Phone app:</span>
+      <select id="ed-app-platform" aria-label="Which app"><option value="both">iPhone and Android</option><option value="ios">iPhone (TestFlight)</option><option value="android">Android</option></select>
+      <button class="btn btn-sm" type="button" data-app-invite="${u.id}">Invite to the app</button></div>` : ""}`;
 }
 
 async function act(promise, ok) {
@@ -184,7 +187,21 @@ $("edit-form").addEventListener("submit", async (e) => {
 
 $("edit-dialog").addEventListener("click", async (e) => {
   const d = e.target.dataset, u = edUser;
-  if (!u || !(d.toggle || d.reset || d.invite || d.security || d.optIn || d.testText || d.delete)) return;
+  if (!u || !(d.toggle || d.reset || d.invite || d.security || d.optIn || d.testText || d.delete || d.appInvite)) return;
+  if (d.appInvite) {
+    e.target.disabled = true;
+    const r = await act(api("/api/apps/invite", { method: "POST", body: { email: u.email, name: u.display_name || "", platform: $("ed-app-platform").value } }));
+    e.target.disabled = false;
+    if (!r) return;
+    const said = { invited: "TestFlight invite sent by Apple", already_tester: "already a TestFlight tester", emailed: "emailed the download link",
+      share_link: "no email set up: send them this link" };
+    const parts = [];
+    if (r.ios) parts.push(`iPhone: ${esc(said[r.ios] || r.ios)}`);
+    if (r.android) parts.push(`Android: ${esc(said[r.android] || r.android)}${r.android === "share_link" ? ` <span class="mono">${esc(r.url)}</span>` : ""}`);
+    const bad = r.ios && !(r.ios in said);
+    toast(parts.join("<br>"), { kind: bad ? "error" : "", timeout: 12000 });
+    return;
+  }
   if (d.toggle) {
     if (u.is_active && !confirm(`Disable ${u.email}? They're signed out and get no more alarm texts.`)) return;
     await act(api(`/api/users/${u.id}`, { method: "PUT", body: { is_active: !u.is_active } }), u.is_active ? "Disabled" : "Enabled");

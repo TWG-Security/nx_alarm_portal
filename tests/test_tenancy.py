@@ -149,9 +149,16 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
                          ("POST", "/api/platform/allowlist"), ("DELETE", "/api/platform/allowlist/1"),
                          ("POST", "/api/platform/locks/clear"), ("PUT", "/api/platform/settings/two-factor"),
                          ("PUT", "/api/platform/settings/sessions"), ("PUT", "/api/platform/settings/passwords"),
-                         ("PUT", "/api/platform/settings/email"), ("POST", "/api/platform/email/test")):
+                         ("PUT", "/api/platform/settings/email"), ("POST", "/api/platform/email/test"),
+                         ("PUT", "/api/platform/settings/apps"), ("POST", "/api/platform/apps/test")):
         assert (await client.request(method, path, json={})).status_code in (403, 422), path
     assert (await client.post("/api/scope", json={"scope": "all"})).status_code == 403
+    # Phone apps: any company's users see the app info; their admins may invite (logged in their own company only).
+    assert set((await client.get("/api/apps")).json()) == {"ios", "android", "can_invite"}
+    r = await client.post("/api/apps/invite", json={"email": "new@acme.test", "platform": "android"})
+    assert r.status_code == 200 and r.json()["url"].endswith("/apps")
+    row = await session.scalar(select(AuditLog).where(AuditLog.action == "app.invited"))
+    assert row.tenant_id == world["a"].id
 
 
 async def test_customer_admins_cannot_hold_or_grant_platform_permissions(client, session, world):
