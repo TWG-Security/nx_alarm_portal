@@ -56,6 +56,9 @@ class User(Base):
     # Two-factor (app/mfa.py) and sessions (app/sessions.py)
     totp_secret_enc: Mapped[str] = mapped_column(Text, default="")              # Fernet; kept while enrolling
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An admin turned two-step sign-in off for this one person (Users → Sign-in security): the company / platform
+    # requirement doesn't apply to them; a factor they set up themselves is still asked for (app/mfa.py required_for).
+    mfa_exempt: Mapped[bool] = mapped_column(Boolean, default=False)
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a code's step can't be reused
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere

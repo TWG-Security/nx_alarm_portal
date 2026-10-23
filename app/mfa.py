@@ -37,9 +37,10 @@ STEP_S = 30
 
 
 # ---------------------------------------------------------------- who must use 2FA
-def required_for(tenant: Tenant | None) -> bool:
-    """Whether this company's users must have a second factor (Platform page; per company if allowed)."""
-    if tenant is None:
+def required_for(tenant: Tenant | None, user=None) -> bool:
+    """Whether this company's users must have a second factor (Platform page; per company if allowed). With a user:
+    False when an admin exempted that person (users.mfa_exempt)."""
+    if tenant is None or (user is not None and getattr(user, "mfa_exempt", False)):
         return False
     snap = platform_settings.current()
     if tenant.is_platform:

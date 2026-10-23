@@ -93,7 +93,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("PUT", f"/api/users/{world['b_op'].id}", {"is_active": False}),
         ("GET", f"/api/users/{world['b_op'].id}/security", None),
         ("POST", f"/api/users/{world['b_op'].id}/invite", None),
-        ("POST", f"/api/users/{world['b_op'].id}/reset-2fa", {}),
+        ("POST", f"/api/users/{world['b_op'].id}/reset-2fa", {}), ("PUT", f"/api/users/{world['b_op'].id}/mfa-exempt", {"exempt": True}),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions", None),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions/x", None),
         ("POST", f"/api/users/{world['b_op'].id}/test-text", None),

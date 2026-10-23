@@ -1040,7 +1040,7 @@ def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | No
             "sms_consent_at": u.sms_consent_at.isoformat() if u.sms_consent_at else None,
             "sms_optin_sent_at": u.sms_optin_sent_at.isoformat() if u.sms_optin_sent_at else None,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
-            "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
+            "totp_enabled": u.totp_enabled, "mfa_exempt": u.mfa_exempt, "passkeys": passkeys, "sessions": signed_in,
             "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
             "invite_email": invite, "push_level": u.push_level or "alarm", "push_when": u.push_when or "raised",
             "push_devices": getattr(u, "_push_devices", 0)}

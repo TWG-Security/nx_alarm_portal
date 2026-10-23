@@ -13,6 +13,7 @@
 Admins (their company, or TWG support):
 - GET  /api/users/{id}/security                   2FA state and signed-in browsers
 - POST /api/users/{id}/reset-2fa                  clears the authenticator app and recovery codes (optionally passkeys)
+- PUT  /api/users/{id}/mfa-exempt                 turn two-step sign-in off for one person (or require it again)
 - DELETE /api/users/{id}/sessions[/{sid}]         sign them out (everywhere, or one browser; everywhere ends API tokens too)
 - DELETE /api/users/{id}/tokens/{tid}             revoke one of their API tokens
 """
@@ -63,7 +64,7 @@ async def account(request: Request, user: User = Depends(current_user), db: Asyn
     return {
         "email": user.email, "display_name": user.display_name, "company": user._tenant.label,
         "role": user.role, "password_changed_at": _iso(user.password_changed_at),
-        "mfa_required": mfa.required_for(user._tenant), "totp_enabled": user.totp_enabled,
+        "mfa_required": mfa.required_for(user._tenant, user), "totp_enabled": user.totp_enabled,
         "totp_pending": bool(user.totp_secret_enc) and not user.totp_enabled,
         "recovery_left": await mfa.recovery_codes_left(db, user.id) if user.totp_enabled else 0,
         "passkeys_enabled": mfa.passkeys_enabled(), "rp_id": mfa.rp_id(),
@@ -229,7 +230,7 @@ async def totp_disable(body: CodeIn, request: Request, user: User = Depends(curr
                        db: AsyncSession = Depends(get_db)):
     if not user.totp_enabled:
         raise HTTPException(400, "Two-step sign-in isn't on.")
-    if mfa.required_for(user._tenant) and not await mfa.passkey_count(db, user.id):
+    if mfa.required_for(user._tenant, user) and not await mfa.passkey_count(db, user.id):
         raise HTTPException(400, f"{user._tenant.label} requires two-step sign-in, so it can't be turned off. "
                                  "To move it to a new phone, add a passkey first, or ask an admin to reset it.")
     ok, _ = mfa.check_totp(user, body.code)
@@ -329,7 +330,7 @@ async def passkey_test(key_id: int, request: Request, body: dict = Body(...), us
 async def passkey_remove(key_id: int, request: Request, user: User = Depends(current_user),
                          db: AsyncSession = Depends(get_db)):
     row = await _own_key(db, user, key_id)
-    if mfa.required_for(user._tenant) and not user.totp_enabled and await mfa.passkey_count(db, user.id) <= 1:
+    if mfa.required_for(user._tenant, user) and not user.totp_enabled and await mfa.passkey_count(db, user.id) <= 1:
         raise HTTPException(400, f"{user._tenant.label} requires two-step sign-in and this is your only second step. "
                                  "Set up the authenticator app or add another passkey first.")
     await db.delete(row)
@@ -468,7 +469,8 @@ async def user_security(user_id: int, request: Request, user: User = Depends(req
                         scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     target = await _target(db, scope, user_id)
     tenant = await db.get(Tenant, target.tenant_id)
-    return {"totp_enabled": target.totp_enabled, "mfa_required": mfa.required_for(tenant),
+    return {"totp_enabled": target.totp_enabled, "mfa_required": mfa.required_for(tenant, target),
+            "mfa_exempt": target.mfa_exempt, "company_requires": mfa.required_for(tenant),
             "recovery_left": await mfa.recovery_codes_left(db, target.id) if target.totp_enabled else 0,
             "passkeys": [_passkey_dict(c) for c in await _passkeys(db, target.id)],
             "sessions": [sessions.session_dict(r, request.session.get("sid")) for r in await sessions.active(db, [target.id])],
@@ -492,6 +494,26 @@ async def reset_2fa(user_id: int, body: ResetIn, request: Request, user: User = 
           passkeys_removed=removed)
     await db.commit()
     return {"reset": True, "passkeys_removed": removed}
+
+
+class ExemptIn(BaseModel):
+    exempt: bool
+
+
+@router.put("/api/users/{user_id}/mfa-exempt")
+async def mfa_exempt(user_id: int, body: ExemptIn, request: Request, user: User = Depends(require_admin),
+                     scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Turn two-step sign-in off for one person (the company requirement no longer applies to them, and their
+    authenticator app + recovery codes are removed so a password signs them in; passkeys stay, they're a sign-in of
+    their own), or require it again (asked to set it up at their next sign-in)."""
+    target = await _target(db, scope, user_id, write=True)
+    target.mfa_exempt = body.exempt
+    if body.exempt:
+        await mfa.disable_totp(db, target)
+    audit(db, target.tenant_id, "mfa.exempted" if body.exempt else "mfa.required_again", user_id=user.id,
+          ip=client_ip(request), target=target.email)
+    await db.commit()
+    return {"mfa_exempt": target.mfa_exempt, "totp_enabled": target.totp_enabled}
 
 
 @router.delete("/api/users/{user_id}/sessions")

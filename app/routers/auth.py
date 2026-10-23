@@ -160,7 +160,7 @@ async def login(request: Request, email: str = Form(...), password: str = Form(.
         await db.commit()
         return _login_page(request, error="Your company's portal access is disabled. Contact TWG Security.", email=email)
 
-    required = mfa.required_for(tenant)
+    required = mfa.required_for(tenant, user)
     passkeys = mfa.passkeys_enabled() and await mfa.passkey_count(db, user.id) > 0
     if user.totp_enabled or (required and passkeys):
         _set_pending(request, user, "mfa", MFA_TTL_S)
@@ -371,7 +371,7 @@ async def setup_submit(request: Request, token: str = Form(...), password: str =
         await db.commit()
         return _login_page(request, error="Your company's portal access is disabled. Contact TWG Security.")
     request.session.pop("next", None)
-    if mfa.required_for(tenant):
+    if mfa.required_for(tenant, user):
         await guard.record(db, client_ip(request), "setup", "success", email=user.email, user=user,
                            reason="password set, must set up 2FA")
         _set_pending(request, user, "enroll", ENROLL_TTL_S)
