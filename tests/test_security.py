@@ -285,3 +285,54 @@ async def test_browser_tab_icon(client):
     assert r.status_code == 200 and r.headers["content-type"] == "image/x-icon" and r.content[:4] == b"\x00\x00\x01\x00"
     page = (await client.get("/login")).text
     assert 'rel="icon"' in page and 'rel="apple-touch-icon"' in page
+
+
+def test_address_search_retries_without_unit_and_postal_code():
+    """OpenStreetMap has buildings, not units: '100 King St W #5600' found nothing (2026-10-23, Toronto)."""
+    from app.routers.api import address_variants as v
+    assert v("100 King St W #5600, Toronto, ON M5X 1C9, Canada") == [
+        "100 King St W #5600, Toronto, ON M5X 1C9, Canada", "100 King St W, Toronto, ON M5X 1C9, Canada",
+        "100 King St W, Toronto, ON, Canada"]
+    assert v("Unit 4, 2 Rothmere Dr, North York, ON M4N 1V2")[1] == "2 Rothmere Dr, North York, ON M4N 1V2"
+    assert v("2 Rothmere Dr Suite 100, Toronto, ON M4N1V2")[1:] == ["2 Rothmere Dr, Toronto, ON M4N1V2", "2 Rothmere Dr, Toronto, ON"]
+    assert v("5-123 Main St, Toronto, ON") == ["5-123 Main St, Toronto, ON", "123 Main St, Toronto, ON"]
+    assert v("Building 7, 400 Steeles Ave W")[1] == "400 Steeles Ave W"            # "Ste" inside Steeles stays
+    assert v("226 West Woodhaven Drive, White Haven, PA 18661") == [
+        "226 West Woodhaven Drive, White Haven, PA 18661", "226 West Woodhaven Drive, White Haven, PA"]
+
+
+async def test_address_search_tries_the_variants_and_never_caches_a_miss(client, session, monkeypatch):
+    import httpx
+    from app.routers import api
+    from tests.conftest import login, make_tenant_user
+    asked = []
+
+    class FakeNominatim:                       # only the geocoder's client (the test's own client stays real)
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None, **kw):
+            asked.append(params["q"])
+            found = [] if "#" in params["q"] or "nothing" in params["q"] else [{"display_name": "King St W", "lat": "43.6", "lon": "-79.3"}]
+            return httpx.Response(200, json=found, request=httpx.Request("GET", url))
+    t, u = await make_tenant_user(session)
+    await login(client, u.email)
+    monkeypatch.setattr(api.httpx, "AsyncClient", FakeNominatim)
+    monkeypatch.setattr(api, "_last_geocode", 0.0)
+    api._GEOCODE_CACHE.clear()
+    r = (await client.get("/api/geocode", params={"q": "100 King St W #5600, Toronto"})).json()
+    assert r[0]["lat"] == 43.6 and asked == ["100 King St W #5600, Toronto", "100 King St W, Toronto"]
+    assert (await client.get("/api/geocode", params={"q": "nothing here"})).json() == []
+    assert "nothing here" not in api._GEOCODE_CACHE                   # a miss isn't remembered: the next Find asks again
+
+
+def test_nx_cloud_account_error_says_what_to_do():
+    import httpx
+    from app.services.sites import describe_http_error
+    req = httpx.Request("POST", "https://x.relay.vmsproxy.com/rest/v3/login/sessions")
+    forbidden = httpx.Response(403, request=req, json={"error": "4", "errorId": "forbidden",
+                               "errorString": "This authorization method is forbidden. Please contact your Site administrator."})
+    e = describe_http_error(httpx.HTTPStatusError("403", request=req, response=forbidden))
+    assert e.status == "auth_error" and "local NX user" in str(e) and "Nx Cloud account" in str(e)
+    plain = httpx.Response(401, request=req)
+    assert str(describe_http_error(httpx.HTTPStatusError("401", request=req, response=plain))) == "NX rejected the username or password"

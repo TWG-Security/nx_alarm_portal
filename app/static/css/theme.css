@@ -194,6 +194,13 @@ tr:last-child td { border-bottom: 0; }
 
 /* ---------- map page ---------- */
 .map-layout { display: grid; grid-template-columns: 300px minmax(0, 1fr) 380px; height: calc(100vh - var(--topbar-h) - var(--banner-h, 0px)); }
+/* Wide screens: the map page is a column (top bar, whatever banners show, the map filling the rest), so no banner can
+   push the map past the window's bottom edge (the TWG support banner did by 45 px, the user 2026-10-23). */
+@media (min-width: 901px) {
+  body:has(> main > .map-layout) { display: flex; flex-direction: column; height: 100vh; height: 100dvh; overflow: hidden; }
+  body:has(> main > .map-layout) > main { flex: 1 1 auto; min-height: 0; }
+  body:has(> main > .map-layout) .map-layout { height: 100%; }
+}
 .map-side { background: var(--surface); border-right: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
 .map-side-section { padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }

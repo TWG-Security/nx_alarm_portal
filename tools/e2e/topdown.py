@@ -20,7 +20,10 @@ with sync_playwright() as p:
     errors = []
     pg.on("pageerror", lambda e: errors.append(str(e)))
     login_and_add_site(pg); pg.wait_for_timeout(2500)
-    pg.click(".site-item")          # clicking a site goes straight to its top-down view
+    pg.click(".site-item")          # picking a site stays on the street map (2026-10-23); Top-down is one click
+    pg.wait_for_timeout(800)
+    assert not pg.evaluate("!!window.__plan"), "the street map is the default"
+    pg.click("[data-plan]")
     pg.wait_for_function("!!window.__plan && document.querySelector('#map.plan-sat')", timeout=10000)
     pg.wait_for_function("[...document.querySelectorAll('.leaflet-tile-pane img')].every(e => e.complete)", timeout=20000)
     sat = pg.eval_on_selector_all(".leaflet-tile-pane img", "els => els.filter(e => e.src.includes('/tiles/sat/') && e.complete && e.naturalWidth).length")
@@ -119,7 +122,7 @@ with sync_playwright() as p:
     print("  alarm on a camera with cones off: its cone shows, red:", pg.locator(".leaflet-planCones-pane path.plan-cone--alarm").count(),
           "| other cones", pg.locator(".leaflet-planCones-pane path:not(.plan-cone--alarm)").count())
     pg.screenshot(path=f"{out}/topdown_cones_off.png")
-    pg.reload(); pg.wait_for_timeout(2000); pg.click(".site-item"); pg.wait_for_function("!!window.__plan", timeout=10000); pg.wait_for_timeout(1200)
+    pg.reload(); pg.wait_for_timeout(2000); pg.click(".site-item"); pg.click("[data-plan]"); pg.wait_for_function("!!window.__plan", timeout=10000); pg.wait_for_timeout(1200)
     print("  after reload:", pg.inner_text("#plan-cones"))
     pg.click("#plan-cones"); pg.wait_for_timeout(300)
     print("cones on again:", pg.inner_text("#plan-cones"), "| cones drawn", pg.locator(".leaflet-planCones-pane path").count())

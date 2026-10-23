@@ -409,12 +409,15 @@ function select(id, pan = true) {
   models.siteChanged();
   const s = sites.get(id);
   if (!pan || s?.lat == null) return;
+  // The street map by default (the user, 2026-10-23: "lets default to street"; aerial imagery is USGS, US only, so
+  // Canadian sites were blank); whichever view someone switched to (top-down, 3D) stays.
   if (globe) globe.flyTo(s);
-  else openPlanView(s);
+  else if (plan) openPlanView(s);
+  else showMapView(s);
 }
 
-// Back to all sites = God's eye (the user, 2026-10-14: "default to top down but have a god's eye option as well for all
-// sites not just one site"): every site from above, in whichever view is showing (top-down, 3D or the street map).
+// Back to all sites = God's eye (the user, 2026-10-14): every site from above, in whichever view is showing (street
+// map by default since 2026-10-23, or top-down / 3D).
 function deselect() {
   selectedId = null;
   renderAll();
@@ -1020,8 +1023,9 @@ function focusAlarm(a) {
   const s = sites.get(a.site_id);
   if (s) {
     select(s.id, false);
-    if (s.lat != null && !globe) openPlanView(s, a.device_id);
+    if (s.lat != null && plan) openPlanView(s, a.device_id);
     else if (globe) globe.flyTo(s);
+    else if (s.lat != null) showMapView(s);
   }
   openDrawer(a.id, a);
 }
@@ -1149,16 +1153,16 @@ loadHealth();
 on("focus-alarm", focusAlarm);
 setInterval(() => { if (selectedId) renderDetail(); }, 30000);
 
+
 await loadSites().catch((e) => { siteList.innerHTML = `<li class="empty">${esc(e.message)}</li>`; });
 renderAll();
 fitToSites();
 paintBar();
-// Top-down by default with every site in view (God's eye). An alarm link (/?alarm=N) opens top-down at that alarm's
-// camera instead; only one of the two runs, so they can't race (the site-wide view landing after the camera's).
+// The street map with every site in view (fitToSites above; the user, 2026-10-23: "lets default to street"). An alarm
+// link (/?alarm=N) goes to that alarm's site instead.
 const focusId = Number(new URLSearchParams(location.search).get("alarm"));
-const focusLink = (a) => { focusAlarm(a); if (sites.get(a.site_id)?.lat == null) openPlanView(null); };
 if (focusId) {
   history.replaceState(null, "", "/");
   const a = openAlarms.get(focusId);
-  if (a) focusLink(a); else api(`/api/alarms/${focusId}`).then(focusLink).catch(() => openPlanView(null));
-} else openPlanView(null);
+  if (a) focusAlarm(a); else api(`/api/alarms/${focusId}`).then(focusAlarm).catch(() => {});
+}
