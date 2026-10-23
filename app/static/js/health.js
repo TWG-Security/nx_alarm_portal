@@ -3,7 +3,6 @@
 import { api, CFG, esc, fmtTime, on, relTime, tenantTag, toast } from "./common.js";
 
 const grid = document.getElementById("hc-grid");
-const showSel = document.getElementById("hf-show");
 const siteSel = document.getElementById("hf-site");
 const q = document.getElementById("hf-q");
 const summaryEl = document.getElementById("hc-summary");
@@ -61,11 +60,11 @@ function media(c, kind = "last", withBoxes = true, when = c.checked_at) {
     + (withBoxes ? `<div class="hc-overlay">${overlay(c.issues)}</div>` : "");
 }
 
-function card(c) {
+function card(c, moved = false) {
   const st = shown(c);
   const chips = (c.issues || []).map((i) => `<span class="chip hc-chip--${i.severity}">${esc(i.title)}</span>`).join("")
     || (c.status === "ok" ? `<span class="chip hc-chip--ok">${c.learning ? "OK · learning its reference" : "OK"}</span>` : "");
-  return `<article class="hc hc--${st}" data-key="${esc(key(c))}" tabindex="0" role="button" aria-label="${esc(c.name)}: ${esc(STATUS[c.status] || c.status)}">
+  return `<article class="hc hc--${st}${moved ? " hc--moved" : ""}" data-key="${esc(key(c))}" tabindex="0" role="button" aria-label="${esc(c.name)}: ${esc(STATUS[c.status] || c.status)}">
     <div class="hc-media">${media(c)}<span class="hc-state">${st === "muted" ? "Muted" : esc(statusText(c))}</span></div>
     <div class="hc-body">
       <div class="hc-name">${tenantTag(c)}${esc(c.name)}</div>
@@ -75,30 +74,51 @@ function card(c) {
 }
 
 function filtered() {
-  const show = showSel.value, site = siteSel.value, text = q.value.trim().toLowerCase();
-  return data.cameras.filter((c) => {
-    if (site && String(c.site_id) !== site) return false;
-    if (text && !c.name.toLowerCase().includes(text)) return false;
-    const st = shown(c);
-    if (show === "attention") return st === "problem" || st === "warning";
-    if (show === "muted") return st === "muted";
-    if (show === "offline") return st === "offline" || st === "off";
-    return true;
-  });
+  const site = siteSel.value, text = q.value.trim().toLowerCase();
+  return data.cameras.filter((c) => (!site || String(c.site_id) === site) && (!text || c.name.toLowerCase().includes(text)));
 }
+
+// Three areas (the user, 2026-10-23): Problems and Warnings on top while anything is wrong, every healthy camera in
+// green below; a camera moves up when an issue comes and back down when it clears. Cameras that can't be judged
+// (offline in NX, checks off, muted, not checked yet) sit folded at the bottom.
+const AREAS = [
+  { key: "problem", title: "Problems", test: (st) => st === "problem" },
+  { key: "warning", title: "Warnings", test: (st) => st === "warning" },
+  { key: "ok", title: "Healthy", test: (st) => st === "ok" },
+  { key: "other", title: "Not checked: offline, checks off, muted or waiting for the first check", test: () => true },
+];
+const areaOf = (c) => AREAS.find((a) => a.test(shown(c))).key;
+let lastArea = null;                  // camera -> area at the last render (to flash the ones that moved)
+let otherOpen = false;
 
 function render() {
   const s = data.summary || {};
-  const part = (k, label, cls) => `<button class="chip hc-sum hc-chip--${cls}" data-show="${k === "ok" ? "all" : k === "problem" || k === "warning" ? "attention" : k}">${s[k] || 0} ${label}${(s[k] || 0) !== 1 && (k === "problem" || k === "warning") ? "s" : ""}</button>`;
-  summaryEl.innerHTML = part("problem", "problem", "problem") + part("warning", "warning", "warning") + part("ok", "OK", "ok")
-    + (s.offline ? part("offline", "offline", "offline") : "") + (s.muted ? part("muted", "muted", "offline") : "")
-    + (s.pending ? `<span class="chip">${s.pending} not checked yet</span>` : "");
+  const part = (k, label, cls) => `<button class="chip hc-sum hc-chip--${cls}" data-area="${k === "muted" || k === "offline" ? "other" : k}">${s[k] || 0} ${label}${(s[k] || 0) !== 1 && (k === "problem" || k === "warning") ? "s" : ""}</button>`;
+  summaryEl.innerHTML = part("problem", "problem", "problem") + part("warning", "warning", "warning") + part("ok", "healthy", "ok")
+    + (s.offline ? part("offline", "offline", "offline") : "") + (s.muted ? part("muted", "muted", "offline") : "");
   const every = data.interval_s || 300;
   metaEl.textContent = `Every ${every < 60 ? `${every} s` : `${Math.round(every / 60)} min`} · ${data.ai ? "AI checks on (GPU)" : "AI checks off"}`
     + (data.last_check ? ` · last check ${relTime(data.last_check)}` : "");
   const list = filtered();
-  grid.innerHTML = list.length ? list.map(card).join("")
-    : `<div class="empty">${showSel.value === "attention" ? (data.cameras.length ? "Every camera looks fine." : "No cameras checked yet: the vision worker checks each camera every few minutes.") : "No cameras match."}</div>`;
+  if (!data.cameras.length) {
+    grid.innerHTML = '<div class="empty">No cameras checked yet: the camera checker looks at each camera every few minutes.</div>';
+    return;
+  }
+  const groups = Object.fromEntries(AREAS.map((a) => [a.key, []]));
+  for (const c of list) groups[areaOf(c)].push(c);
+  const moved = new Set();
+  const now = new Map(list.map((c) => [key(c), areaOf(c)]));
+  if (lastArea) for (const [k, a] of now) if (lastArea.has(k) && lastArea.get(k) !== a) moved.add(k);
+  lastArea = new Map([...(lastArea || []), ...now]);
+  const cards = (arr) => `<div class="hc-grid">${arr.map((c) => card(c, moved.has(key(c)))).join("")}</div>`;
+  const allClear = !groups.problem.length && !groups.warning.length;
+  grid.innerHTML = (allClear && groups.ok.length ? `<div class="hc-allclear"><span class="dot dot--ok"></span>No camera problems${siteSel.value || q.value ? " here" : ""}.</div>` : "")
+    + AREAS.filter((a) => a.key !== "other" && groups[a.key].length).map((a) => `<section class="hc-area hc-area--${a.key}" id="area-${a.key}">
+        <h2>${a.title} <span class="hc-count">${groups[a.key].length}</span></h2>${cards(groups[a.key])}</section>`).join("")
+    + (groups.other.length ? `<details class="hc-area hc-area--other" id="area-other"${otherOpen ? " open" : ""}>
+        <summary><h2>${AREAS[3].title} <span class="hc-count">${groups.other.length}</span></h2></summary>${cards(groups.other)}</details>` : "")
+    + (!list.length ? '<div class="empty">No cameras match.</div>' : "");
+  document.getElementById("area-other")?.addEventListener("toggle", (e) => { otherOpen = e.target.open; });
 }
 
 async function load() {
@@ -222,12 +242,13 @@ grid.addEventListener("click", (e) => {
 });
 grid.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target.matches(".hc")) e.target.click(); });
 summaryEl.addEventListener("click", (e) => {
-  const b = e.target.closest("[data-show]");
-  if (b) { showSel.value = b.dataset.show; render(); }
+  const b = e.target.closest("[data-area]");
+  if (!b) return;
+  if (b.dataset.area === "other") { otherOpen = true; render(); }
+  document.getElementById(`area-${b.dataset.area}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
 });
-[showSel, siteSel].forEach((el) => el.addEventListener("change", render));
+siteSel.addEventListener("change", render);
 q.addEventListener("input", render);
-if (params.get("show")) showSel.value = params.get("show");
 
 // ---- TWG only: the vision worker's processing (GPU, models, queue, recent checks) ----
 const hp = document.getElementById("hp");

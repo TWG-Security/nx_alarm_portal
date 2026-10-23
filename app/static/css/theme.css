@@ -1172,6 +1172,22 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 .hc-meta { align-self: center; font-size: 13px; }
 .filters input[type="search"] { min-width: 180px; }
 .hc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.hc-areas { display: grid; gap: 22px; }
+.hc-area h2 { display: flex; align-items: center; gap: 8px; margin: 0 0 10px; font-size: 16px; padding-left: 10px; border-left: 4px solid var(--offline); }
+.hc-area--problem h2 { border-left-color: var(--red); color: var(--red-text); }
+.hc-area--warning h2 { border-left-color: var(--warn); color: var(--warn); }
+.hc-area--ok h2 { border-left-color: var(--ok); color: var(--ok); }
+.hc-area--other summary { cursor: pointer; list-style: none; }
+.hc-area--other summary h2 { color: var(--text-muted); font-weight: 600; }
+.hc-area--other summary::-webkit-details-marker { display: none; }
+.hc-area--other summary h2::after { content: "▸"; margin-left: 4px; }
+.hc-area--other[open] summary h2::after { content: "▾"; }
+.hc-count { font-size: 12px; font-weight: 700; padding: 1px 8px; border-radius: 10px; background: var(--surface-3); color: var(--text); }
+.hc-allclear { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: var(--radius); border: 1px solid var(--ok);
+  background: rgba(47, 163, 107, .10); color: var(--ok); font-weight: 600; }
+.hc--moved { animation: hc-moved 3s ease-out; }
+@keyframes hc-moved { 0%, 40% { box-shadow: 0 0 0 3px var(--orange); } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .hc--moved { animation: none; outline: 2px solid var(--orange); } }
 .hc { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; cursor: pointer;
   border-top: 4px solid var(--offline); }
 .hc:hover, .hc:focus-visible { border-color: var(--text-muted); outline: none; }
@@ -1230,7 +1246,7 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 }
 
 /* TWG-only processing panel on /health */
-.hp { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin-bottom: 14px; }
+.hp { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 14px; margin: 28px 0 14px; }
 .hp summary { cursor: pointer; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .hp-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 8px; margin: 12px 0; }
 .hp-tile { background: var(--surface-2); border-radius: 6px; padding: 8px 10px; min-width: 0; }

@@ -28,8 +28,9 @@ def scene(dev, mode):
     urllib.request.urlopen(urllib.request.Request(f"{FAKE_NX}/_health/{dev}/{mode}", method="POST"))
 
 
-def card(pg, name):
-    return pg.locator(".hc", has=pg.locator(".hc-name", has_text=name))
+def card(pg, name, area=None):
+    root = pg.locator(f"#area-{area}") if area else pg
+    return root.locator(".hc", has=pg.locator(".hc-name", has_text=name))
 
 
 with sync_playwright() as p:
@@ -40,17 +41,16 @@ with sync_playwright() as p:
     scene("all", "normal")
     login_and_add_site(pg)
     pg.goto(f"{PORTAL}/health")
-    pg.select_option("#hf-show", "all")
     t0 = time.time()
-    pg.wait_for_function("""() => [...document.querySelectorAll('.hc--ok .hc-chip--ok')].filter(e => e.textContent === 'OK').length >= 2""",
+    pg.wait_for_function("""() => [...document.querySelectorAll('#area-ok .hc--ok .hc-chip--ok')].filter(e => e.textContent === 'OK').length >= 2""",
                          timeout=90000)
     check(True, f"both cameras checked and their references learned in {time.time() - t0:.0f} s")
 
     # A pallet appears in front of the dock camera (an Online camera: frames come off the live MJPEG stream).
     scene(DOCK, "change")
-    pg.select_option("#hf-show", "attention")
     t0 = time.time()
-    card(pg, "Loading Dock").locator(".hc-chip--warning", has_text="Scene changed").wait_for(timeout=90000)
+    card(pg, "Loading Dock", "warning").locator(".hc-chip--warning", has_text="Scene changed").wait_for(timeout=90000)
+    check(card(pg, "Loading Dock", "ok").count() == 0, "it moved up out of Healthy into Warnings")
     check(True, f"Scene changed shown {time.time() - t0:.0f} s after the change (3 checks in a row)")
     box = card(pg, "Loading Dock").locator(".hc-box").first.bounding_box()
     img = card(pg, "Loading Dock").locator("img").bounding_box()
@@ -63,11 +63,12 @@ with sync_playwright() as p:
 
     # The PTZ camera goes out of focus: a problem (PTZ: no moved / scene checks, but blur counts at its home view).
     scene(GATE, "blur")
-    card(pg, "Front Gate PTZ").locator(".hc-chip--problem", has_text="Out of focus").wait_for(timeout=90000)
+    card(pg, "Front Gate PTZ", "problem").locator(".hc-chip--problem", has_text="Out of focus").wait_for(timeout=90000)
     check(True, "a blurry camera is a problem")
     pg.wait_for_function("document.getElementById('nav-health-count').textContent === '2'", timeout=15000)
     check(True, "the Cameras badge counts 2")
-    check(pg.locator(".hc").first.get_attribute("class").find("hc--problem") >= 0, "problems are listed first")
+    order = pg.evaluate("[...document.querySelectorAll('.hc-area')].map(e => e.id)")
+    check(order[:2] == ["area-problem", "area-warning"], f"Problems on top, then Warnings, then Healthy ({order})")
     pg.screenshot(path=f"{out}/camhealth-page.png", full_page=True)
 
     # Details: Reference | Now with the box; Accept current view.
@@ -80,8 +81,8 @@ with sync_playwright() as p:
     pg.locator("#hc-dialog").screenshot(path=f"{out}/camhealth-dialog.png")
     pg.once("dialog", lambda d: d.accept())
     pg.click("[data-act=accept]")
-    pg.wait_for_function("!document.querySelector('.hc .hc-name') || ![...document.querySelectorAll('.hc .hc-name')].some(e => e.textContent.includes('Loading Dock'))", timeout=15000)
-    check(True, "Accept current view: the scene change is gone from Needs attention")
+    pg.wait_for_function("[...document.querySelectorAll('#area-ok .hc .hc-name')].some(e => e.textContent.includes('Loading Dock'))", timeout=15000)
+    check(card(pg, "Loading Dock", "warning").count() == 0, "Accept current view: it moved back down to Healthy")
     pg.click("#hcd-close")
 
     # Retake the day reference of the blurry one: the next clean day check becomes it.
@@ -108,8 +109,8 @@ with sync_playwright() as p:
     pg.wait_for_function("document.getElementById('nav-health-count').hidden", timeout=15000)
     check(True, "muting it clears the badge")
     pg.click("#hcd-close")
-    pg.select_option("#hf-show", "muted")
-    check(card(pg, "Front Gate PTZ").count() == 1, "it's listed under Muted")
+    pg.click(".hc-sum[data-area=other]")
+    check(card(pg, "Front Gate PTZ", "other").count() == 1, "it's in the folded Not checked / muted strip")
 
     # The map's site panel says it in one line.
     card(pg, "Front Gate PTZ").click()
@@ -133,7 +134,6 @@ with sync_playwright() as p:
     # Phone.
     ph = b.new_page(viewport={"width": 390, "height": 844}, storage_state=pg.context.storage_state())
     ph.goto(f"{PORTAL}/health")
-    ph.select_option("#hf-show", "all")
     ph.wait_for_selector(".hc")
     sw = ph.evaluate("document.documentElement.scrollWidth")
     check(sw <= 390, f"phone: no sideways scroll ({sw} px)")

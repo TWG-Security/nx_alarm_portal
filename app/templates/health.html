@@ -7,16 +7,11 @@
     <div class="hc-summary" id="hc-summary" aria-live="polite"></div>
   </div>
   <div class="filters">
-    <select id="hf-show" aria-label="Show">
-      <option value="attention">Needs attention</option>
-      <option value="all">All cameras</option>
-      <option value="muted">Muted</option>
-      <option value="offline">Offline / checks off</option>
-    </select>
     <select id="hf-site" aria-label="Site"><option value="">All sites</option></select>
     <input id="hf-q" type="search" placeholder="Camera name" aria-label="Search cameras">
     <span class="muted hc-meta" id="hc-meta"></span>
   </div>
+  <div class="hc-areas" id="hc-grid"><div class="empty">Loading…</div></div>
   {% if user.can('platform.view') %}
   <details class="hp" id="hp" open>
     <summary><b>Processing</b> <span class="chip tenant-chip">TWG only</span> <span class="muted" id="hp-age"></span></summary>
@@ -37,7 +32,6 @@
     </div>
   </details>
   {% endif %}
-  <div class="hc-grid" id="hc-grid"><div class="empty">Loading…</div></div>
 </div>
 
 <dialog id="hc-dialog" class="hc-dialog" aria-labelledby="hcd-title">
