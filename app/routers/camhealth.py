@@ -111,14 +111,31 @@ async def health_summary(scope: Scope = Depends(get_scope), db: AsyncSession = D
 
 
 @router.get("/api/camera-health/processing")
-async def processing(user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
-    """TWG staff only (platform.view): the vision worker's GPU, model timings, queue and recent checks."""
-    if not user.can("platform.view"):
+async def processing(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """TWG staff only (platform.view): the vision worker's GPU, model timings, queue and recent checks. The queue,
+    recent checks and camera counts follow the company in view (the user, 2026-10-23: "when i switch orgs ... i get
+    all of what they see and not everything unless i go to all companies"); the GPU and model numbers are the whole
+    machine's (one card for everyone)."""
+    if not scope.user.can("platform.view"):
         raise HTTPException(403)
     row = await db.get(VisionStatus, 1)
     if row is None:
         return {"data": None, "age_s": None}
-    return {"data": row.data, "age_s": round((_ms(utcnow()) - _ms(row.updated_at)) / 1000)}
+    data = dict(row.data or {})
+    if scope.tenant_ids is not None:
+        mine = set((await _site_names(db, scope)).keys())
+        queue = [q for q in data.get("queue") or [] if q.get("site_id") in mine]
+        data["queue"] = queue
+        data["recent"] = [r for r in data.get("recent") or [] if r.get("site_id") in mine]
+        data["cameras"] = len(queue)
+        data["checked_cameras"] = sum(1 for q in queue if q.get("state") not in ("offline", "off"))
+        data["busy"] = [q["camera"] for q in queue if q.get("state") == "checking"]
+        data["due_now"] = sum(1 for q in queue if q.get("state") == "requested")
+        waiting = [q["next_ms"] for q in queue if q.get("state") == "waiting"]
+        data["next_in_s"] = max(0, round((min(waiting) - _ms(utcnow())) / 1000)) if waiting else None
+        data["errors_recent"] = sum(1 for r in data["recent"] if r.get("error"))
+        data["scoped"] = True
+    return {"data": data, "age_s": round((_ms(utcnow()) - _ms(row.updated_at)) / 1000)}
 
 
 @router.get("/api/camera-health/{site_id}/{device_id}")

@@ -277,7 +277,8 @@ async function loadProcessing() {
     tile("GPU memory", g.mem_used_mb != null ? `${(g.mem_used_mb / 1024).toFixed(1)} of ${(g.mem_total_mb / 1024).toFixed(1)} GB` : "—", "", g.mem_total_mb ? g.mem_used_mb / g.mem_total_mb * 100 : null),
     tile("Temperature", g.temp_c != null ? `${g.temp_c} °C` : "—", [g.power_w != null ? `${g.power_w} W of ${g.power_limit_w ?? "?"} W` : "", g.fan != null ? `fan ${g.fan}%` : ""].filter(Boolean).join(" · ")),
     tile("Schedule", `every ${Math.round(d.interval_s / 60)} min`, `${d.parallel} camera at a time · ${d.checked_cameras} of ${d.cameras} cameras checked`),
-    tile("Now", d.busy?.length ? `checking ${d.busy.join(", ")}` : `next in ${d.next_in_s} s`, `${d.due_now} waiting · avg check ${ms(d.avg_check_ms)}`),
+    tile("Now", d.busy?.length ? `checking ${d.busy.join(", ")}` : d.next_in_s == null ? "nothing queued" : `next in ${d.next_in_s} s`,
+      `${d.due_now} waiting · avg check ${ms(d.avg_check_ms)}${d.scoped ? " (all companies)" : ""}`),
     tile("Worker", `${d.process?.rss_mb ?? "?"} MB`, `CPU ${d.process?.cpu_s ?? "?"} s since ${fmtTime(d.started_at)}${d.errors_recent ? ` · ${d.errors_recent} recent errors` : ""}`),
   ].join("");
   const hist = d.gpu_history || [];

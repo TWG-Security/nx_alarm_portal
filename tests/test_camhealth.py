@@ -492,3 +492,28 @@ async def test_check_now_keeps_the_learning_candidate(session, tmp_path):
         assert cam.next_at == 0.0
         await w.check(cam)
     assert not (await _row(session, site, "cam-rec")).learning
+
+
+async def test_processing_panel_follows_the_company_in_view(client, session):
+    """TWG viewing a customer sees that customer's queue / recent checks only; All companies: everything."""
+    from app.models import VisionStatus
+    twg, admin = await make_tenant_user(session)
+    twg.kind = "platform"
+    cust, _ = await make_tenant_user(session, tenant_name="OZINT", email="admin@ozint.test")
+    s_twg, s_oz = await make_site(session, twg, name="Office"), await make_site(session, cust, name="Toronto")
+    q = lambda sid, cam, st: {"site_id": sid, "device_id": cam, "camera": cam, "site": "x", "state": st, "next_ms": 1_900_000_000_000}  # noqa: E731
+    session.add(VisionStatus(id=1, data={"gpu": {"name": "NVIDIA T1000"}, "models": {"dino": {"calls": 3}},
+                                         "queue": [q(s_twg.id, "twg-cam", "checking"), q(s_oz.id, "oz-cam", "waiting"), q(s_oz.id, "oz-off", "off")],
+                                         "recent": [{"site_id": s_twg.id, "camera": "twg-cam"}, {"site_id": s_oz.id, "camera": "oz-cam"}],
+                                         "busy": ["twg-cam"], "cameras": 3}))
+    await session.commit()
+    await login(client, admin.email)
+    d = (await client.get("/api/camera-health/processing")).json()["data"]
+    assert [x["camera"] for x in d["queue"]] == ["twg-cam"] and d["busy"] == ["twg-cam"]          # own company
+    assert (await client.post("/api/scope", json={"scope": str(cust.id)})).status_code == 200
+    d = (await client.get("/api/camera-health/processing")).json()["data"]
+    assert [x["camera"] for x in d["queue"]] == ["oz-cam", "oz-off"] and [r["camera"] for r in d["recent"]] == ["oz-cam"]
+    assert d["busy"] == [] and d["cameras"] == 2 and d["checked_cameras"] == 1 and d["gpu"]["name"] == "NVIDIA T1000"
+    assert (await client.post("/api/scope", json={"scope": "all"})).status_code == 200
+    d = (await client.get("/api/camera-health/processing")).json()["data"]
+    assert len(d["queue"]) == 3 and "scoped" not in d
