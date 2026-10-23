@@ -708,6 +708,7 @@ a.user-label:hover, a.user-label.active { color: var(--text); text-decoration: u
 .users-table .nowrap, .users-table .actions { white-space: nowrap; }
 .users-table .chips { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
 .users-table .actions { text-align: right; }
+.sec-dialog { width: min(660px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow-y: auto; }   /* the dialog itself: content never wider */
 .user-dialog { width: min(600px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow-y: auto; }
 .user-dialog h2 { margin-top: 0; }
 .user-dialog h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); margin: 18px 0 8px;
