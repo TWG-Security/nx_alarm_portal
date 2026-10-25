@@ -1,5 +1,14 @@
 # Programming backlog
 
+# Open (2026-10-25)
+- [ ] App Store Connect key + Platform → Phone apps settings (iPhone TestFlight invites); first real Test connection
+- [ ] Replace the APK download's GitHub token with a fine-grained read-only one (twg-alarm-android)
+- [ ] Worldwide aerial imagery for non-US sites (Toronto): Esri (free key) / Google / Sentinel-2: the user to choose
+- [ ] "Click and drag": ask the user where
+- [ ] Optional: company switcher in the phone apps for TWG staff
+- [ ] Off-server encrypted backup copy
+- [ ] Merge PR #6 when the user says
+
 # Camera image health: built 2026-10-20 (see CLAUDE.md, Architecture row "Camera image health")
 Decisions (asked): Camera Health page + amber/red camera icons only (never the alarm feed, no sounds, no texts); build
 on CPU first, GPU checks on top. GPU: NVIDIA Quadro T1000 (4 GB) passed through to the VM, driver 595.91 (server,
