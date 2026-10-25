@@ -37,6 +37,12 @@ def make_client(host: str, user: str, password: str) -> NXClient:
 def describe_http_error(exc: Exception) -> ConnectError:
     if isinstance(exc, httpx.HTTPStatusError):
         code = exc.response.status_code
+        if code == 403 and "authorization method is forbidden" in exc.response.text.lower():
+            # An Nx Cloud account (an email) on a system that only lets cloud users in through Nx Cloud's own sign-in
+            # (seen 2026-10-23: the same answer for any password, so it says nothing about the password itself).
+            return ConnectError("This NX system doesn't let that account sign in from the portal: it looks like an Nx "
+                                "Cloud account (an email). Add a local NX user for the portal (System Administration → "
+                                "Users → Add, not a cloud user) and use that username and password.", "auth_error")
         if code in (401, 403):
             return ConnectError("NX rejected the username or password", "auth_error")
         return ConnectError(f"NX returned HTTP {code}")

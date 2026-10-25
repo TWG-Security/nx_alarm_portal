@@ -258,7 +258,9 @@ def alarm_payload(alarm: Alarm, word: str | None = None) -> dict:
                               "subtitle": alarm.source_name or "",
                               "body": f"{alarm.caption} · {_when(alarm)}"},
                     "sound": sound_for(alarm.priority), "interruption-level": "time-sensitive" if alarm.priority <= 2 else "active",
-                    "thread-id": f"alarm-{alarm.id}"},
+                    "thread-id": f"alarm-{alarm.id}",
+                    # The app's Notification Service Extension adds the picture; ALARM = Open / False alarm… buttons.
+                    "mutable-content": 1, "category": "ALARM"},
             "type": "alarm", "alarm_id": alarm.id, "level": level, "site_id": alarm.site_id}
 
 
@@ -458,7 +460,8 @@ def dispatch(alarm: Alarm, user_id: int, link_token: str, distance: str, by: str
     where = ", ".join(x for x in ((alarm.site.address if alarm.site else ""), f"{distance} away" if distance else "") if x)
     p = {"aps": {"alert": {"title": f"DISPATCH · {_site(alarm)}", "subtitle": alarm.caption,
                            "body": where or (f"Sent by {by}" if by else "Open for directions")},
-                 "sound": SOUND[1], "interruption-level": "time-sensitive", "thread-id": f"alarm-{alarm.id}"},
+                 "sound": SOUND[1], "interruption-level": "time-sensitive", "thread-id": f"alarm-{alarm.id}",
+                 "mutable-content": 1, "category": "DISPATCH"},          # picture + En route button in the app
          "type": "dispatch", "alarm_id": alarm.id, "link_token": link_token, "site_id": alarm.site_id,
          "level": {1: "critical", 2: "alarm"}.get(alarm.priority, "warning"), "auto": auto}
     _spawn(_send(user_id, "dispatch", p, _headers(f"dispatch-{alarm.id}"), alarm, time.time()))
@@ -471,7 +474,8 @@ def call_update(call: Alarm, alarm: Alarm, user_id: int, count: int = 1) -> None
     more = f" (+{count - 1} more)" if count > 1 else ""
     p = {"aps": {"alert": {"title": f"UPDATE · {_site(call)}", "subtitle": alarm.source_name or "",
                            "body": f"{alarm.caption}{more} · {_when(alarm)}"},
-                 "sound": sound_for(alarm.priority), "interruption-level": "time-sensitive", "thread-id": f"alarm-{call.id}"},
+                 "sound": sound_for(alarm.priority), "interruption-level": "time-sensitive", "thread-id": f"alarm-{call.id}",
+                 "mutable-content": 1, "category": "ALARM"},
          "type": "call_update", "alarm_id": call.id, "joined_alarm_id": alarm.id, "count": count,
          "level": {1: "critical", 2: "alarm"}.get(alarm.priority, "warning"), "site_id": call.site_id}
     _spawn(_send(user_id, "call_update", p, _headers(f"update-{alarm.id}"), call, time.time()))

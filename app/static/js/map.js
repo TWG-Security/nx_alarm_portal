@@ -1,5 +1,5 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { CFG, api, esc, toast, siteLinkChip, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany } from "./common.js";
 import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
@@ -151,6 +151,7 @@ function renderDetail() {
       ${viewBtn("3d", "data-globe", "3D", "Fly into a 3D aerial view of this site")}</div>` : ""}
     ${armCardHtml(s)}
     ${rulesLineHtml(s)}
+    ${healthLineHtml(s)}
     <dl class="sp-kv">
       <dt>NX</dt><dd>${esc(s.nx_site_name || "—")}${s.nx_version ? ` <span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
       ${s.notes ? `<dt>Notes</dt><dd class="sp-notes">${esc(s.notes)}</dd>` : ""}
@@ -356,7 +357,7 @@ function renderFeed() {
   const more = rows.length - FEED_MAX;
   ul.innerHTML = rows.slice(0, FEED_MAX).map((a) => `
     <li class="feed-item p${a.priority}" data-id="${a.id}" tabindex="0">
-      <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${timerHtml(a.event_ts_ms)}</div>
+      <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${siteLinkChip(a)}${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
       <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}</div>
       <div class="meta">${a.source_name ? `${esc(a.source_name)} · ` : ""}${fmtTime(a.event_ts_ms)}</div>
@@ -408,12 +409,15 @@ function select(id, pan = true) {
   models.siteChanged();
   const s = sites.get(id);
   if (!pan || s?.lat == null) return;
+  // The street map by default (the user, 2026-10-23: "lets default to street"; aerial imagery is USGS, US only, so
+  // Canadian sites were blank); whichever view someone switched to (top-down, 3D) stays.
   if (globe) globe.flyTo(s);
-  else openPlanView(s);
+  else if (plan) openPlanView(s);
+  else showMapView(s);
 }
 
-// Back to all sites = God's eye (the user, 2026-10-14: "default to top down but have a god's eye option as well for all
-// sites not just one site"): every site from above, in whichever view is showing (top-down, 3D or the street map).
+// Back to all sites = God's eye (the user, 2026-10-14): every site from above, in whichever view is showing (street
+// map by default since 2026-10-23, or top-down / 3D).
 function deselect() {
   selectedId = null;
   renderAll();
@@ -437,7 +441,35 @@ const camAlarm = (siteId, deviceId) => [...openAlarms.values()].find((a) => a.si
 const globeModels = () => [...sites.values()].filter((s) => s.model?.ready).map((s) =>
   ({ siteId: s.id, url: s.model.ready.url, anchor: s.model.ready.anchor, placement: s.model.ready.placement }));
 const globeCams = () => [...sites.values()].flatMap((s) => Object.entries(s.camera_places || {}).map(([deviceId, p]) =>
-  ({ siteId: s.id, deviceId, ...p, alarm: !!camAlarm(s.id, deviceId) })));
+  ({ siteId: s.id, deviceId, ...p, alarm: !!camAlarm(s.id, deviceId), health: camHealthOf(s.id, deviceId) })));
+
+// Camera image health (the vision worker; /health page): {status, issue} per camera that isn't muted. Never an alarm:
+// only the site panel line and the camera icons show it.
+const camHealth = new Map();
+let healthLoaded = false, healthTimer = null;
+function camHealthOf(siteId, deviceId) {
+  const h = camHealth.get(`${siteId}:${String(deviceId).toLowerCase()}`);
+  return h && !h.muted && (h.status === "problem" || h.status === "warning") ? { status: h.status, issue: h.issues[0]?.title || "" } : null;
+}
+async function loadHealth() {
+  const r = await api("/api/camera-health").catch(() => null);
+  if (!r) return;
+  camHealth.clear();
+  for (const c of r.cameras) camHealth.set(`${c.site_id}:${c.device_id}`, c);
+  healthLoaded = r.cameras.length > 0;
+  renderDetail(); plan?.update(); globe?.update();
+}
+on("camera.health", () => { clearTimeout(healthTimer); healthTimer = setTimeout(loadHealth, 1500); });
+function healthLineHtml(s) {
+  if (!healthLoaded) return "";
+  const cams = [...camHealth.values()].filter((c) => c.site_id === s.id);
+  if (!cams.length) return "";
+  const p = cams.filter((c) => c.status === "problem" && !c.muted).length, w = cams.filter((c) => c.status === "warning" && !c.muted).length;
+  const ok = cams.filter((c) => c.status === "ok").length;
+  if (!p && !w) return `<div class="sp-status ok" title="Checked every few minutes for blur, covered or moved cameras and scene changes">${ICON.camera}<span>Camera pictures OK (${ok} checked)</span></div>`;
+  const txt = [p ? `${p} camera problem${p === 1 ? "" : "s"}` : "", w ? `${w} warning${w === 1 ? "" : "s"}` : ""].filter(Boolean).join(" · ");
+  return `<a class="sp-status warn sp-health" href="/health?site=${s.id}" title="Open Camera health for this site">${ICON.camera}<span>${txt}</span><span class="sp-status-more">Review</span>${ICON.chevron}</a>`;
+}
 
 // HUD text: the selected site, a UTC clock, counts, and where the view is centred.
 const STATE_TXT = { ok: "NORMAL", warn: "WARNING", alarm: "ALARM", offline: "OFFLINE" };
@@ -991,8 +1023,9 @@ function focusAlarm(a) {
   const s = sites.get(a.site_id);
   if (s) {
     select(s.id, false);
-    if (s.lat != null && !globe) openPlanView(s, a.device_id);
+    if (s.lat != null && plan) openPlanView(s, a.device_id);
     else if (globe) globe.flyTo(s);
+    else if (s.lat != null) showMapView(s);
   }
   openDrawer(a.id, a);
 }
@@ -1115,20 +1148,21 @@ on("site.status", ({ site_id, status, detail }) => {
 on("site.updated", (s) => { sites.set(s.id, { ...sites.get(s.id), ...s }); renderAll(); models.siteChanged(); });
 on("site.push", ({ site_id, push }) => { const s = sites.get(site_id); if (s) { s.push = push; renderDetail(); } });
 on("site.removed", (s) => { sites.delete(s.id); markers.get(s.id)?.remove(); markers.delete(s.id); renderAll(); });
-on("reconnect", () => loadSites().then(renderAll).catch(() => {}));
+on("reconnect", () => { loadSites().then(renderAll).catch(() => {}); loadHealth(); });
+loadHealth();
 on("focus-alarm", focusAlarm);
 setInterval(() => { if (selectedId) renderDetail(); }, 30000);
+
 
 await loadSites().catch((e) => { siteList.innerHTML = `<li class="empty">${esc(e.message)}</li>`; });
 renderAll();
 fitToSites();
 paintBar();
-// Top-down by default with every site in view (God's eye). An alarm link (/?alarm=N) opens top-down at that alarm's
-// camera instead; only one of the two runs, so they can't race (the site-wide view landing after the camera's).
+// The street map with every site in view (fitToSites above; the user, 2026-10-23: "lets default to street"). An alarm
+// link (/?alarm=N) goes to that alarm's site instead.
 const focusId = Number(new URLSearchParams(location.search).get("alarm"));
-const focusLink = (a) => { focusAlarm(a); if (sites.get(a.site_id)?.lat == null) openPlanView(null); };
 if (focusId) {
   history.replaceState(null, "", "/");
   const a = openAlarms.get(focusId);
-  if (a) focusLink(a); else api(`/api/alarms/${focusId}`).then(focusLink).catch(() => openPlanView(null));
-} else openPlanView(null);
+  if (a) focusAlarm(a); else api(`/api/alarms/${focusId}`).then(focusAlarm).catch(() => {});
+}

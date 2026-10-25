@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 PERMISSIONS: dict[str, str] = {
     "alarms.bulk_edit": "Bulk edit alarms (admin override): mark many alarms real or false at once, "
                         "acknowledging open ones, and change verdicts already set",
+    "users.invite": "Invite people to the TWG Alarms phone apps (TestFlight on iPhone, the download link on Android)",
     "platform.view": "See every company: switch to any company or to all companies at once (view only)",
     "platform.support": "Support other companies: acknowledge, arm/disarm, edit sites, users and settings "
                         "inside another company (logged in their audit trail as TWG support)",

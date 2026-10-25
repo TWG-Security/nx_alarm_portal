@@ -3,7 +3,7 @@
 // it's verified (Real event), and Next (the next open alarm in the feed's order: most urgent first, oldest
 // first). Used on every page.
 
-import { CFG, api, esc, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
+import { CFG, api, esc, siteLinkChip, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
 import { freshness } from "./guards.js";
 import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
@@ -241,6 +241,7 @@ function render(a) {
       <div><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span> ${disarmed ? '<span class="chip disarmed">Site disarmed</span>' : acked ? "" : timerHtml(a.event_ts_ms)}
         ${acked || disarmed ? ` ${verdictChip(a)}` : ""}
         ${a.call_state === "active" ? ' <span class="chip call-chip">Call in progress</span>' : a.call_state === "ended" ? ' <span class="chip">Call ended</span>' : ""}
+        ${siteLinkChip(a)}
         <h1 style="margin-top:8px">${esc(a.caption)}</h1>
         ${isMine(a) ? "" : `<div><span class="chip tenant-chip">${esc(a.tenant_name || "Another company")}</span></div>`}
         <div><b>${esc(a.site_name)}</b>${a.site_address ? ` <span class="muted">· ${esc(a.site_address)}</span>` : ""}</div>

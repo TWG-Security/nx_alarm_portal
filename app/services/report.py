@@ -283,6 +283,10 @@ def _audit_row(a: AuditLog) -> dict:
         away = f", {d['distance']} away" if d.get("distance") else (", position unknown" if "distance" in d else "")
         return {"ts": ts, "what": f"Dispatched {d.get('guard', '')}" + (" (automatic, on confirm)" if d.get("auto") else ""),
                 "who": who, "kind": "operator", "detail": f"text to {d.get('to', '')}{away}"}
+    if a.action == "alarm.site_restored":
+        from app.services.poller import _duration
+        return {"ts": ts, "what": "Site back online", "who": "system", "kind": "system",
+                "detail": f"the portal reached NX again after {_duration(d.get('down_s') or 0)}"}
     if a.action == "alarm.joined_call":
         cam = f" · {d['camera']}" if d.get("camera") else ""
         return {"ts": ts, "what": "Alarm during the call", "who": d.get("camera") or "NX", "kind": "joined",

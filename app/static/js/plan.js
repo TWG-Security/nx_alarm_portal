@@ -32,7 +32,7 @@ function cone(c) {                   // [[lat, lng], ...] outline of the view co
 /**
  * Turn the Leaflet map `lmap` into the top-down view. Returns a controller; destroy() puts the
  * normal street map back.
- *   cameras: () => [{ siteId, deviceId, name, lat, lng, heading, fov, range_m, alarm }]
+ *   cameras: () => [{ siteId, deviceId, name, lat, lng, heading, fov, range_m, alarm, health: {status, issue} | null }]
  *   onPickCamera(siteId, deviceId): a camera (its dot or cone) was clicked (optional)
  *   onHoverCamera(siteId, deviceId, containerPoint | null): the mouse went onto (or off) a camera's dot or cone
  * The editor API matches globe.js (editCamera, stopEditing, editing, currentEditor), so map.js
@@ -77,14 +77,14 @@ export function openPlan(lmap, { cameras, onPickCamera, onHoverCamera }) {
       }
       const hide = key === editKey;   // being edited: the editor draws it
       const coneOn = !hide && (showCones || !!c.alarm);
-      const sig = JSON.stringify([c.lat, c.lng, c.heading, c.fov, c.range_m, c.alarm, c.name, hide, coneOn]);
+      const sig = JSON.stringify([c.lat, c.lng, c.heading, c.fov, c.range_m, c.alarm, c.name, hide, coneOn, c.health]);
       if (sig === d.sig) continue;
       d.sig = sig;
       const tint = c.alarm ? red() : ORANGE;
       d.cone.setLatLngs(cone(c)).setStyle({ color: tint, fillColor: tint, fillOpacity: c.alarm ? 0.45 : 0.28, weight: c.alarm ? 3 : 2 });
       d.marker.setLatLng([c.lat, c.lng]).setIcon(L.divIcon({
-        className: `plan-cam${c.alarm ? " plan-cam--alarm" : ""}`, iconSize: [14, 14], iconAnchor: [7, 7],
-        html: `<i></i><span>${c.alarm ? "ALARM · " : ""}${esc(c.name || "Camera")}</span>`,
+        className: `plan-cam${c.alarm ? " plan-cam--alarm" : c.health ? ` plan-cam--h${c.health.status[0]}` : ""}`, iconSize: [14, 14], iconAnchor: [7, 7],
+        html: `<i></i><span>${c.alarm ? "ALARM · " : ""}${esc(c.name || "Camera")}${!c.alarm && c.health ? ` · ${esc(c.health.issue)}` : ""}</span>`,
       }));
       for (const [l, on] of [[d.cone, coneOn], [d.marker, !hide]]) {
         if (!on && group.hasLayer(l)) group.removeLayer(l);

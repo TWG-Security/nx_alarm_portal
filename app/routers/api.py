@@ -1040,7 +1040,7 @@ def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | No
             "sms_consent_at": u.sms_consent_at.isoformat() if u.sms_consent_at else None,
             "sms_optin_sent_at": u.sms_optin_sent_at.isoformat() if u.sms_optin_sent_at else None,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
-            "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
+            "totp_enabled": u.totp_enabled, "mfa_exempt": u.mfa_exempt, "passkeys": passkeys, "sessions": signed_in,
             "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
             "invite_email": invite, "push_level": u.push_level or "alarm", "push_when": u.push_when or "raised",
             "push_devices": getattr(u, "_push_devices", 0)}
@@ -1356,6 +1356,24 @@ _geocode_lock = asyncio.Lock()
 _last_geocode = 0.0
 
 
+_UNIT_RE = re.compile(r"(?:\b(?:unit|suite|ste|apt|apartment|floor|fl|room|rm|bldg|building)\b\.?\s*[\w-]+|#\s*[\w-]+)", re.I)
+_UNIT_DASH_RE = re.compile(r"^\s*\d+[a-z]?\s*-\s*(?=\d)", re.I)           # Canadian "5-123 Main St" = unit 5
+_POSTAL_RE = re.compile(r"\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b|\b\d{5}(?:-\d{4})?\b", re.I)   # Canada A1A 1A1, US 12345(-6789)
+
+
+def address_variants(q: str) -> list[str]:
+    """What to ask Nominatim, in order, until something is found: as typed; without the unit / suite part (OSM has
+    buildings, not units: "100 King St W #5600" finds nothing, 2026-10-23); then also without the postal code."""
+    tidy = lambda t: re.sub(r"(\s*,)+\s*", ", ", re.sub(r"\s+", " ", t)).strip(" ,")  # noqa: E731
+    no_unit = tidy(_UNIT_DASH_RE.sub("", _UNIT_RE.sub(",", q)))
+    no_postal = tidy(_POSTAL_RE.sub(",", no_unit))
+    out = []
+    for v in (q.strip(), no_unit, no_postal):
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 @router.get("/geocode")
 async def geocode(q: str = Query(min_length=3, max_length=300), user: User = Depends(current_user)):
     """Address -> coordinates via Nominatim, proxied so we can honour its usage policy
@@ -1365,21 +1383,26 @@ async def geocode(q: str = Query(min_length=3, max_length=300), user: User = Dep
     if key in _GEOCODE_CACHE:
         return _GEOCODE_CACHE[key]
     settings = get_settings()
-    async with _geocode_lock:
-        wait = 1.0 - (time.monotonic() - _last_geocode)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        try:
-            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": settings.geocoder_user_agent}) as c:
-                r = await c.get(settings.geocoder_url, params={"q": q, "format": "jsonv2", "limit": 5, "addressdetails": 0})
-            r.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise HTTPException(502, "Address lookup service unavailable") from exc
-        finally:
-            _last_geocode = time.monotonic()
-    results = [{"label": x.get("display_name", ""), "lat": float(x["lat"]), "lng": float(x["lon"])}
-               for x in r.json() if "lat" in x and "lon" in x]
-    if len(_GEOCODE_CACHE) > 500:
-        _GEOCODE_CACHE.clear()
-    _GEOCODE_CACHE[key] = results
+    results = []
+    for variant in address_variants(q):
+        async with _geocode_lock:
+            wait = 1.0 - (time.monotonic() - _last_geocode)     # Nominatim's policy: at most one request a second
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                async with httpx.AsyncClient(timeout=10, headers={"User-Agent": settings.geocoder_user_agent}) as c:
+                    r = await c.get(settings.geocoder_url, params={"q": variant, "format": "jsonv2", "limit": 5, "addressdetails": 0})
+                r.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, "Address lookup service unavailable") from exc
+            finally:
+                _last_geocode = time.monotonic()
+        results = [{"label": x.get("display_name", ""), "lat": float(x["lat"]), "lng": float(x["lon"])}
+                   for x in r.json() if "lat" in x and "lon" in x]
+        if results:
+            break
+    if results:                     # never remember "not found": the next Find asks again
+        if len(_GEOCODE_CACHE) > 500:
+            _GEOCODE_CACHE.clear()
+        _GEOCODE_CACHE[key] = results
     return results

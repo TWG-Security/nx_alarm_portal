@@ -344,3 +344,45 @@ async def test_cli_reset_mfa(client, session, twg, capsys):
     assert not twg[1].totp_enabled
     assert (await password_step(client, twg[1].email)).headers["location"] == "/"
     assert "reset" in capsys.readouterr().out
+
+
+async def test_admin_turns_two_step_off_for_one_user(client, session, twg):
+    """Two-step required for TWG; the admin turns it off for one operator only (and back on)."""
+    op = User(tenant_id=twg[0].id, email="desk@twgsecurity.com", password_hash=hash_password(PASSWORD), role="operator")
+    other = User(tenant_id=twg[0].id, email="other@twgsecurity.com", password_hash=hash_password(PASSWORD), role="operator")
+    session.add_all([op, other])
+    await session.commit()
+    secret, _ = await enable_totp(client, op.email)
+    await settings_row(session, mfa_require_twg=True)
+    assert (await password_step(client, other.email)).headers["location"] == "/login/enroll"   # everyone else: required
+
+    from tests.conftest import login as cookie_login
+    client.cookies.clear()
+    await settings_row(session, mfa_require_twg=False)
+    await cookie_login(client, twg[1].email)
+    await settings_row(session, mfa_require_twg=True)
+    r = await client.put(f"/api/users/{op.id}/mfa-exempt", json={"exempt": True})
+    assert r.status_code == 200 and r.json() == {"mfa_exempt": True, "totp_enabled": False}
+    sec = (await client.get(f"/api/users/{op.id}/security")).json()
+    assert sec["mfa_exempt"] and sec["company_requires"] and not sec["mfa_required"]
+    assert {u["email"]: u for u in (await client.get("/api/users")).json()}[op.email]["mfa_exempt"]
+    row = await session.scalar(select(AuditLog).where(AuditLog.action == "mfa.exempted"))
+    assert row.detail["target"] == op.email and row.user_id == twg[1].id
+
+    r = await password_step(client, op.email)                    # password only: straight in
+    assert r.status_code == 303 and r.headers["location"] == "/"
+    assert (await client.get("/api/sites")).status_code == 200
+    from tests.test_mobile import app_login
+    r = await app_login(client, op.email)                        # the phone app too
+    assert r.status_code == 200 and r.json()["token"].startswith("twgm_")
+    assert (await password_step(client, other.email)).headers["location"] == "/login/enroll"
+
+    # An operator can't do it; requiring it again sends them to set it up at their next sign-in.
+    await cookie_login(client, op.email)
+    assert (await client.put(f"/api/users/{other.id}/mfa-exempt", json={"exempt": True})).status_code == 403
+    client.cookies.clear()
+    await settings_row(session, mfa_require_twg=False)
+    await cookie_login(client, twg[1].email)
+    await settings_row(session, mfa_require_twg=True)
+    assert (await client.put(f"/api/users/{op.id}/mfa-exempt", json={"exempt": False})).status_code == 200
+    assert (await password_step(client, op.email)).headers["location"] == "/login/enroll"

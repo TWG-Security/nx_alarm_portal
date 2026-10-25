@@ -125,7 +125,7 @@ async def mobile_login(body: LoginIn, request: Request, db: AsyncSession = Depen
         audit(db, user.tenant_id, "login.failed", user_id=user.id, ip=ip, reason="company disabled", app=True)
         await db.commit()
         raise HTTPException(403, "Your company's portal access is disabled. Contact TWG Security.")
-    required = mfa.required_for(tenant)
+    required = mfa.required_for(tenant, user)
     has_passkeys = mfa.passkeys_enabled() and await mfa.passkey_count(db, user.id) > 0
     if user.totp_enabled or (required and has_passkeys):
         # Second factor next: the authenticator code (/login/totp) and/or a passkey (/passkey/options + verify).

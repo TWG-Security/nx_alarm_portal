@@ -1,5 +1,5 @@
 // Users page: accounts, their sign-in security (two-step, passkeys, signed-in browsers), groups & permissions.
-import { api, esc, fmtTime, relTime, toast } from "./common.js";
+import { api, CFG, esc, fmtTime, relTime, toast } from "./common.js";
 
 const $ = (id) => document.getElementById(id);
 const tbody = $("user-rows");
@@ -11,6 +11,7 @@ function twoStep(u) {
   const parts = [];
   if (u.totp_enabled) parts.push('<span class="chip online">App</span>');
   if (u.passkeys) parts.push(`<span class="chip online">${u.passkeys} passkey${u.passkeys === 1 ? "" : "s"}</span>`);
+  if (u.mfa_exempt) parts.push('<span class="chip p3" title="An admin turned two-step sign-in off for this person">Exempt</span>');
   return parts.join(" ") || '<span class="chip">Off</span>';
 }
 
@@ -148,7 +149,10 @@ function paintEditExtras() {
       <button class="btn btn-sm" type="button" data-toggle="${u.id}">${u.is_active ? "Disable" : "Enable"}</button>
       ${u.invited ? `<button class="btn btn-sm" type="button" data-invite="${u.id}">New invite link</button>` : `<button class="btn btn-sm" type="button" data-reset="${u.id}">Reset password</button>`}
       <button class="btn btn-sm" type="button" data-security="${u.id}">Sign-in security…</button>
-      <button class="btn btn-sm btn-danger" type="button" data-delete="${u.id}" style="margin-left:auto">Delete user</button></div>`;
+      <button class="btn btn-sm btn-danger" type="button" data-delete="${u.id}" style="margin-left:auto">Delete user</button></div>
+    ${(CFG.perms || []).includes("users.invite") ? `<div class="ed-line"><span class="muted small-print">Phone app:</span>
+      <select id="ed-app-platform" aria-label="Which app"><option value="both">iPhone and Android</option><option value="ios">iPhone (TestFlight)</option><option value="android">Android</option></select>
+      <button class="btn btn-sm" type="button" data-app-invite="${u.id}">Invite to the app</button></div>` : ""}`;
 }
 
 async function act(promise, ok) {
@@ -184,7 +188,21 @@ $("edit-form").addEventListener("submit", async (e) => {
 
 $("edit-dialog").addEventListener("click", async (e) => {
   const d = e.target.dataset, u = edUser;
-  if (!u || !(d.toggle || d.reset || d.invite || d.security || d.optIn || d.testText || d.delete)) return;
+  if (!u || !(d.toggle || d.reset || d.invite || d.security || d.optIn || d.testText || d.delete || d.appInvite)) return;
+  if (d.appInvite) {
+    e.target.disabled = true;
+    const r = await act(api("/api/apps/invite", { method: "POST", body: { email: u.email, name: u.display_name || "", platform: $("ed-app-platform").value } }));
+    e.target.disabled = false;
+    if (!r) return;
+    const said = { invited: "TestFlight invite sent by Apple", already_tester: "already a TestFlight tester", emailed: "emailed the download link",
+      share_link: "no email set up: send them this link" };
+    const parts = [];
+    if (r.ios) parts.push(`iPhone: ${esc(said[r.ios] || r.ios)}`);
+    if (r.android) parts.push(`Android: ${esc(said[r.android] || r.android)}${r.android === "share_link" ? ` <span class="mono">${esc(r.url)}</span>` : ""}`);
+    const bad = r.ios && !(r.ios in said);
+    toast(parts.join("<br>"), { kind: bad ? "error" : "", timeout: 12000 });
+    return;
+  }
   if (d.toggle) {
     if (u.is_active && !confirm(`Disable ${u.email}? They're signed out and get no more alarm texts.`)) return;
     await act(api(`/api/users/${u.id}`, { method: "PUT", body: { is_active: !u.is_active } }), u.is_active ? "Disabled" : "Enabled");
@@ -250,12 +268,18 @@ async function openSecurity(u) {
   if (!secDlg.open) secDlg.showModal();
   const s = await api(`/api/users/${u.id}/security`);
   $("sec-body").innerHTML = `
-    <p>${s.mfa_required ? "Two-step sign-in is <b>required</b> in this company. " : ""}Authenticator app: <b>${s.totp_enabled ? `on (${s.recovery_left} recovery codes left)` : "off"}</b>.
+    <p>${s.company_requires ? (s.mfa_exempt ? "Two-step sign-in is required in this company, but <b>turned off for this person</b>. "
+      : "Two-step sign-in is <b>required</b> in this company. ") : ""}Authenticator app: <b>${s.totp_enabled ? `on (${s.recovery_left} recovery codes left)` : "off"}</b>.
       Passkeys: <b>${s.passkeys.length ? s.passkeys.map((k) => esc(k.name)).join(", ") : "none"}</b>.</p>
     ${s.totp_enabled || s.passkeys.length ? `<div class="card" style="margin-bottom:12px"><b>Lost their phone?</b>
       <p class="muted small-print" style="margin:4px 0 8px">Resetting turns off their authenticator app and recovery codes. ${s.mfa_required ? "They'll set it up again at their next sign-in." : ""}</p>
       ${s.passkeys.length ? `<label class="check"><input type="checkbox" id="sec-pk"> Also remove their ${s.passkeys.length} passkey${s.passkeys.length === 1 ? "" : "s"}</label>` : ""}
       <button class="btn btn-sm btn-danger" type="button" id="sec-reset">Reset two-step sign-in</button></div>` : ""}
+    ${s.company_requires ? `<div class="card" style="margin-bottom:12px">${s.mfa_exempt
+      ? `<b>Two-step sign-in is off for this person</b><p class="muted small-print" style="margin:4px 0 8px">They sign in with their password only${s.passkeys.length ? " (or a passkey)" : ""}.</p>
+        <button class="btn btn-sm" type="button" id="sec-require">Require it again</button>`
+      : `<b>Turn two-step sign-in off for this person only</b><p class="muted small-print" style="margin:4px 0 8px">Their authenticator app and recovery codes are removed and they sign in with their password only. Everyone else still needs two-step.</p>
+        <button class="btn btn-sm btn-danger" type="button" id="sec-exempt">Turn off two-step for this user</button>`}</div>` : ""}
     <h3>Signed in</h3>
     <div class="table-wrap"><table><thead><tr><th>Where</th><th>Address</th><th>Last active</th><th></th></tr></thead><tbody>
       ${s.sessions.map((x) => `<tr><td>${esc(x.user_agent.slice(0, 60) || "Unknown browser")}${x.current ? ' <span class="chip">you</span>' : ""}
@@ -276,7 +300,12 @@ async function openSecurity(u) {
 
 $("sec-body").addEventListener("click", async (e) => {
   try {
-    if (e.target.id === "sec-reset") {
+    if (e.target.id === "sec-exempt" || e.target.id === "sec-require") {
+      const off = e.target.id === "sec-exempt";
+      if (off && !confirm(`Turn two-step sign-in off for ${secUser.email}? Their account will be protected by the password only.`)) return;
+      await api(`/api/users/${secUser.id}/mfa-exempt`, { method: "PUT", body: { exempt: off } });
+      toast(off ? "Two-step sign-in turned off for this user" : "Two-step sign-in required again: they'll set it up at their next sign-in");
+    } else if (e.target.id === "sec-reset") {
       if (!confirm(`Reset two-step sign-in for ${secUser.email}?`)) return;
       await api(`/api/users/${secUser.id}/reset-2fa`, { method: "POST", body: { passkeys: Boolean($("sec-pk")?.checked) } });
       toast("Two-step sign-in reset");

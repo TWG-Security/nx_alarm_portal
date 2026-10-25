@@ -56,6 +56,9 @@ class User(Base):
     # Two-factor (app/mfa.py) and sessions (app/sessions.py)
     totp_secret_enc: Mapped[str] = mapped_column(Text, default="")              # Fernet; kept while enrolling
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An admin turned two-step sign-in off for this one person (Users → Sign-in security): the company / platform
+    # requirement doesn't apply to them; a factor they set up themselves is still asked for (app/mfa.py required_for).
+    mfa_exempt: Mapped[bool] = mapped_column(Boolean, default=False)
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a code's step can't be reused
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
@@ -505,6 +508,12 @@ class PlatformSettings(Base):
     google_client_id: Mapped[str] = mapped_column(String(300), default="")
     google_client_secret_enc: Mapped[str] = mapped_column(Text, default="")
     google_domains: Mapped[str] = mapped_column(String(500), default="")       # "" = any domain
+    # Phone apps (app/routers/apps.py): TestFlight public link and App Store Connect for TestFlight invites (the API key
+    # itself is a .p8 file in secrets/, ASC_KEY_PATH / ASC_KEY_ID, tools/install_asc_key.sh)
+    testflight_url: Mapped[str] = mapped_column(String(300), default="")
+    asc_issuer_id: Mapped[str] = mapped_column(String(64), default="")
+    asc_app_id: Mapped[str] = mapped_column(String(32), default="")
+    asc_beta_group: Mapped[str] = mapped_column(String(100), default="TWG Testers")
     # Text messages through Twilio (app/sms.py)
     sms_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     twilio_sid: Mapped[str] = mapped_column(String(64), default="")
@@ -650,3 +659,74 @@ class TrackerPoint(Base):
     lat: Mapped[float] = mapped_column(Float)
     lng: Mapped[float] = mapped_column(Float)
     speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CameraHealth(Base):
+    """Camera image health (app/camhealth): one row per camera, written by the vision worker every check."""
+
+    __tablename__ = "camera_health"
+    __table_args__ = (UniqueConstraint("site_id", "device_id", name="uq_camera_health_cam"),
+                      Index("ix_camera_health_changed", "changed_at"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(300), default="")
+    nx_status: Mapped[str] = mapped_column(String(20), default="")      # NX: Online | Recording | Offline | Unauthorized
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | ok | warning | problem | offline
+    issues: Mapped[list] = mapped_column(JSONType, default=list)        # shown: [{kind, severity, title, detail, boxes, ...}]
+    state: Mapped[dict] = mapped_column(JSONType, default=dict)         # app/camhealth/state.py (streaks, tracks)
+    metrics: Mapped[dict] = mapped_column(JSONType, default=dict)       # last check's numbers (for tuning)
+    mode: Mapped[str] = mapped_column(String(10), default="")           # day | night (the last frame)
+    ai: Mapped[bool] = mapped_column(Boolean, default=False)            # the GPU checks ran on the last frame
+    learning: Mapped[bool] = mapped_column(Boolean, default=True)       # no reference for this mode yet
+    settings: Mapped[dict] = mapped_column(JSONType, default=dict)      # {skip: bool, view_checks: bool}
+    error: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)   # status/issues changed
+    muted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    check_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CameraHealthImage(Base):
+    """The last checked frame and the reference pictures (kept in the database so the references are backed up)."""
+
+    __tablename__ = "camera_health_images"
+    __table_args__ = (UniqueConstraint("site_id", "device_id", "kind", name="uq_camera_health_image"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))                        # last | ref_day | ref_night
+    jpeg: Mapped[bytes] = mapped_column(LargeBinary)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    source: Mapped[str] = mapped_column(String(20), default="auto")     # auto | user
+    by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class CameraHealthEvent(Base):
+    """History: an issue raised or cleared, a reference accepted, a mute."""
+
+    __tablename__ = "camera_health_events"
+    __table_args__ = (Index("ix_camera_health_events_cam", "site_id", "device_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    kind: Mapped[str] = mapped_column(String(30))
+    change: Mapped[str] = mapped_column(String(20))                      # raised | cleared | reference | muted | unmuted
+    detail: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+
+class VisionStatus(Base):
+    """The camera health worker's processing numbers (GPU, model timings, recent checks): one row, written every 30 s
+    by the vision container; shown to TWG staff only (platform.view)."""
+
+    __tablename__ = "vision_status"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONType, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

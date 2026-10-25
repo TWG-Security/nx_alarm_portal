@@ -231,8 +231,10 @@ What is pushed (apns-push-type `alert`, `apns-expiration` = now + 1 h). **Sounds
 | `alarm_closed` | someone closed an alarm they were pushed (ack, bulk) | title `CLOSED · <site>`, body `<caption>: Real event / False alarm / Dismissed (by …)`, **no sound** | passive | `alarm-<id>` / 5 (replaces the alarm notification) | `alarm_id`, `verdict` |
 | `test` | Account page → Send a test notification | `TWG Alarm Portal` / `Test notification…` | active | `test` | |
 
-`thread-id` is `alarm-<id>` on all of them (`alarm-summary` for summaries). No `category` and no `mutable-content` yet:
-tell the server when the app has categories / a Notification Service Extension, and they'll be added. Not built:
+`thread-id` is `alarm-<id>` on all of them (`alarm-summary` for summaries). **Since 2026-10-21:** `alarm` (incl. CONFIRMED)
+and `call_update` carry `"mutable-content": 1, "category": "ALARM"`; `dispatch` carries `"mutable-content": 1,
+"category": "DISPATCH"` (the app's Notification Service Extension adds the picture; buttons Open / False alarm… / En
+route). The others (summaries, stand down, call ended, closed, test) have neither. Not built:
 `guard_update` pushes, Critical Alerts (`"interruption-level": "critical"` needs the entitlement first).
 
 Every push is logged and shows on the alarm's timeline ("App notification sent · to their iPhone (iOS …), accepted by
@@ -267,6 +269,15 @@ While a site has an active call, a new alarm at that site **joins the call**: `a
 - Dispatched guards who haven't tapped Clear are told: a text "TWG UPDATE: …" with a link, and a push
   `{"type": "call_update", "alarm_id": <call>, "joined_alarm_id", "count", "level", "site_id"}`, title
   `UPDATE · <site>`, body `<caption> · <time>`, time-sensitive, thread-id `alarm-<call>`, collapse id `update-<joined>`.
+
+### 6.2c "Site connection lost" shows if the site is back (built 2026-10-20)
+
+Every Alarm now has `"site_status"`: its site's status **now** ("online" | "offline" | "auth_error" | …). A "Site
+connection lost" alarm (`event_type` "portalSiteOffline") stays open until someone closes it, but shows **Site back
+online** (green) when `site_status` is "online", else **Site still offline** (red), as the website does. The server
+re-sends such open alarms as `alarm.updated` whenever the site goes online or offline again. Its timeline gets "Site
+back online · the portal reached NX again after 1 min 5 s", and its description gets "Back online at <time>
+(unreachable for …)".
 
 ### 6.3 Live stream (open while the app is in front)
 
@@ -392,6 +403,21 @@ Live, on the guard's own `/api/events` stream only (never anyone else's):
 - `event: call_ended` `{alarm_id}` when a call they were dispatched to ends (End call, or False alarm / Dismiss)
 
 Keep the 15 s re-read of `/api/mobile/dispatches` as the backstop after a reconnect.
+
+### 6.8 Apps: download and invites (built 2026-10-21, iPhone and Android)
+- `GET /apps` (web page), `GET /apps/android.apk` (cookie or Bearer; newest APK from the latest GitHub release of
+  TWG-Security/twg-alarm-android, attachment `TWG-Alarms-<version>.apk`; asset names must stay `TWG-Alarms-<version>.apk`).
+- `GET /api/apps` (any signed-in user):
+  `{"ios": {"testflight_url": "https://testflight.apple.com/join/…" | null, "invites": bool},
+    "android": {"version": "0.1", "released_at": "2026-10-21T16:33:26Z", "size": 11367894, "page": "/apps", "apk": "/apps/android.apk"},
+    "can_invite": bool}` — `invites` = App Store Connect is set up (Platform → Phone apps + the .p8); `can_invite` = this
+  user holds `users.invite` (admins do). Show the Invite action only when `can_invite`.
+- `POST /api/apps/invite` `{"email", "name"?, "platform": "ios"|"android"|"both"}` (needs `users.invite`, else 403;
+  bad email 422; more than 30 an hour per user 429). Answers only the platforms asked:
+  `{"ios": "invited" | "already_tester" | "<error text to show>", "android": "emailed" | "share_link", "url": "https://alarmportal.twgsecurity.net/apps"}`.
+  iOS: the person becomes a TestFlight tester in the beta group (Apple emails them). Android `emailed`: the portal sent
+  a branded email with the /apps link; `share_link`: no email set up, open the share sheet with `url`. `url` is always
+  there when Android was asked. Audit `app.invited`.
 
 ## 7. Suggested structure
 

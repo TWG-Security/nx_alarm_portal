@@ -279,6 +279,27 @@ async function loadSmsLog() {
 }
 $("sms-log-refresh").addEventListener("click", () => loadSmsLog().catch((e) => toast(esc(e.message), { kind: "error" })));
 
+// ---------------------------------------------------------------- phone apps
+function paintApps() {
+  const a = settings.apps;
+  if (!a) return;
+  $("ap-tf").value = a.testflight_url; $("ap-issuer").value = a.issuer_id; $("ap-app").value = a.app_id; $("ap-group").value = a.beta_group;
+  $("ap-key").innerHTML = a.key.installed ? `API key <b class="mono">${esc(a.key.key_id)}</b> installed (secrets/, readable only by the portal).`
+    : "API key: <b>not installed yet</b> (step 2 below).";
+}
+$("ap-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errBox("ap-error");
+  const body = { testflight_url: $("ap-tf").value, issuer_id: $("ap-issuer").value, app_id: $("ap-app").value, beta_group: $("ap-group").value };
+  try { settings = await api("/api/platform/settings/apps", { method: "PUT", body }); paintApps(); toast("Phone apps saved"); }
+  catch (err) { errBox("ap-error", err); }
+});
+$("ap-test").addEventListener("click", async () => {
+  errBox("ap-error");
+  try { const r = await api("/api/platform/apps/test", { method: "POST" }); toast(esc(r.detail)); }
+  catch (err) { errBox("ap-error", err); }
+});
+
 // ---------------------------------------------------------------- google
 function paintGoogle() {
   const g = settings.google;
@@ -388,7 +409,7 @@ async function refresh() { await Promise.all([loadSecurity(), loadEvents()]); }
 
 try {
   settings = await api("/api/platform/settings");
-  paintRules(); paintProxies(); paintCloudflare(); paintTwoFactor(); paintSessions(); paintPasswords(); paintEmail(); paintSms(); paintGoogle();
+  paintRules(); paintProxies(); paintCloudflare(); paintTwoFactor(); paintSessions(); paintPasswords(); paintEmail(); paintSms(); paintGoogle(); paintApps();
   loadMailLog().catch(() => {}); loadSmsLog().catch(() => {});
   await refresh();
 } catch (err) { toast(esc(err.message), { kind: "error", timeout: 9000 }); }

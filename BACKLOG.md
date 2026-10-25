@@ -1,6 +1,31 @@
 # Programming backlog
 
-## To do: other VMSs (UniFi Protect, Avigilon Alta, Verkada, Avigilon Unity)
+# Open (2026-10-25)
+- [ ] App Store Connect key + Platform → Phone apps settings (iPhone TestFlight invites); first real Test connection
+- [ ] Replace the APK download's GitHub token with a fine-grained read-only one (twg-alarm-android)
+- [ ] Worldwide aerial imagery for non-US sites (Toronto): Esri (free key) / Google / Sentinel-2: the user to choose
+- [ ] "Click and drag": ask the user where
+- [ ] Optional: company switcher in the phone apps for TWG staff
+- [ ] Off-server encrypted backup copy
+- [ ] Merge PR #6 when the user says
+
+# Camera image health: built 2026-10-20 (see CLAUDE.md, Architecture row "Camera image health")
+Decisions (asked): Camera Health page + amber/red camera icons only (never the alarm feed, no sounds, no texts); build
+on CPU first, GPU checks on top. GPU: NVIDIA Quadro T1000 (4 GB) passed through to the VM, driver 595.91 (server,
+prebuilt modules, nouveau blacklisted), nvidia-container-toolkit.
+Next / open:
+- [ ] Watch the first days on production: which cameras raise what (`camera_health_events`), tune thresholds in
+      analyze.py from real false positives (lawns with moving tree shadows were the worst in the CPU-only replay)
+- [ ] 3D view camera icons (the top-down view has them)
+- [ ] Lens dirt / water / spider web: needs a model trained on real examples (CLIP zero-shot failed: 13/29 false)
+- [ ] Watch the first night: night references, IR switch-over, colour-at-night cameras, dusk skip
+- [ ] Scene change recall: 23/27 in the worst case; small objects on busy texture are the misses. Ideas: segmentation at
+      full 960 width, a change-detection model (e.g. a Siamese / zero-shot SAM-based detector) if the GPU allows
+- [ ] Optional: a daily summary email of camera problems (the user chose no alarms / texts for now)
+
+---
+
+# To do: other VMSs (UniFi Protect, Avigilon Alta, Verkada, Avigilon Unity)
 Added 2026-10-14 at the user's request ("add to do to list" after the assessment in CLAUDE.md item 14j). **Not started.**
 Order: groundwork → Verkada → Alta → UniFi Protect → Unity (only once Avigilon grants access). Effort figures are
 estimates, not measured. Every step keeps the alarm rules: measure delivery latency and test failure paths before
