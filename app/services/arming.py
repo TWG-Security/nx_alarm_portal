@@ -131,6 +131,15 @@ def _occurrences(schedule: dict | None, tz: ZoneInfo, lo_ms: int, hi_ms: int) ->
     return sorted(set(out))
 
 
+def _schedule_says(schedule: dict | None, tz: ZoneInfo, t_ms: int) -> bool:
+    """The state the weekly schedule itself gives at t_ms, counting entries from before the last edit too
+    (since_ms only stops an edit from flipping the state on the spot). No entries -> armed."""
+    if not schedule or not schedule.get("entries"):
+        return True
+    past = _occurrences({**schedule, "since_ms": 0}, tz, t_ms - WINDOW_DAYS * 86_400_000, t_ms)
+    return past[-1][1] if past else True
+
+
 def state_at(schedule: dict | None, override: dict | None, tz_name: str | None, t_ms: int) -> ArmState:
     tz = zone(tz_name)
     span = WINDOW_DAYS * 86_400_000
@@ -140,9 +149,11 @@ def state_at(schedule: dict | None, override: dict | None, tz_name: str | None, 
     if override and override.get("at_ms") is not None:
         at, until = int(override["at_ms"]), override.get("until_ms")
         events.append((at, 1, bool(override.get("armed")), "manual", override))
-        # A timed disarm re-arms at until_ms, unless the schedule has already taken over by then.
+        # A timed disarm ends at until_ms, unless the schedule has already taken over by then. It ends in
+        # whatever the schedule says at that moment (the user, 2026-10-26: a 4 h disarm ending at 15:10 re-armed
+        # a site the schedule keeps disarmed until 18:45); with no schedule it re-arms.
         if until and not override.get("armed") and not any(at < ts < int(until) for ts, _ in sched):
-            events.append((int(until), 1, True, "timer", {}))
+            events.append((int(until), 1, _schedule_says(schedule, tz, int(until)), "timer", {}))
     events.sort(key=lambda e: (e[0], e[1]))
 
     past = [e for e in events if e[0] <= t_ms]

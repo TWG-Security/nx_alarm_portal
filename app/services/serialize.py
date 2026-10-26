@@ -25,6 +25,15 @@ def _tenant_label(site) -> str:
     return site.tenant.label
 
 
+def _clock_off_ms(a: Alarm) -> int:
+    """How far ahead the camera stamped this event when ingest dated it on arrival instead (0 = it didn't)."""
+    try:
+        raw = int((a.raw or {}).get("timestampMs") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return raw - a.event_ts_ms if raw - (a.event_ts_ms or 0) > 60_000 else 0
+
+
 def alarm_dict(a: Alarm) -> dict:
     return {
         "id": a.id,
@@ -46,6 +55,7 @@ def alarm_dict(a: Alarm) -> dict:
         "device_id": a.device_id,
         "has_snapshot": bool(a.device_id),
         "event_ts_ms": a.event_ts_ms,
+        "camera_clock_off_ms": _clock_off_ms(a),
         "state": a.state,
         "nx_ack_required": a.nx_ack_required,
         "received_at": _iso(a.received_at),

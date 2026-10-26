@@ -60,6 +60,23 @@ class SiteRuntime:
     ingest_lock: asyncio.Lock = field(default_factory=asyncio.Lock)   # push and poll never ingest at once
 
 
+FUTURE_SKEW_MS = 60_000             # an event stamped further ahead than this is dated when it reached us
+_clock_warned: dict[tuple[int, str], float] = {}
+
+
+def _clock_off(site: Site, info: dict, now: int) -> None:
+    """A camera stamped the event in the future (its clock is wrong; NX passes camera time through for
+    camera-side analytics). Date it when it arrived: clips, arming and the queue all go by event time, and
+    a clip asked for "tomorrow" waits forever. The raw row keeps the camera's time."""
+    ahead = info["event_ts_ms"] - now
+    info["event_ts_ms"] = now
+    k = (site.id, info["device_id"])
+    if time.monotonic() - _clock_warned.get(k, -1e9) > 3600:
+        _clock_warned[k] = time.monotonic()
+        log.warning("site %s camera %s (%s) stamps events %.0f s ahead: dated on arrival; check its clock / NTP",
+                    site.id, info["source_name"], info["device_id"], ahead / 1000)
+
+
 async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str],
                  user_names: dict[str, str] | None = None, policy: Policy = DEFAULT_POLICY,
                  rule_levels: dict[str, str] | None = None, always_armed: set[str] | None = None,
@@ -97,6 +114,8 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     promoted: list[Alarm] = []
     for key, (row, c) in candidates.items():
         info = summarize(row, device_names, user_names)
+        if info["event_ts_ms"] > now + FUTURE_SKEW_MS:
+            _clock_off(site, info, now)
         prior = existing.get(key)
         if prior is not None:
             if prior.state == "disarmed" and key in always:
@@ -415,14 +434,18 @@ class PollerManager:
             policy = Policy.from_settings(tenant.settings if tenant else None)
             relevelled = await self._refresh_rules(rt, db, site, policy)
 
-            cursor = site.event_cursor_ms or (now_ms() - settings.initial_lookback_ms)
+            # The cursor never runs ahead of our clock. Cameras at 2 Rothmere Dr stamped some events a day ahead
+            # (2026-10-24..25) and pushed it 23 h into the future, so this backstop asked NX for "tomorrow" and
+            # would have missed every normal event until then. Rows stamped ahead are re-read (deduped) instead.
+            t_now = now_ms()
+            cursor = min(site.event_cursor_ms or (t_now - settings.initial_lookback_ms), t_now)
             rows = await rt.client.get_events(limit=500, from_ms=max(1, cursor - settings.poll_overlap_ms),
                                               descending=False) or []
             created, more = await self._ingest_rows(rt, db, site, policy, rows)
             relevelled += more
             failed_for = time.monotonic() - rt.failing_since if rt.failing_since else None   # the outage, from its first failure
             rt.failing_since = None
-            site.event_cursor_ms = max([cursor] + [int(r.get("timestampMs") or 0) for r in rows])
+            site.event_cursor_ms = max([cursor] + [min(int(r.get("timestampMs") or 0), t_now) for r in rows])
 
             status_changed = site.status != "online"
             site.status, site.status_detail = "online", ""

@@ -35,7 +35,7 @@ function details(r) {
     case "site.updated": return `Changed: ${esc((d.fields || []).join(", ") || "nothing")}`;
     case "site.armed": case "site.disarmed":
       return esc([d.source === "manual" ? "by hand" : d.source === "timer" ? "disarm timer ran out" : `by ${d.source}`,
-                  d.until_ms ? `re-arms ${fmtTime(d.until_ms)}` : "", d.note ? `“${d.note}”` : ""].filter(Boolean).join(" · "))
+                  d.until_ms ? `timer ends ${fmtTime(d.until_ms)}` : "", d.note ? `“${d.note}”` : ""].filter(Boolean).join(" · "))
         + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
     case "app.downloaded": return `${esc(d.platform === "android" ? "Android" : d.platform || "")} ${esc(d.version || "")} <span class="muted">${esc(d.via || "")}</span>`
         + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");

@@ -3,7 +3,7 @@
 // it's verified (Real event), and Next (the next open alarm in the feed's order: most urgent first, oldest
 // first). Used on every page.
 
-import { CFG, api, esc, siteLinkChip, fmtTime, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
+import { CFG, api, esc, siteLinkChip, fmtTime, fmtDuration, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
 import { freshness } from "./guards.js";
 import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
@@ -258,7 +258,7 @@ function render(a) {
     <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
     <dl class="kv">
-      <dt>Event time</dt><dd>${fmtTime(a.event_ts_ms)}</dd>
+      <dt>Event time</dt><dd>${fmtTime(a.event_ts_ms)}${a.camera_clock_off_ms ? ` <span class="chip p3" title="The camera stamped this event ${esc(fmtDuration(a.camera_clock_off_ms))} in the future (${esc(fmtTime(a.event_ts_ms + a.camera_clock_off_ms))}), so it is dated when it arrived. Check the camera's date, time and NTP.">Camera clock off</span>` : ""}</dd>
       <dt>Received</dt><dd>${fmtTime(a.received_at)}</dd>
       <dt>Type</dt><dd>${esc(a.event_type)}${a.event_subtype ? ` <span class="muted mono">${esc(a.event_subtype)}</span>` : ""}</dd>
       ${a.description ? `<dt>Description</dt><dd style="white-space:pre-wrap">${esc(a.description)}</dd>` : ""}
