@@ -7,7 +7,7 @@
 // Browsers block audio until the user interacts with the page; a banner asks for that click.
 // With several portal tabs open, only one "leader" tab plays, so sounds don't stack.
 
-import { openAlarms, on, mineCounts, isMine } from "./common.js";
+import { openAlarms, on, mineCounts, isMine, silent } from "./common.js";
 
 const SILENCE_MS = 120_000;
 const REPEAT_MS = { 1: 4_000, 2: 30_000 };
@@ -100,6 +100,7 @@ setInterval(() => {
 
 on("alarm.arrived", (a) => {
   if (!isMine(a)) return;          // another company's alarm (TWG's multi-company view): shown, never sounded
+  if (silent(a)) return;           // its site or camera is muted: listed, never sounded
   if (a.priority === 1) {          // siren now (not on the repeat loop's next tick, up to 0.5 s later); the loop repeats it
     unsilence();
     lastPlayed[1] = play("critical") ? Date.now() : 0;

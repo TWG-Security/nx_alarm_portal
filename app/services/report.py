@@ -337,6 +337,10 @@ def _audit_row(a: AuditLog) -> dict:
         return {"ts": ts, "what": f"Exported ({d.get('format', '').upper()})", "who": who, "detail": d.get("note", "")}
     if a.action == "alarm.raised":
         return {"ts": ts, "what": "Raised by a #24h rule", "who": who, "detail": d.get("reason", "")}
+    if a.action == "site.muted":
+        return {"ts": ts, "what": f"Muted {('camera ' + d['camera']) if d.get('camera') else 'the site'} for {d.get('minutes')} min",
+                "who": who, "kind": "operator",
+                "detail": "its alarms are still listed but don't sound, pop up, text or push until the mute ends"}
     if a.action in ("site.armed", "site.disarmed"):
         how = {"manual": f"by {who}", "schedule": "by schedule", "timer": "disarm timer ran out"}.get(d.get("source"), "")
         note = f" · “{d['note']}”" if d.get("note") else ""

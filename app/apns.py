@@ -333,6 +333,8 @@ def notify(alarms: list[Alarm]) -> None:
         return
     arrived = time.time()
     for a in alarms:
+        if a.muted and a.priority > 1:          # a muted site/camera (services/mute.py): listed, never pushed
+            continue
         _spawn(_handle(a.id, arrived))
 
 

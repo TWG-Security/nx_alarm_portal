@@ -3,7 +3,7 @@
 // it's verified (Real event), and Next (the next open alarm in the feed's order: most urgent first, oldest
 // first). Used on every page.
 
-import { CFG, api, esc, siteLinkChip, fmtTime, fmtDuration, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue } from "./common.js";
+import { CFG, api, esc, siteLinkChip, fmtTime, fmtDuration, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue, canMute, muteBoxHtml } from "./common.js";
 import { freshness } from "./guards.js";
 import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
@@ -22,6 +22,18 @@ let guardsTimer = null, guardsFor = null, lastGuards = null;     // lastGuards: 
 // alarms (right) stay in view and clickable (the user, 2026-10-14: "keep the live alarms in view and the site info
 // on the left, i am not sure i like the full screen"). Narrow screens and the other pages keep the full screen.
 const mapPane = document.querySelector(".map-canvas");
+// Large video (the SOC, 2026-10-25: "the viewing of the event and live viewing should be much larger and take up the
+// majority of space"); TWG keeps the compact layout it asked for on 2026-10-14. Remembered per browser.
+const LARGE_KEY = "twg-drawer-large";
+let large = (() => { try { return localStorage.getItem(LARGE_KEY) === "1"; } catch { return false; } })();
+function setLarge(on) {
+  large = on;
+  try { localStorage.setItem(LARGE_KEY, on ? "1" : "0"); } catch { /* applied, just not remembered */ }
+  drawer.classList.toggle("drawer--large", on);
+  const b = drawer.querySelector("#drawer-layout");
+  if (b) { b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "Compact view" : "Large video"; }
+  dock();
+}
 const DOCK_MIN_WIDTH = 1100;           // below this theme.css stacks the map page's columns
 function dock() {
   const on = !!mapPane && !drawer.hidden && innerWidth > DOCK_MIN_WIDTH;
@@ -29,8 +41,11 @@ function dock() {
   backdrop.hidden = drawer.hidden || on;
   if (!on) return;
   const r = mapPane.getBoundingClientRect();
-  drawer.style.setProperty("--dock-left", `${Math.round(r.left)}px`);
-  drawer.style.setProperty("--dock-width", `${Math.round(r.width)}px`);
+  // Large video also covers the site column, so the videos get most of the screen; live alarms stay in view.
+  const side = large ? document.querySelector(".map-side")?.getBoundingClientRect() : null;
+  const left = side && side.width ? Math.min(side.left, r.left) : r.left;
+  drawer.style.setProperty("--dock-left", `${Math.round(left)}px`);
+  drawer.style.setProperty("--dock-width", `${Math.round(r.right - left)}px`);
   drawer.style.setProperty("--dock-top", `${Math.max(0, Math.round(r.top))}px`);
 }
 if (mapPane) {
@@ -190,6 +205,7 @@ const dispatchGuard = (btn) => sendDispatch([Number(btn.dataset.dispatch)], btn.
 export function closeDrawer() {
   current = null;
   stopGuards();
+  stopCams();
   player?.destroy(); player = null;
   live?.destroy(); live = null;
   closeWhere();
@@ -247,6 +263,7 @@ function render(a) {
         <div><b>${esc(a.site_name)}</b>${a.site_address ? ` <span class="muted">· ${esc(a.site_address)}</span>` : ""}</div>
         ${a.source_name ? `<div class="muted">${esc(a.source_name)}</div>` : ""}</div>
       <div class="drawer-head-actions"><span class="drawer-next-slot">${nextHtml(a)}</span>
+        <button class="btn btn-sm" id="drawer-layout" type="button" aria-pressed="${large}" title="Switch between large videos and the compact layout (remembered on this computer)">${large ? "Compact view" : "Large video"}</button>
         <button class="btn btn-sm drawer-back" id="drawer-close" aria-label="Close">← ${location.pathname === "/" ? "Back to map" : "Back"}</button></div>
     </div>
     ${acked || disarmed ? "" : `<div class="ack-top">
@@ -255,6 +272,7 @@ function render(a) {
         <button class="btn btn-verdict-false" data-ack="false">False alarm</button></div>
       <textarea id="drawer-note" maxlength="4000" rows="1" aria-label="Disposition note" placeholder="Disposition note (optional, saved when you acknowledge): what did you see / do?"></textarea>
     </div>`}
+    <div class="mute-slot">${muteHtml(a)}</div>
     <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
     <dl class="kv">
@@ -367,8 +385,10 @@ export async function openDrawer(id, fallback) {
   drawer.innerHTML = `<div class="drawer-top"></div>
     <div class="drawer-media${a.device_id ? "" : " single"}">
       <section><div class="media-label">Recorded <span class="muted">around the alarm</span></div><div class="player-mount"></div></section>
-      ${a.device_id ? '<section><div class="media-label">Live <span class="muted">now</span></div><div class="live-mount"></div></section>' : ""}
+      ${a.device_id ? '<section class="live-section"><div class="media-label live-label">Live <span class="muted">now</span></div><div class="live-mount"></div></section>' : ""}
     </div>
+    <section class="drawer-cams" hidden><div class="media-label">Site cameras <span class="muted">click one to watch it live</span></div>
+      <div class="cam-strip"></div></section>
     <div class="drawer-lower">
       <div class="drawer-details"></div>
       <div class="drawer-side"><section class="drawer-dispatch" hidden></section>
@@ -380,14 +400,86 @@ export async function openDrawer(id, fallback) {
   player = mountPlayer(drawer.querySelector(".player-mount"), a, { liveToggle: false });
   if (a.device_id) live = mountLive(drawer.querySelector(".live-mount"), a);
   addBigButtons();
+  loadSiteCams(a);
+  loadSite(a);
   mountWhere(a).catch((err) => console.error("top-down map in the alarm details failed", err));
   api(`/api/alarms/${a.id}/notes`).then((rows) => { if (current?.id === a.id) { notes = rows; renderNotes(); } }).catch(() => {});
   startGuards(a);
   loadTimeline(a);
   api(`/api/alarms/${a.id}/viewed`, { method: "POST" }).catch(() => {});     // "Viewed the alarm" on the timeline
+  drawer.classList.toggle("drawer--large", large);
   drawer.hidden = false;
   dock();
   drawer.querySelector("#drawer-close").focus();
+}
+
+// ---------------------------------------------------------------- Mute this camera / the site (services/mute.py)
+let curSite = null;              // the alarm's site (for its mutes), kept fresh by site.updated
+const muteHtml = (a) => (canMute(a) && a.state !== "disarmed" && curSite?.id === a.site_id
+  ? muteBoxHtml(curSite, { deviceId: a.device_id, deviceName: a.source_name, alarmId: a.id }) : "");
+function paintMute() {
+  const slot = drawer.querySelector(".mute-slot");
+  if (slot && current) slot.innerHTML = muteHtml(current);
+}
+async function loadSite(a) {
+  curSite = null;
+  try { const s = await api(`/api/sites/${a.site_id}`); if (current?.id === a.id) { curSite = s; paintMute(); } } catch { /* no mute controls */ }
+}
+on("site.updated", (s) => { if (curSite && s.id === curSite.id) { curSite = { ...curSite, ...s }; paintMute(); } });
+setInterval(() => { if (current && !drawer.hidden && curSite?.mute && Object.keys(curSite.mute).length) paintMute(); }, 15000);   // expiry
+
+// ---------------------------------------------------------------- Site cameras: every camera of the alarm's site
+// (the SOC, 2026-10-25: "check the unrelated cameras from that same site, in the event that the intruder has moved").
+// Stills refresh while the details are open and the tab is visible; a click shows that camera in the Live pane.
+const CAM_EVERY_MS = 4000, CAM_MAX = 24;
+let camTimer = null, camsFor = null, liveCam = null;
+function stopCams() { clearInterval(camTimer); camTimer = null; camsFor = null; liveCam = null; }
+async function loadSiteCams(a) {
+  stopCams();
+  camsFor = a.id;
+  let cams;
+  try { cams = await api(`/api/sites/${a.site_id}/cameras`); } catch { return; }
+  if (camsFor !== a.id) return;
+  cams = cams.filter((c) => c.in_nx).slice(0, CAM_MAX);
+  const sec = drawer.querySelector(".drawer-cams");
+  if (!sec || cams.length < 2 && cams.every((c) => c.device_id === a.device_id)) return;
+  const base = (dev) => `/media/sites/${a.site_id}/cameras/${encodeURIComponent(dev)}`;
+  cams.sort((x, y) => (y.device_id === a.device_id) - (x.device_id === a.device_id));
+  sec.querySelector(".cam-strip").innerHTML = cams.map((c) => `
+    <button type="button" class="cam-tile${c.device_id === a.device_id ? " is-alarm selected" : ""}" data-cam="${esc(c.device_id)}"
+      data-name="${esc(c.name)}" title="${esc(c.name)}${c.device_id === a.device_id ? " (alarm camera)" : ""}: watch live">
+      <img alt="" data-src="${base(c.device_id)}/live.jpg"><span>${esc(c.name)}</span></button>`).join("");
+  sec.hidden = false;
+  const imgs = [...sec.querySelectorAll("img[data-src]")];
+  const tick = () => {
+    if (document.hidden || camsFor !== a.id) return;
+    imgs.forEach((img, i) => setTimeout(() => {           // spread over the period: never a burst at the relay
+      if (camsFor !== a.id) return;
+      img.src = `${img.dataset.src}?t=${Date.now()}`;
+    }, (i * CAM_EVERY_MS) / imgs.length));
+  };
+  tick();
+  camTimer = setInterval(tick, CAM_EVERY_MS);
+}
+function watchCam(dev, name) {
+  const a = current;
+  if (!a) return;
+  let mount = drawer.querySelector(".live-mount");
+  if (!mount) {                                            // an alarm without a camera (e.g. site offline)
+    const media = drawer.querySelector(".drawer-media");
+    media.classList.remove("single");
+    media.insertAdjacentHTML("beforeend", '<section class="live-section"><div class="media-label live-label"></div><div class="live-mount"></div></section>');
+    mount = drawer.querySelector(".live-mount");
+  }
+  const own = dev === a.device_id;
+  live?.destroy();
+  live = mountLive(mount, a, own ? {} : { base: `/media/sites/${a.site_id}/cameras/${encodeURIComponent(dev)}` });
+  liveCam = own ? null : dev;
+  drawer.querySelector(".live-label").innerHTML = own || !dev
+    ? 'Live <span class="muted">now</span>'
+    : `Live <span class="muted">· ${esc(name)}</span>${a.device_id ? ' <button type="button" class="btn btn-sm" data-cam-back>↩ Alarm camera</button>' : ""}`;
+  for (const t of drawer.querySelectorAll(".cam-tile")) t.classList.toggle("selected", t.dataset.cam === dev);
+  mount.querySelector(".live-stage")?.insertAdjacentHTML("beforeend", '<button type="button" class="vid-big" data-big title="Full screen (double-click the video; Esc to come back)" aria-label="Show this video full screen">⤢</button>');
 }
 
 // The videos are kept small so the details fit without scrolling (the user, 2026-10-14: "make the video smaller so
@@ -413,6 +505,10 @@ drawer.addEventListener("dblclick", (e) => {
 
 drawer.addEventListener("click", async (e) => {
   if (e.target.closest("#drawer-close")) return closeDrawer();
+  if (e.target.closest("#drawer-layout")) return setLarge(!large);
+  const tile = e.target.closest("[data-cam]");
+  if (tile) return watchCam(tile.dataset.cam, tile.dataset.name);
+  if (e.target.closest("[data-cam-back]")) return watchCam(current.device_id, "");
   const big = e.target.closest("[data-big]");
   if (big) return toggleBig(big.closest(".player-stage, .live-stage"));
   if (e.target.id === "call-end") return endCall(e.target);

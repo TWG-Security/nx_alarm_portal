@@ -132,9 +132,12 @@ export function openCounts(siteId) {
   return c;
 }
 // Open alarms of your own company: these drive the siren and chime.
+// Raised while its site or camera was muted (app/services/mute.py): listed, but no sound, pop-up or toast.
+export const silent = (a) => !!a.muted && a.priority > 1;
+
 export function mineCounts() {
   const c = { 1: 0, 2: 0, 3: 0 };
-  for (const a of openAlarms.values()) if (isMine(a)) c[a.priority]++;
+  for (const a of openAlarms.values()) if (isMine(a) && !silent(a)) c[a.priority]++;   // muted: listed, never sounded
   return c;
 }
 
@@ -286,10 +289,19 @@ export function openAck(alarm) {
   document.getElementById("ack-summary").textContent =
     `${alarm.caption} · ${alarm.site_name}${alarm.source_name ? " · " + alarm.source_name : ""}`;
   note.value = "";
+  const muteRow = document.getElementById("ack-mute-row"), muteSel = document.getElementById("ack-mute");
+  muteRow.hidden = !canMute(alarm);
+  muteSel.value = "";
+  muteSel.querySelector('[value="camera"]').disabled = !alarm.device_id;
   return new Promise((resolve) => {
     const onClose = async () => {
       dlg.removeEventListener("close", onClose);
       if (!(dlg.returnValue in VERDICT)) return resolve(null);
+      // Mute first, so the next events from there (often seconds apart) are already silent.
+      if (!muteRow.hidden && muteSel.value) {
+        await muteSite(alarm.site_id, { minutes: Number(document.getElementById("ack-mute-min").value),
+          deviceId: muteSel.value === "camera" ? alarm.device_id : "", alarmId: alarm.id, label: alarm.source_name });
+      }
       resolve(await acknowledge(alarm.id, note.value, null, dlg.returnValue));
     };
     dlg.addEventListener("close", onClose);
@@ -527,3 +539,76 @@ export function siteLinkChip(a) {
     ? '<span class="chip online" title="The portal reaches this site again; alarms are coming in">Site back online</span>'
     : '<span class="chip offline" title="The portal still can\'t reach this site: its alarms are not being received">Site still offline</span>';
 }
+
+// Site search (the SOC, 2026-10-25): name, address, company and client profile words; every word must match.
+export const siteMatches = (s, q) => {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const p = s.profile || {};
+  const hay = [s.name, s.address, s.tenant_name, s.nx_site_name, p.client_name, p.phone, p.alt_contacts, p.package_label]
+    .filter(Boolean).join(" ").toLowerCase();
+  return words.every((w) => hay.includes(w));
+};
+
+// ---------------------------------------------------------------- mute a site or one camera for a few minutes
+// (the SOC, 2026-10-25; the user chose "silent, still listed" on 2026-10-26: app/services/mute.py)
+export const MUTE_MINUTES = [2, 5, 30];
+export const canMute = (a) => a.priority > 1 && a.category === "security";
+export async function muteSite(siteId, { minutes, deviceId = "", alarmId = null, label = "" }) {
+  try {
+    const s = await api(`/api/sites/${siteId}/mute`, { method: "POST", body: { minutes, device_id: deviceId, alarm_id: alarmId } });
+    toast(`${deviceId ? `Camera <b>${esc(label || "camera")}</b>` : `<b>${esc(s.name)}</b>`} muted for ${minutes} min: its alarms are still listed, but silent`);
+    emit("site.updated", s);
+    return s;
+  } catch (e) { toast(esc(e.message), { kind: "error" }); return null; }
+}
+export async function unmuteSite(siteId, deviceId = "") {
+  try {
+    const s = await api(`/api/sites/${siteId}/mute${deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : ""}`, { method: "DELETE" });
+    toast(deviceId ? "Camera unmuted" : `<b>${esc(s.name)}</b> unmuted`);
+    emit("site.updated", s);
+    return s;
+  } catch (e) { toast(esc(e.message), { kind: "error" }); return null; }
+}
+// Active mutes of a site still running now (the server drops expired ones on the next change).
+export function siteMutes(site) {
+  const m = site?.mute || {}, now = serverNow();
+  const live = (e) => e && e.until_ms > now;
+  return { site: live(m.site) ? m.site : null,
+           cameras: Object.entries(m.cameras || {}).filter(([, e]) => live(e)).map(([id, e]) => ({ id, ...e })) };
+}
+export const muteChip = (site) => {
+  const m = siteMutes(site);
+  if (m.site) return `<span class="chip muted-chip" title="Muted by ${esc(m.site.by)}: alarms are listed but silent">Muted · ${esc(fmtUntil(m.site.until_ms))}</span>`;
+  return m.cameras.length ? `<span class="chip muted-chip" title="${esc(m.cameras.map((c) => `${c.name || c.id} until ${fmtUntil(c.until_ms)}`).join("\n"))}">${m.cameras.length} camera${m.cameras.length > 1 ? "s" : ""} muted</span>` : "";
+};
+export const fmtUntil = (ms) => `until ${new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+// Mute controls (alarm details, map site panel): what's muted now with Unmute, and 2 / 5 / 30 min buttons.
+export function muteBoxHtml(site, { deviceId = "", deviceName = "", alarmId = null } = {}) {
+  if (!site) return "";
+  const m = siteMutes(site);
+  const btns = (dev, label) => MUTE_MINUTES.map((n) => `<button type="button" class="btn btn-sm" data-mute="${n}" data-site="${site.id}"
+    data-dev="${esc(dev)}" data-label="${esc(label)}"${alarmId ? ` data-alarm="${alarmId}"` : ""}>${n} min</button>`).join("");
+  const unmute = (dev) => `<button type="button" class="btn btn-sm" data-unmute data-site="${site.id}" data-dev="${esc(dev)}">Unmute</button>`;
+  const on = [];
+  if (m.site) on.push(`<div class="mute-on"><span class="chip muted-chip">Site muted</span> ${esc(fmtUntil(m.site.until_ms))} <span class="muted">· ${esc(m.site.by)}</span> ${unmute("")}</div>`);
+  for (const c of m.cameras) on.push(`<div class="mute-on"><span class="chip muted-chip">Camera muted</span> ${esc(c.name || c.id)} ${esc(fmtUntil(c.until_ms))} <span class="muted">· ${esc(c.by)}</span> ${unmute(c.id)}</div>`);
+  const camMuted = deviceId && m.cameras.some((c) => c.id === deviceId);
+  return `<div class="mute-box">${on.join("")}
+    <div class="mute-row"><span class="mute-lead">Mute</span>
+      ${deviceId && !camMuted && !m.site ? `<span class="mute-grp"><span class="muted">this camera</span> ${btns(deviceId, deviceName)}</span>` : ""}
+      ${m.site ? "" : `<span class="mute-grp"><span class="muted">whole site</span> ${btns("", "")}</span>`}
+      ${m.site ? '<span class="muted">Extend:</span> ' + btns("", "") : ""}</div>
+    <p class="muted mute-help">Muted alarms stay listed and open, but don't sound, pop up, text or push. Critical alarms always sound.</p></div>`;
+}
+document.addEventListener("click", (e) => {
+  const m = e.target.closest("[data-mute]");
+  if (m) {
+    m.disabled = true;
+    muteSite(Number(m.dataset.site), { minutes: Number(m.dataset.mute), deviceId: m.dataset.dev || "",
+      alarmId: m.dataset.alarm ? Number(m.dataset.alarm) : null, label: m.dataset.label }).finally(() => { m.disabled = false; });
+    return;
+  }
+  const u = e.target.closest("[data-unmute]");
+  if (u) { u.disabled = true; unmuteSite(Number(u.dataset.site), u.dataset.dev || "").finally(() => { u.disabled = false; }); }
+});

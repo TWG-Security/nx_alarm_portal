@@ -23,7 +23,7 @@ from app.db import sessionmaker
 from app.models import Alarm, Site, Tenant
 from app.nx.client import NXClient
 from app.security import decrypt
-from app.services import arming
+from app.services import arming, mute
 from app.services.alarm_filter import DEFAULT_POLICY, Policy, classify, rule_tag
 from app.services.bus import bus
 from app.services.nx_events import event_key, summarize
@@ -143,15 +143,17 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
             _clock_off(site, info, now)
         suppressed = (c.category == "security" and key not in always
                       and not arming.armed_for_event(site, info["event_ts_ms"], now))
+        silent = (not suppressed and mute.applies(c.priority, c.category)
+                  and mute.is_muted(site.mute, info["device_id"], now))
         alarm = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=key, state="disarmed" if suppressed else "new",
-                      category=c.category, priority=c.priority, level_source=c.source, raw=row, **info)
+                      category=c.category, priority=c.priority, level_source=c.source, raw=row, muted=silent, **info)
         alarm.site = site
         db.add(alarm)
         created.append(alarm)
     if created:
         await db.flush()
         for a in created:
-            extra = {"site_disarmed": True} if a.state == "disarmed" else {}
+            extra = {"site_disarmed": True} if a.state == "disarmed" else {"muted": True} if a.muted else {}
             audit(db, site.tenant_id, "alarm.received", site_id=site.id, alarm_id=a.id,
                   event_type=a.event_type, caption=a.caption, priority=a.priority, **extra)
     for a in promoted:

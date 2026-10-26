@@ -1,5 +1,5 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, siteLinkChip, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany } from "./common.js";
+import { CFG, api, esc, toast, siteLinkChip, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany, siteMatches, silent, muteChip, muteBoxHtml } from "./common.js";
 import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { mountGuards } from "./guards.js";
@@ -42,6 +42,7 @@ function renderSitesHead(list) {
       title="${sitesCollapsed ? "Show" : "Hide"} the sites list"><span class="guard-chev">${CHEVRON}</span><h3>Sites</h3>
       <span class="guard-count">${list.length}</span>${open ? `<span class="badge" title="Open alarms">${open}</span>` : ""}</button>`;
   document.getElementById("site-list").hidden = sitesCollapsed;
+  document.getElementById("site-search").parentElement.hidden = sitesCollapsed;
 }
 document.getElementById("sites-head").addEventListener("click", (e) => {
   if (!e.target.closest("#sites-toggle")) return;
@@ -50,13 +51,27 @@ document.getElementById("sites-head").addEventListener("click", (e) => {
   renderSites();
 });
 
+// Search (the SOC, 2026-10-25): name, address, company and client profile words; every word must match.
+const siteSearch = document.getElementById("site-search");
+siteSearch.addEventListener("input", () => renderSites());
+siteSearch.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { siteSearch.value = ""; renderSites(); }
+  if (e.key === "Enter") document.querySelector("#site-list .site-item")?.click();
+});
+
 function renderSites() {
   const ul = document.getElementById("site-list");
-  const list = [...sites.values()].map((s) => ({ s, st: stateOf(s) }))
+  const all = [...sites.values()].map((s) => ({ s, st: stateOf(s) }))
     .sort((a, b) => SEVERITY[a.st.marker] - SEVERITY[b.st.marker] || a.s.name.localeCompare(b.s.name));
-  renderSitesHead(list);
-  if (!list.length) {
+  renderSitesHead(all);
+  if (!all.length) {
     ul.innerHTML = `<li class="empty">No sites yet.${CFG.isAdmin ? ' <a href="/sites/new">Add the first site</a>.' : ""}</li>`;
+    return;
+  }
+  const q = siteSearch.value.trim();
+  const list = all.filter(({ s }) => siteMatches(s, q));
+  if (!list.length) {
+    ul.innerHTML = `<li class="empty">No site matches “${esc(q)}”.</li>`;
     return;
   }
   ul.innerHTML = list.map(({ s, st }) => `
@@ -64,6 +79,7 @@ function renderSites() {
       <span class="dot dot--${st.marker}"></span>
       <span class="name" title="${esc(s.tenant_name ? `${s.tenant_name}: ${s.name}` : s.name)}">${esc(s.name)}</span>${tenantTag(s)}
       ${s.arming?.armed === false ? '<span class="chip disarmed" title="Security events are recorded but not raised">Disarmed</span>' : ""}
+      ${muteChip(s)}
       ${st.c[1] + st.c[2] ? `<span class="badge">${st.c[1] + st.c[2]}</span>` : ""}
       ${st.c[3] ? `<span class="chip p3">${st.c[3]}</span>` : ""}
       ${s.lat == null ? '<span class="chip" title="No location set">no pin</span>' : ""}
@@ -150,6 +166,7 @@ function renderDetail() {
       ${viewBtn("plan", "data-plan", "Top-down", "Aerial view from straight above, with this site's cameras")}
       ${viewBtn("3d", "data-globe", "3D", "Fly into a 3D aerial view of this site")}</div>` : ""}
     ${armCardHtml(s)}
+    ${s.arming?.armed === false ? "" : muteBoxHtml(s)}
     ${rulesLineHtml(s)}
     ${healthLineHtml(s)}
     <dl class="sp-kv">
@@ -356,8 +373,8 @@ function renderFeed() {
   // held back the critical pop-up by ~3 s. The tab counts above stay exact.
   const more = rows.length - FEED_MAX;
   ul.innerHTML = rows.slice(0, FEED_MAX).map((a) => `
-    <li class="feed-item p${a.priority}" data-id="${a.id}" tabindex="0">
-      <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${siteLinkChip(a)}${timerHtml(a.event_ts_ms)}</div>
+    <li class="feed-item p${a.priority}${silent(a) ? " feed-item--muted" : ""}" data-id="${a.id}" tabindex="0">
+      <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${silent(a) ? '<span class="chip muted-chip" title="Its site or camera was muted when it came in: listed, not sounded">Muted</span>' : ""}${siteLinkChip(a)}${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
       <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}</div>
       <div class="meta">${a.source_name ? `${esc(a.source_name)} · ` : ""}${fmtTime(a.event_ts_ms)}</div>

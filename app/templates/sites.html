@@ -6,6 +6,7 @@
     <h1>Sites</h1>
     {% if user.is_admin %}<a class="btn btn-primary" href="/sites/new">+ Add site</a>{% endif %}
   </div>
+  <div class="filters" style="margin-bottom:12px"><input id="site-filter" type="search" placeholder="Search sites, address, client…" aria-label="Search sites" autocomplete="off"></div>
   <div class="table-wrap">
     <table>
       <thead><tr><th>Site</th><th>Arming</th><th>Status</th><th>Open alarms</th><th>NX</th><th>Cameras</th><th>Last seen</th>{% if user.is_admin %}<th></th>{% endif %}</tr></thead>

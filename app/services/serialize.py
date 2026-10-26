@@ -6,7 +6,7 @@ from datetime import timezone
 from sqlalchemy import inspect
 
 from app.models import Alarm, AlarmNote, AuditLog, Site
-from app.services import arming
+from app.services import arming, mute
 from app.services.alarm_filter import LEVEL_NAMES
 
 
@@ -57,6 +57,7 @@ def alarm_dict(a: Alarm) -> dict:
         "event_ts_ms": a.event_ts_ms,
         "camera_clock_off_ms": _clock_off_ms(a),
         "state": a.state,
+        "muted": bool(a.muted) and a.priority > 1,
         "nx_ack_required": a.nx_ack_required,
         "received_at": _iso(a.received_at),
         "acked_at": _iso(a.acked_at),
@@ -120,6 +121,7 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "timezone_effective": arming.zone(s.timezone).key,
         "arm_schedule": (s.arm_schedule or {}).get("entries", []),
         "arming": arming.site_state(s, int(time.time() * 1000)).as_dict(),
+        "mute": mute.active(s.mute, int(time.time() * 1000)),
     }
 
 

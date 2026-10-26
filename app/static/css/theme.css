@@ -1286,3 +1286,44 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 .app-steps { padding-left: 20px; margin: 16px 0 8px; display: grid; gap: 8px; }
 .app-note { font-size: 13px; margin: 0; }
 .icon-btn.active { border-color: var(--orange); }
+
+/* Site search above the map's site list (the SOC, 2026-10-25) */
+.site-search { padding: 0 16px 8px; }
+.site-search input { width: 100%; }
+
+/* Alarm details: Large video (the SOC, 2026-10-25: the event and live views "should be much larger and take up the
+   majority of space"). The videos share the full pane width; docked on the map page the pane also covers the site
+   column (drawer.js dock), the live alarms stay in view. Compact (above) stays the default. */
+.drawer.drawer--large { --vid-h: clamp(220px, 48vh, 900px); }
+.drawer.drawer--large .drawer-media { grid-template-columns: repeat(2, minmax(0, 1fr)); justify-content: stretch; }
+.drawer.drawer--large .drawer-media.single { grid-template-columns: minmax(0, 1fr); max-width: calc(var(--vid-h) * 16 / 9); }
+@container (max-width: 560px) { .drawer.drawer--large .drawer-media { grid-template-columns: minmax(0, 1fr); } }
+
+/* Site cameras under the videos: live stills of every camera at the site; a click shows one in the Live pane */
+.drawer-cams { margin-top: 10px; }
+.cam-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(132px, 1fr)); gap: 8px; }
+.drawer--large .cam-strip { grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); }
+.cam-tile { position: relative; display: block; padding: 0; border: 2px solid transparent; border-radius: 6px; background: #000;
+  aspect-ratio: 16 / 9; overflow: hidden; cursor: pointer; }
+.cam-tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.cam-tile img:not([src]) { visibility: hidden; }
+.cam-tile span { position: absolute; left: 0; right: 0; bottom: 0; padding: 2px 6px; background: rgba(0, 0, 0, .62); color: #fff;
+  font-size: 12px; line-height: 18px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cam-tile:hover, .cam-tile:focus-visible { border-color: var(--border); outline: none; }
+.cam-tile.selected { border-color: var(--orange); }
+.cam-tile.is-alarm span::before { content: "● "; color: #C0392B; }
+.live-label .btn { margin-left: 6px; height: 22px; padding: 0 8px; font-size: 12px; }
+
+/* Mute a site / camera (app/services/mute.py): muted alarms are listed but silent */
+.chip.muted-chip { background: #5b6470; color: #fff; border-color: transparent; }
+.feed-item--muted { opacity: .72; }
+.feed-item--muted:hover, .feed-item--muted:focus-within { opacity: 1; }
+.mute-box { margin: 8px 0 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-2); }
+.mute-on { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; }
+.mute-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.mute-lead { font-weight: 700; }
+.mute-grp { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.mute-help { margin: 6px 0 0; font-size: 12px; }
+.ack-mute-ctl { display: flex; gap: 8px; }
+.ack-mute-ctl select { flex: 1 1 auto; }
+.ack-mute .muted { margin: 6px 0 0; font-size: 12px; }

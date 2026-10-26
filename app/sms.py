@@ -899,7 +899,7 @@ def notify(alarms: list[Alarm]) -> None:
         return
     arrived = time.time()
     for a in alarms:
-        if a.priority <= 2:
+        if a.priority <= 2 and not (a.muted and a.priority > 1):      # a muted site/camera: listed, never texted
             _spawn(_handle(a.id, arrived))
 
 

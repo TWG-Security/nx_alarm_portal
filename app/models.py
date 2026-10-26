@@ -334,6 +334,8 @@ class Site(Base):
     arm_schedule: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # {"entries": [...], "since_ms": ...}
     arm_override: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # last manual arm/disarm
     armed: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Site / camera mutes for a few minutes (app/services/mute.py, migration 0034)
+    mute: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -414,6 +416,9 @@ class Alarm(Base):
     # services/calls.py join_active_call): this is the call's alarm id.
     call_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id", ondelete="SET NULL"), nullable=True, index=True)
     call_ended_by: Mapped[User | None] = relationship(foreign_keys=[call_ended_by_id], lazy="joined")
+    # Raised while its site or camera was muted (app/services/mute.py): listed and open, but no sound, pop-up,
+    # texts or phone push (migration 0034).
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AlarmNote(Base):

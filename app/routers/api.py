@@ -21,7 +21,7 @@ from app.scope import Scope, get_scope
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
-from app.services import arming
+from app.services import arming, mute
 from app.services.bus import bus
 from app.services.poller import manager, now_ms
 from app.services.serialize import alarm_dict, audit_dict, note_dict, site_dict
@@ -253,6 +253,57 @@ async def arm_site(site_id: int, body: ArmIn, request: Request, scope: Scope = D
     return data
 
 
+class MuteIn(BaseModel):
+    minutes: int = Field(ge=1, le=mute.MINUTES_MAX)
+    device_id: str = Field(default="", max_length=64)       # "" = the whole site
+    alarm_id: int | None = None                              # the alarm it was muted from (timeline + audit)
+
+
+@router.post("/sites/{site_id}/mute")
+async def mute_site(site_id: int, body: MuteIn, request: Request, scope: Scope = Depends(get_scope),
+                    db: AsyncSession = Depends(get_db)):
+    """Operators mute a site or one camera for a few minutes (app/services/mute.py): its new non-critical security
+    alarms are still listed but don't sound, pop up, text or push."""
+    user = scope.user
+    site = await _get_site(db, scope, site_id, write=True)
+    if site.archived_at is not None:
+        raise HTTPException(400, "Site is archived")
+    dev = body.device_id.strip("{}")
+    name = ""
+    if dev:
+        name = manager.device_names(site.id).get(dev) or (site.camera_places or {}).get(dev, {}).get("name") or ""
+        if not name:
+            raise HTTPException(404, "Unknown camera")
+    t = now_ms()
+    until = t + body.minutes * 60_000
+    site.mute = mute.set_mute(site.mute, dev or None, {"until_ms": until, "at_ms": t, "by": user.label,
+                                                       "user_id": user.id, "name": name}, t)
+    alarm_id = None
+    if body.alarm_id is not None:
+        alarm_id = await db.scalar(select(Alarm.id).where(Alarm.id == body.alarm_id, Alarm.site_id == site.id))
+    audit(db, site.tenant_id, "site.muted", user_id=user.id, site_id=site.id, alarm_id=alarm_id, ip=client_ip(request),
+          minutes=body.minutes, until_ms=until, device_id=dev, camera=name)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
+@router.delete("/sites/{site_id}/mute")
+async def unmute_site(site_id: int, request: Request, device_id: str = "", scope: Scope = Depends(get_scope),
+                      db: AsyncSession = Depends(get_db)):
+    """End a mute early: the site's (device_id empty) or one camera's."""
+    user = scope.user
+    site = await _get_site(db, scope, site_id, write=True)
+    dev = device_id.strip("{}")
+    site.mute = mute.clear(site.mute, dev or None, now_ms())
+    audit(db, site.tenant_id, "site.unmuted", user_id=user.id, site_id=site.id, ip=client_ip(request), device_id=dev)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
 # --------------------------------------------------------------------------- camera positions (3D view)
 
 class CameraPlaceIn(BaseModel):
@@ -276,6 +327,12 @@ async def _site_cameras(site: Site) -> dict[str, str]:
                 if (d.get("deviceType") or "Camera").lower() not in ("server", "io")}
     except Exception:  # noqa: BLE001
         return manager.device_names(site.id)
+
+
+@router.get("/sites/{site_id}")
+async def get_site(site_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    site = await _get_site(db, scope, site_id)
+    return _site_out(site, await _open_counts(db, scope))
 
 
 @router.get("/sites/{site_id}/cameras")
