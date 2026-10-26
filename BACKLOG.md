@@ -1,5 +1,15 @@
 # Programming backlog
 
+# OZINT SOC feedback (2026-10-25): done 2026-10-26, see CLAUDE.md "Start here"
+- [x] Site #2: future camera timestamps + poll cursor; disarm timer ends in the schedule's state
+- [x] Search (map + Sites), Large video + Site cameras, mute site / camera, client profile + package, Response (tel: calls)
+- [ ] Site #2 cameras' clocks / NTP (at the site); NX rule eed62b42 interval; NX's own push rules if not wanted
+- [ ] Ajax: open the client + siren / panic from the alarm (needs their API access + docs; unverified that the API allows it)
+- [ ] Zenduit (ZenduitONE / Go Fleet) vehicles + dispatch (likely MyGeotab API; needs a login)
+- [ ] Softphone check: which VoIP app the SOC uses for tel: links
+- [ ] Phone apps: respect `muted` on alarm.new; show `site_package` (send to the Mac session)
+- [ ] git push (PR #6): blocked by the permission check on 2026-10-26
+
 # Open (2026-10-25)
 - [ ] App Store Connect key + Platform → Phone apps settings (iPhone TestFlight invites); first real Test connection
 - [ ] Replace the APK download's GitHub token with a fine-grained read-only one (twg-alarm-android)
