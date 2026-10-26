@@ -983,10 +983,17 @@ async def summary(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(
 async def list_audit(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db),
                      action: str | None = Query(None, max_length=64), site_id: int | None = None,
                      alarm_id: int | None = None, before_id: int | None = None,
+                     client: str | None = Query(None, pattern="^(web|ios|android|app|apps|api|system)$"),
                      limit: int = Query(100, ge=1, le=500)):
     stmt = select(AuditLog).where(scope.where(AuditLog.tenant_id))
     if action:
         stmt = stmt.where(AuditLog.action.startswith(action))
+    if client == "apps":                                         # any phone app, old builds included
+        stmt = stmt.where(AuditLog.client.in_(("ios", "android", "app")))
+    elif client == "system":
+        stmt = stmt.where(AuditLog.client == "", AuditLog.user_id.is_(None))
+    elif client:
+        stmt = stmt.where(AuditLog.client == client)
     if site_id:
         stmt = stmt.where(AuditLog.site_id == site_id)
     if alarm_id:

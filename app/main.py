@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import mcp_server, platform_settings, security_guard
+from app.audit import CLIENT, client_of
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
@@ -51,6 +52,25 @@ class BanGate:
         await self.app(scope, receive, send)
 
 
+class ClientMark:
+    """Notes which client sent each request (iPhone app, Android app, website: app.audit.client_of) for the audit
+    rows it writes. Pure ASGI; the mark is emptied when the request ends, so a task it started keeps no label."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        mark = list(client_of(scope))
+        token = CLIENT.set(mark)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            mark[:] = ["", ""]
+            CLIENT.reset(token)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tasks = []
@@ -81,6 +101,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="TWG Alarm Portal", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(ClientMark)
     app.add_middleware(BanGate)             # added first = runs inside SessionMiddleware
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="twg_portal",
                        max_age=settings.session_max_age_s, same_site="lax", https_only=settings.cookie_secure)

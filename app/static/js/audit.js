@@ -4,6 +4,7 @@ const params = new URLSearchParams(location.search);
 const tbody = document.getElementById("audit-rows");
 const actionSel = document.getElementById("f-action");
 const siteSel = document.getElementById("f-site");
+const clientSel = document.getElementById("f-client");
 const PAGE = 100;
 let rows = [], oldestId = null;
 const alarmId = params.get("alarm_id");
@@ -48,11 +49,21 @@ function details(r) {
   }
 }
 
+// Where it was done (AuditLog.client): shown next to the person. "" = the system, or a row from before 2026-10-26.
+const CLIENT = { ios: "iPhone", android: "Android", app: "App", web: "Web", api: "API" };
+function clientChip(r) {
+  const label = CLIENT[r.client];
+  if (!label) return "";
+  const title = { ios: "iPhone app", android: "Android app", app: "Phone app (a build from before the app said which)",
+    web: "Website", api: "API token / Claude" }[r.client] + (r.client_version ? ` ${r.client_version}` : "");
+  return ` <span class="chip client-chip" title="${esc(title)}">${esc(label)}${r.client_version ? ` ${esc(r.client_version.split(" ")[0])}` : ""}</span>`;
+}
+
 function render() {
   tbody.innerHTML = rows.length ? rows.map((r) => `<tr>
       <td style="white-space:nowrap">${fmtTime(r.ts)}</td>
       <td>${esc(LABELS[r.action] || r.action)}</td>
-      <td>${esc(r.user)}${r.support ? ' <span class="chip support-chip" title="Done by TWG Security staff supporting this company">TWG support</span>' : ""}</td>
+      <td>${esc(r.user)}${clientChip(r)}${r.support ? ' <span class="chip support-chip" title="Done by TWG Security staff supporting this company">TWG support</span>' : ""}</td>
       <td>${esc(r.site_name || "")}</td>
       <td>${details(r)}</td></tr>`).join("")
     : '<tr><td colspan="5" class="empty">No audit entries match.</td></tr>';
@@ -62,6 +73,7 @@ async function load(append = false) {
   const p = new URLSearchParams({ limit: PAGE });
   if (actionSel.value) p.set("action", actionSel.value);
   if (siteSel.value) p.set("site_id", siteSel.value);
+  if (clientSel.value) p.set("client", clientSel.value);
   if (alarmId) p.set("alarm_id", alarmId);
   if (append && oldestId) p.set("before_id", oldestId);
   const data = await api(`/api/audit?${p}`);
@@ -73,6 +85,7 @@ async function load(append = false) {
 
 actionSel.addEventListener("change", () => load());
 siteSel.addEventListener("change", () => load());
+clientSel.addEventListener("change", () => load());
 document.getElementById("load-more").addEventListener("click", () => load(true));
 if (alarmId) document.querySelector(".page-head h1").textContent = `Audit log · alarm #${alarmId}`;
 api("/api/sites").then((sites) => {

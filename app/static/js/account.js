@@ -5,10 +5,13 @@ import { createPasskey, getPasskey, passkeyError, passkeysUsable } from "./webau
 const $ = (id) => document.getElementById(id);
 let me = null;
 
-const METHOD = { mobile: "the iPhone app", password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
+const METHOD = { mobile: "the phone app", password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
   sso: "Google", legacy: "before sessions were tracked" };
-function browserName(ua) {
-  if (/TWG Alarms/.test(ua)) return `iPhone app (${ua})`;
+function browserName(ua, s = {}) {
+  const ver = s.client_version ? ` ${s.client_version}` : "";
+  if (s.client === "ios") return `iPhone app${ver} (${ua})`;
+  if (s.client === "android") return `Android app${ver} (${ua})`;
+  if (/TWG Alarms/.test(ua)) return `${/Android/.test(ua) ? "Android" : "iPhone"} app (${ua})`;
   const os = /Windows/.test(ua) ? "Windows" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Android/.test(ua) ? "Android"
     : /iPhone|iPad/.test(ua) ? "iPhone/iPad" : /Linux/.test(ua) ? "Linux" : "";
   const br = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
@@ -120,7 +123,7 @@ $("pw-form").addEventListener("submit", async (e) => {
 });
 
 function paintSessions() {
-  $("sess-rows").innerHTML = me.sessions.map((s) => `<tr><td><b>${esc(browserName(s.user_agent))}</b>${s.current ? ' <span class="chip online">this one</span>' : ""}
+  $("sess-rows").innerHTML = me.sessions.map((s) => `<tr><td><b>${esc(browserName(s.user_agent, s))}</b>${s.current ? ' <span class="chip online">this one</span>' : ""}
       <div class="muted small-print">Signed in ${esc(fmtTime(s.created_at))} with ${esc(METHOD[s.method] || s.method)}</div></td>
       <td class="mono">${esc(s.ip)}</td><td>${esc(relTime(s.last_seen_at))}</td>
       <td>${s.current ? "" : `<button class="btn btn-sm" data-end="${esc(s.id)}">Sign out</button>`}</td></tr>`).join("")

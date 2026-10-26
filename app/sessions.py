@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.requests import Request
 
 from app import platform_settings
+from app.audit import CLIENT
 from app.models import User, UserSession, utcnow
 from app.net import client_ip
 from app.security import new_csrf_token
@@ -64,7 +65,7 @@ async def start(request: Request, db: AsyncSession, user: User, method: str = "p
         UserSession.revoked_at < now - timedelta(days=KEEP_DAYS), UserSession.last_seen_at < now - timedelta(days=KEEP_DAYS))))
     row = UserSession(id=secrets.token_urlsafe(32), user_id=user.id, tenant_id=user.tenant_id, method=method,
                       ip=client_ip(request), user_agent=(request.headers.get("user-agent") or "")[:300],
-                      created_at=now, last_seen_at=now)
+                      client="web", created_at=now, last_seen_at=now)
     db.add(row)
     request.session.clear()
     request.session.update({"uid": user.id, "tid": user.tenant_id, "sid": row.id, "tv": user.token_version or 0,
@@ -128,10 +129,11 @@ async def check(request: Request, db: AsyncSession, user: User) -> str:
 async def start_mobile(request: Request, db: AsyncSession, user: User, device_name: str) -> tuple[UserSession, str]:
     """Sign the iPhone app in (the caller commits). Returns (row, device token: given to the app once)."""
     now = utcnow()
+    client, version = CLIENT.get()
     token = MOBILE_PREFIX + secrets.token_urlsafe(32)
     row = UserSession(id=mobile_id(token), user_id=user.id, tenant_id=user.tenant_id, method="mobile",
                       ip=client_ip(request), user_agent=(device_name.strip() or "iPhone app")[:300],
-                      created_at=now, last_seen_at=now)
+                      client=client or "app", client_version=version, created_at=now, last_seen_at=now)
     db.add(row)
     user.last_login_at = now
     await db.flush()
@@ -162,8 +164,12 @@ async def check_mobile(request: Request, db: AsyncSession, token: str):
         _note_revoked([row.id], row.tenant_id)
         return None
     ip = client_ip(request)
-    if (now - aware(row.last_seen_at)).total_seconds() >= SEEN_EVERY_S or row.ip != ip:
+    client, version = CLIENT.get()
+    updated = client in ("ios", "android") and (row.client, row.client_version) != (client, version)   # the app was updated
+    if (now - aware(row.last_seen_at)).total_seconds() >= SEEN_EVERY_S or row.ip != ip or updated:
         row.last_seen_at, row.ip = now, ip[:64]
+        if updated:
+            row.client, row.client_version = client, version
         await db.commit()
     return user, tenant, row
 
@@ -197,7 +203,8 @@ async def revoke_all(db: AsyncSession, user: User, reason: str, *, keep_sid: str
 
 def session_dict(row: UserSession, current_sid: str | None = None) -> dict:
     return {"id": row.id, "current": row.id == current_sid, "method": row.method, "ip": row.ip,
-            "user_agent": row.user_agent, "created_at": aware(row.created_at).isoformat(),
+            "user_agent": row.user_agent, "client": row.client or "", "client_version": row.client_version or "",
+            "created_at": aware(row.created_at).isoformat(),
             "last_seen_at": aware(row.last_seen_at).isoformat()}
 
 

@@ -285,6 +285,8 @@ class UserSession(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ip: Mapped[str] = mapped_column(String(64), default="")
     user_agent: Mapped[str] = mapped_column(String(300), default="")
+    client: Mapped[str] = mapped_column(String(16), default="")             # web | ios | android | app (AuditLog.client)
+    client_version: Mapped[str] = mapped_column(String(40), default="")     # the app's version as it last reported it
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str] = mapped_column(String(100), default="")
 
@@ -454,6 +456,10 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(64), index=True)
     detail: Mapped[dict] = mapped_column(JSONType, default=dict)
     ip: Mapped[str] = mapped_column(String(64), default="")
+    # Where the request came from (app/audit.py client_of): ios | android | app (an app build older than 1.6 /
+    # Android 0.1 (1)) | api (API token, MCP) | web | "" (the system, or a row from before 2026-10-26).
+    client: Mapped[str] = mapped_column(String(16), default="")
+    client_version: Mapped[str] = mapped_column(String(40), default="")     # the app's, e.g. "1.6 (55)"
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User | None] = relationship(lazy="joined")

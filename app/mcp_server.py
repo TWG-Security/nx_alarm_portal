@@ -226,9 +226,10 @@ async def t_dispatch_candidates(ctx, args):
 
 async def t_audit(ctx, args):
     params = {"action": args.get("action"), "site_id": _int(args, "site_id", False), "alarm_id": _int(args, "alarm_id", False),
-              "before_id": _int(args, "before_id", False), "limit": min(_int(args, "limit", False) or 50, 200)}
+              "before_id": _int(args, "before_id", False), "limit": min(_int(args, "limit", False) or 50, 200),
+              "client": args.get("client")}
     rows = await _api(ctx, "GET", "/api/audit", params)
-    keep = ("id", "ts", "action", "user", "support", "site_name", "alarm_id", "ip", "detail")
+    keep = ("id", "ts", "action", "user", "support", "site_name", "alarm_id", "ip", "client", "client_version", "detail")
     return {"entries": [{k: r.get(k) for k in keep if k in r} for r in rows]}
 
 
@@ -332,8 +333,11 @@ TOOLS = [
     ("get_dispatch_candidates", "Guards for an alarm", "Guards who could be sent to an alarm, nearest first, with distance, "
      "whether they can be texted (and why not), and who was already dispatched.", _schema(_ALARM, ("alarm_id",)), RO,
      t_dispatch_candidates),
-    ("search_audit_log", "Search audit log", "Who did what, newest first. action is a prefix, e.g. alarm. or alarm.acknowledged.",
+    ("search_audit_log", "Search audit log", "Who did what, newest first. action is a prefix, e.g. alarm. or alarm.acknowledged. "
+     "Each entry's client says where it was done: ios (iPhone app), android, app (an older app build), web, api or empty "
+     "(the system); client filters by it (apps = any phone app).",
      _schema({"action": {"type": "string"}, "site_id": {"type": "integer"}, "alarm_id": {"type": "integer"},
+              "client": {"type": "string", "enum": ["web", "ios", "android", "app", "apps", "api", "system"]},
               "before_id": {"type": "integer"}, "limit": {"type": "integer", "minimum": 1, "maximum": 200}}), RO, t_audit),
     ("list_users", "List users", "The company's portal users, their alarm-text settings and last sign-in (admins only).",
      _schema({}), RO, t_list_users),

@@ -146,5 +146,7 @@ def audit_dict(r: AuditLog) -> dict:
         "site_id": r.site_id,
         "alarm_id": r.alarm_id,
         "ip": r.ip,
+        "client": r.client or "",                   # ios | android | app | api | web | "" (models.AuditLog.client)
+        "client_version": r.client_version or "",
         "detail": r.detail,
     }

@@ -282,7 +282,7 @@ async function openSecurity(u) {
         <button class="btn btn-sm btn-danger" type="button" id="sec-exempt">Turn off two-step for this user</button>`}</div>` : ""}
     <h3>Signed in</h3>
     <div class="table-wrap"><table><thead><tr><th>Where</th><th>Address</th><th>Last active</th><th></th></tr></thead><tbody>
-      ${s.sessions.map((x) => `<tr><td>${esc(x.user_agent.slice(0, 60) || "Unknown browser")}${x.current ? ' <span class="chip">you</span>' : ""}
+      ${s.sessions.map((x) => `<tr><td>${x.client === "ios" || x.client === "android" ? `<span class="chip">${x.client === "ios" ? "iPhone" : "Android"} app ${esc(x.client_version)}</span> ` : x.client === "app" ? '<span class="chip">App</span> ' : ""}${esc(x.user_agent.slice(0, 60) || "Unknown browser")}${x.current ? ' <span class="chip">you</span>' : ""}
           <div class="muted small-print">since ${esc(fmtTime(x.created_at))}</div></td>
         <td class="mono">${esc(x.ip)}</td><td>${esc(relTime(x.last_seen_at))}</td>
         <td>${x.current ? "" : `<button class="btn btn-sm" data-end="${esc(x.id)}">Sign out</button>`}</td></tr>`).join("")
