@@ -114,8 +114,6 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     promoted: list[Alarm] = []
     for key, (row, c) in candidates.items():
         info = summarize(row, device_names, user_names)
-        if info["event_ts_ms"] > now + FUTURE_SKEW_MS:
-            _clock_off(site, info, now)
         prior = existing.get(key)
         if prior is not None:
             if prior.state == "disarmed" and key in always:
@@ -141,6 +139,8 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
             if changed:
                 upgraded.append(prior)
             continue
+        if info["event_ts_ms"] > now + FUTURE_SKEW_MS:
+            _clock_off(site, info, now)
         suppressed = (c.category == "security" and key not in always
                       and not arming.armed_for_event(site, info["event_ts_ms"], now))
         alarm = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=key, state="disarmed" if suppressed else "new",
