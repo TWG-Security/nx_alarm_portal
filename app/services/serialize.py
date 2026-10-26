@@ -7,6 +7,7 @@ from sqlalchemy import inspect
 
 from app.models import Alarm, AlarmNote, AuditLog, Site
 from app.services import arming, mute
+from app.services import profile as client_profile
 from app.services.alarm_filter import LEVEL_NAMES
 
 
@@ -43,6 +44,7 @@ def alarm_dict(a: Alarm) -> dict:
         "site_name": a.site.name if a.site else "",
         "site_address": a.site.address if a.site else "",
         "site_status": a.site.status if a.site else "",            # now: online / offline / auth_error / …
+        "site_package": ((a.site.profile or {}).get("package", "") if a.site else ""),   # ground_response / monitoring_only
         "level": LEVEL_NAMES.get(a.priority, "warning"),
         "level_source": a.level_source,
         "event_type": a.event_type,
@@ -122,6 +124,7 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "arm_schedule": (s.arm_schedule or {}).get("entries", []),
         "arming": arming.site_state(s, int(time.time() * 1000)).as_dict(),
         "mute": mute.active(s.mute, int(time.time() * 1000)),
+        "profile": client_profile.public(s.profile),
     }
 
 

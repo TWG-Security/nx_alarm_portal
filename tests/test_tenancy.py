@@ -106,6 +106,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("GET", f"/branding/{world['b'].id}/logo", None), ("PUT", f"/api/tenants/{world['b'].id}", {"display_name": "x"}),
         ("GET", f"/api/sites/{sb.id}/cameras", None), ("GET", f"/api/sites/{sb.id}", None),
         ("POST", f"/api/sites/{sb.id}/mute", {"minutes": 5}), ("DELETE", f"/api/sites/{sb.id}/mute", None),
+        ("PUT", f"/api/sites/{sb.id}/profile", {"client_name": "x"}), ("POST", f"/api/alarms/{ab.id}/called", {"to": "police"}),
         ("PUT", f"/api/sites/{sb.id}/cameras/cam-b", {"lat": 40, "lng": -75, "heading": 90}),
         ("DELETE", f"/api/sites/{sb.id}/cameras/cam-b", None),
         ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.jpg", None),

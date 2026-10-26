@@ -2,6 +2,7 @@
 import { CFG, api, esc, toast, siteLinkChip, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany, siteMatches, silent, muteChip, muteBoxHtml } from "./common.js";
 import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
+import { clientCardHtml, packageChip } from "./profile.js";
 import { mountGuards } from "./guards.js";
 import { openRuleEditor } from "./rule_editor.js";
 import { guardUpdates } from "./call_updates.js";
@@ -154,6 +155,7 @@ function renderDetail() {
       </div>
       <button type="button" class="sp-close" id="close-detail" aria-label="Close" title="Back to all sites">${ICON.close}</button>
     </div>
+    ${clientCardHtml(s)}
     <div class="sp-facts">
       <span class="chip ${s.status}">${esc(STATUS[s.status] || s.status)}</span>${s.enabled ? "" : '<span class="chip">Disabled</span>'}
       ${open ? `<span class="chip p2">${open} open</span>` : ""}${warns ? `<span class="chip p3">${warns} warning${warns === 1 ? "" : "s"}</span>` : ""}
@@ -376,7 +378,7 @@ function renderFeed() {
     <li class="feed-item p${a.priority}${silent(a) ? " feed-item--muted" : ""}" data-id="${a.id}" tabindex="0">
       <div class="feed-top"><span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${silent(a) ? '<span class="chip muted-chip" title="Its site or camera was muted when it came in: listed, not sounded">Muted</span>' : ""}${siteLinkChip(a)}${timerHtml(a.event_ts_ms)}</div>
       <div class="title">${esc(a.caption)}</div>
-      <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}</div>
+      <div class="feed-where">${tenantTag(a)}<b>${esc(a.site_name)}</b>${a.site_address ? ` · ${esc(a.site_address)}` : ""}${packageChip(a.site_package)}</div>
       <div class="meta">${a.source_name ? `${esc(a.source_name)} · ` : ""}${fmtTime(a.event_ts_ms)}</div>
       <div class="feed-actions"><button class="btn btn-sm btn-primary" data-ack="${a.id}">Acknowledge</button>
         <button class="btn btn-sm" data-detail="${a.id}">Details</button></div>

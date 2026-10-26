@@ -22,6 +22,7 @@ from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
 from app.services import arming, mute
+from app.services import profile as client_profile
 from app.services.bus import bus
 from app.services.poller import manager, now_ms
 from app.services.serialize import alarm_dict, audit_dict, note_dict, site_dict
@@ -301,6 +302,25 @@ async def unmute_site(site_id: int, request: Request, device_id: str = "", scope
     await db.commit()
     data = _site_out(site, await _open_counts(db, scope))
     bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
+@router.put("/sites/{site_id}/profile")
+async def put_site_profile(site_id: int, body: client_profile.ProfileIn, request: Request,
+                           user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                           db: AsyncSession = Depends(get_db)):
+    """The client profile (app/services/profile.py): contacts, package, police number, notes. Admins."""
+    site = await _get_site(db, scope, site_id, write=True)
+    before = site.profile or {}
+    site.profile = client_profile.clean(body)
+    after = site.profile or {}
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    if changed:       # field names only: the passcode never goes into the audit log
+        audit(db, site.tenant_id, "site.profile_updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    if changed:
+        bus.publish(site.tenant_id, "site.updated", data)
     return data
 
 
@@ -911,6 +931,25 @@ async def add_note(alarm_id: int, body: NoteIn, request: Request, scope: Scope =
 
 
 VIEW_AGAIN_S = 300      # the same person re-opening the same alarm within 5 min isn't logged again
+
+
+class CalledIn(BaseModel):
+    to: str = Field(pattern="^(police|client|contact)$")
+    name: str = Field(default="", max_length=120)
+    number: str = Field(default="", max_length=40)
+
+
+@router.post("/alarms/{alarm_id}/called")
+async def alarm_called(alarm_id: int, body: CalledIn, request: Request, scope: Scope = Depends(get_scope),
+                       db: AsyncSession = Depends(get_db)):
+    """An operator pressed a Call button in the alarm details (the softphone dials the tel: link): on the timeline
+    and in the incident report. Read access is enough, like viewing it."""
+    user = scope.user
+    alarm = await _get_alarm(db, scope, alarm_id)
+    audit(db, alarm.tenant_id, "alarm.called", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), to=body.to, name=body.name.strip(), number=body.number.strip())
+    await db.commit()
+    return {"logged": True}
 
 
 @router.post("/alarms/{alarm_id}/viewed")

@@ -979,7 +979,7 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
                 log.info("sms: alarms %s confirmed but over %d s old: not texted", old, CONFIRM_MAX_AGE_S)
             alarms = [a for a in alarms if _recent(a)]
             by = await db.get(User, by_id)
-            from app.models import Tenant, Tracker
+            from app.models import Site, Tenant, Tracker
             from app.services import dispatch
             for tenant_id in sorted({a.tenant_id for a in alarms}):
                 group = [a for a in alarms if a.tenant_id == tenant_id]
@@ -991,7 +991,11 @@ async def _handle_confirmed(alarm_ids: list[int], by_id: int, arrived: float) ->
                 # only the closest one is sent (app/services/dispatch.py), even when that guard is the one who
                 # confirmed it (the user, 2026-10-13: guards may confirm alarms themselves). Nobody with a usable
                 # position: all get the confirmed text, as before. The confirmed text never goes to whoever confirmed.
-                if dispatch.auto_on(await db.get(Tenant, tenant_id)):
+                # A monitoring-only client (no ground response, services/profile.py) never gets a guard sent by
+                # itself: the operator can still dispatch by hand (the details warn first).
+                monitoring_only = ((await db.scalar(select(Site.profile).where(
+                    Site.id == max(group, key=lambda a: a.id).site_id))) or {}).get("package") == "monitoring_only"
+                if dispatch.auto_on(await db.get(Tenant, tenant_id)) and not monitoring_only:
                     linked = set((await db.scalars(select(Tracker.user_id).where(
                         Tracker.tenant_id == tenant_id, Tracker.enabled.is_(True), Tracker.user_id.is_not(None)))).all())
                     newest = max(group, key=lambda a: a.id)

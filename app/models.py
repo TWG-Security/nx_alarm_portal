@@ -336,6 +336,9 @@ class Site(Base):
     armed: Mapped[bool] = mapped_column(Boolean, default=True)
     # Site / camera mutes for a few minutes (app/services/mute.py, migration 0034)
     mute: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # Client profile (app/services/profile.py, migration 0035): who to call, package (ground response or
+    # monitoring only), the local police dispatch number, passcode, access notes, Ajax link.
+    profile: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

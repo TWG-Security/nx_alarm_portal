@@ -607,3 +607,25 @@ async def test_a_guard_writes_notes_from_their_alarm_link(session, client):
         assert r.status_code == 429 and "Call dispatch" in r.json()["detail"]
     finally:
         links.GUARD_NOTES_MAX = keep
+
+
+@respx.mock
+async def test_monitoring_only_client_never_gets_a_guard_by_itself(session, client):
+    """Client profile package "monitoring_only" (the SOC, 2026-10-25): confirming a real event doesn't auto-dispatch;
+    the guards get the confirmed text like everyone else."""
+    t, site, p = await world(session)
+    g = await guards(session, t, site)
+    await texts_on(session)
+    nx_ok()
+    twilio = respx.post(TWILIO).mock(return_value=httpx.Response(201, json={"sid": "SMm"}))
+    await track(session, t.id, "Guard 1", 900, g["guard"])
+    await track(session, t.id, "Guard 2", 120, g["both"])
+    site.profile = {"package": "monitoring_only"}
+    await session.commit()
+    await login(client, "mike@twgsecurity.com")
+    a = await make_alarm(session, site, priority=1, event_ts_ms=now_ms())
+    await client.post(f"/api/alarms/{a.id}/ack", json={"verdict": "real"})
+    await sms.drain()
+    assert sorted(sent_to(twilio)) == ["+15705558001", "+15705558002"]
+    assert all(body_of(c).startswith("TWG CONFIRMED") for c in twilio.calls)
+    assert not (await session.scalars(select(AuditLog).where(AuditLog.action == "alarm.dispatched"))).all()

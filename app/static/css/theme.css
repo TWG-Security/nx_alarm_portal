@@ -1327,3 +1327,41 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 .ack-mute-ctl { display: flex; gap: 8px; }
 .ack-mute-ctl select { flex: 1 1 auto; }
 .ack-mute .muted { margin: 6px 0 0; font-size: 12px; }
+
+/* Client profile (the SOC, 2026-10-25; js/profile.js): package badge, Client card in the site panel, Response box */
+.chip.pkg { margin-left: 6px; font-weight: 700; border-color: transparent; }
+.chip.pkg--ground_response { background: #1f7a3f; color: #fff; }
+.chip.pkg--monitoring_only { background: #E08A30; color: #1A1A1A; }
+.chip.pkg--big { margin-left: 0; font-size: 13px; padding: 4px 10px; text-transform: uppercase; letter-spacing: .03em; }
+.client-card { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid #C0392B; border-radius: 6px; background: var(--surface-2); }
+.client-card--empty { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-left-color: var(--border); }
+.client-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.client-name { margin-top: 8px; font-size: 16px; font-weight: 700; }
+.client-line { margin-top: 4px; display: flex; align-items: center; gap: 8px; }
+.client-tel { font-weight: 700; color: var(--orange); text-decoration: none; }
+.client-tel:hover { text-decoration: underline; }
+.client-contacts { list-style: none; margin: 8px 0 0; padding: 0; }
+.client-contacts li { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; border-top: 1px solid var(--border); }
+.client-notes { margin: 8px 0; white-space: pre-wrap; font-size: 13px; }
+.passcode { letter-spacing: .05em; }
+/* the profile needs room: a selected site widens the site column (the map gets smaller, as the SOC asked) */
+@media (min-width: 1101px) {
+  .map-layout:has(#site-detail:not([hidden])) { grid-template-columns: 380px minmax(0, 1fr) 380px; }
+}
+.response-box { margin: 10px 0 0; padding: 10px 12px; border: 1px solid var(--border); border-left: 3px solid #C0392B; border-radius: 6px; }
+.response-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 8px; }
+.response-lead { font-weight: 700; text-transform: uppercase; letter-spacing: .04em; font-size: 13px; }
+.response-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+.btn-call { min-height: 40px; font-size: 15px; font-weight: 700; gap: 6px; }
+.btn-call .muted { font-weight: 400; }
+.btn-call--police { background: #C0392B; color: #fff; border-color: #C0392B; }
+.btn-call--police .muted { color: rgba(255, 255, 255, .85); }
+.resp-note { display: block; margin-top: 6px; font-size: 12px; }
+.profile-dialog { width: min(720px, calc(100vw - 32px)); }
+.pf-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+@media (max-width: 640px) { .pf-grid { grid-template-columns: 1fr; } }
+.pf-pkg { display: flex; flex-wrap: wrap; gap: 14px; }
+.pf-pkg label { display: inline-flex; align-items: center; gap: 6px; font-weight: 400; }
+.pf-contact { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 6px; margin-bottom: 6px; }
+@media (max-width: 640px) { .pf-contact { grid-template-columns: 1fr 1fr; } }
+.pf-form .field p.muted { margin: 4px 0 0; font-size: 12px; }

@@ -4,6 +4,7 @@
 // first). Used on every page.
 
 import { CFG, api, esc, siteLinkChip, fmtTime, fmtDuration, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue, canMute, muteBoxHtml } from "./common.js";
+import { responseHtml } from "./profile.js";
 import { freshness } from "./guards.js";
 import { mountLive } from "./live.js";
 import { mountPlayer } from "./player.js";
@@ -189,7 +190,8 @@ function startGuards(a) {
   guardsTimer = setInterval(() => { if (current && !drawer.hidden) loadGuards(current); }, 15000);
 }
 async function sendDispatch(ids, names, btn) {
-  if (!confirm(`Text ${names} to go to this alarm now?`)) return;
+  const mon = curSite?.id === current.site_id && curSite.profile?.package === "monitoring_only";
+  if (!confirm(`${mon ? "This client is MONITORING ONLY: they don't pay for ground response.\n\n" : ""}Text ${names} to go to this alarm now?`)) return;
   btn.disabled = true;
   try {
     const r = await api(`/api/alarms/${current.id}/dispatch`, { method: "POST", body: { tracker_ids: ids } });
@@ -272,6 +274,7 @@ function render(a) {
         <button class="btn btn-verdict-false" data-ack="false">False alarm</button></div>
       <textarea id="drawer-note" maxlength="4000" rows="1" aria-label="Disposition note" placeholder="Disposition note (optional, saved when you acknowledge): what did you see / do?"></textarea>
     </div>`}
+    <div class="response-slot">${curSite?.id === a.site_id ? responseHtml(curSite, a) : ""}</div>
     <div class="mute-slot">${muteHtml(a)}</div>
     <div class="dispatch-quick-slot">${quickHtml(a)}</div>`;
   drawer.querySelector(".drawer-details").innerHTML = `
@@ -420,6 +423,8 @@ const muteHtml = (a) => (canMute(a) && a.state !== "disarmed" && curSite?.id ===
 function paintMute() {
   const slot = drawer.querySelector(".mute-slot");
   if (slot && current) slot.innerHTML = muteHtml(current);
+  const resp = drawer.querySelector(".response-slot");
+  if (resp && current && curSite?.id === current.site_id) resp.innerHTML = responseHtml(curSite, current);
 }
 async function loadSite(a) {
   curSite = null;
