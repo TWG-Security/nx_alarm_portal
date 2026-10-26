@@ -22,6 +22,8 @@
   PUT    /api/tracking/dispatch            auto-dispatch the closest guard on confirm (company setting)
   PUT    /api/tracking/fleetio             Fleetio Account Token / API key / on-off / interval (every vehicle shows on the map)
   POST   /api/tracking/fleetio/test        read the vehicle list once: how many, how many with a position, the newest
+  PUT    /api/tracking/geotab              Geotab database / user / password / server / on-off / interval (ZenduONE, GoFleet)
+  POST   /api/tracking/geotab/test         sign in and read the devices once, like the Fleetio test
 """
 from __future__ import annotations
 
@@ -33,7 +35,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import fleetio, guard_share, peplink, platform_settings, sms
+from app import fleetio, geotab, guard_share, peplink, platform_settings, sms
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, require_admin
@@ -215,7 +217,7 @@ def _company(scope: Scope) -> Tenant:
 async def _source(db: AsyncSession, tenant_id: int, create: bool = False, kind: str = "peplink") -> TrackerSource | None:
     src = await db.scalar(select(TrackerSource).where(TrackerSource.tenant_id == tenant_id, TrackerSource.kind == kind))
     if src is None and create:
-        src = TrackerSource(tenant_id=tenant_id, kind=kind, poll_s=svc.FLEETIO_POLL_DEFAULT_S if kind == "fleetio" else 30)
+        src = TrackerSource(tenant_id=tenant_id, kind=kind, poll_s=svc.FLEETIO_POLL_DEFAULT_S if kind in svc.FEEDS else 30)
         db.add(src)
         await db.flush()
     return src
@@ -231,6 +233,8 @@ def _share_state(t: Tracker) -> dict:
 async def _view(db: AsyncSession, tenant: Tenant) -> dict:
     src = await _source(db, tenant.id)
     fl = await _source(db, tenant.id, kind="fleetio")
+    gt = await _source(db, tenant.id, kind="geotab")
+    gto = (gt.options or {}) if gt else {}
     trackers = (await db.scalars(select(Tracker).where(Tracker.tenant_id == tenant.id).order_by(Tracker.name))).all()
     people = (await db.scalars(select(User).where(User.tenant_id == tenant.id, User.deleted_at.is_(None),
                                                   User.is_active.is_(True)).order_by(User.email))).all()
@@ -243,6 +247,11 @@ async def _view(db: AsyncSession, tenant: Tenant) -> dict:
                         "api_key_set": bool(fl and fl.secret_enc), "poll_s": fl.poll_s if fl else svc.FLEETIO_POLL_DEFAULT_S,
                         "last_ok_at": iso(fl.last_ok_at) if fl else None, "last_error": fl.last_error if fl else "",
                         "last_error_at": iso(fl.last_error_at) if fl else None},
+            "geotab": {"enabled": bool(gt and gt.enabled), "database": gto.get("database", ""), "server": gto.get("server", ""),
+                       "username": gt.client_id if gt else "", "password_set": bool(gt and gt.secret_enc),
+                       "poll_s": gt.poll_s if gt else svc.FLEETIO_POLL_DEFAULT_S,
+                       "last_ok_at": iso(gt.last_ok_at) if gt else None, "last_error": gt.last_error if gt else "",
+                       "last_error_at": iso(gt.last_error_at) if gt else None},
             "auto_dispatch": dispatch_svc.auto_on(tenant), "texts_ready": platform_settings.current().sms_ready,
             "people": [{"id": u.id, "name": u.label, "phone": sms.masked(u.phone) if u.phone else "", "consent": u.sms_consent}
                        for u in people],
@@ -373,6 +382,80 @@ async def test_fleetio(user: User = Depends(require_admin), scope: Scope = Depen
             "detail": st, "why_none": why}
 
 
+class GeotabIn(BaseModel):
+    enabled: bool
+    database: str = Field(default="", max_length=120)
+    username: str = Field(default="", max_length=200)
+    password: str | None = Field(default=None, max_length=500)     # None = keep; "" = remove
+    server: str = Field(default="", max_length=120, pattern=r"^(https?://)?[A-Za-z0-9.-]*/?$")   # blank = my.geotab.com
+    poll_s: int = Field(default=svc.FLEETIO_POLL_DEFAULT_S, ge=svc.FLEETIO_POLL_MIN_S, le=3600)
+
+
+@router.put("/api/tracking/geotab")
+async def put_geotab(body: GeotabIn, request: Request, user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                     db: AsyncSession = Depends(get_db)):
+    """Geotab on the map (the OZINT SOC, 2026-10-26: "we are using ZenduitONE/Go Fleet, which has gps on all 15 cars"):
+    every active device in the database shows as a tracker, refreshed every poll_s, like Fleetio."""
+    tenant = await db.get(Tenant, scope.write_tenant())
+    src = await _source(db, tenant.id, create=True, kind="geotab")
+    name, database = body.username.strip(), body.database.strip()
+    server = body.server.strip().removeprefix("https://").removeprefix("http://").strip("/").lower()
+    pw_set = bool(src.secret_enc) if body.password is None else bool(body.password.strip())
+    if body.enabled and not (database and name and pw_set):
+        raise HTTPException(400, "Enter the Geotab database, user name and password before switching Geotab on.")
+    changed = []
+    opts = dict(src.options or {})
+    for k, v in (("database", database), ("server", server)):
+        if opts.get(k, "") != v:
+            opts[k] = v
+            changed.append(k)
+    src.options = opts
+    for k, v in (("enabled", body.enabled), ("client_id", name), ("poll_s", body.poll_s)):
+        if getattr(src, k) != v:
+            setattr(src, k, v)
+            changed.append({"client_id": "username"}.get(k, k))
+    if body.password is not None:
+        src.secret_enc = encrypt(body.password.strip()) if body.password.strip() else ""
+        changed.append("password")
+    if {"database", "server", "username", "password"} & set(changed):
+        src.last_ok_at, src.last_error, src.last_error_at = None, "", None
+    if changed:
+        audit(db, tenant.id, "tracking.geotab_settings", user_id=user.id, ip=client_ip(request), fields=changed)   # names, never values
+    await db.commit()
+    if src.enabled:
+        await svc.poll_fleetio(force_tenant=tenant.id)        # the vehicles show at once, not after the next interval
+        await db.refresh(src)
+    return await _view(db, tenant)
+
+
+@router.post("/api/tracking/geotab/test")
+async def test_geotab(user: User = Depends(require_admin), scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    src = await _source(db, scope.write_tenant(), kind="geotab")
+    client = svc.fleetio_client_for(src) if src else None
+    await db.commit()
+    if client is None:
+        raise HTTPException(400, "Save your Geotab database, user name and password first.")
+    try:
+        vehicles = await client.vehicles()
+    except geotab.GeotabError as e:
+        return {"ok": False, "error": str(e)}
+    placed = [v for v in vehicles if v.at is not None]
+    st = client.stats
+    log.info("Geotab test for company %s: %s", scope.write_tenant(), st)     # counts only, never ids or passwords
+    if placed:
+        why = ""
+    elif not st.get("devices"):
+        why = "Geotab lists no devices for this user: does its data access (groups) include the vehicles?"
+    elif not st.get("statuses"):
+        why = "Geotab gave no device status: the user's security clearance may not allow reading vehicle locations."
+    else:
+        why = "Geotab has no position for any of these devices yet."
+    return {"ok": True, "vehicles": len(vehicles), "with_position": len(placed),
+            "newest_position_at": max(v.at for v in placed).isoformat() if placed else None,
+            "oldest_position_at": min(v.at for v in placed).isoformat() if placed else None,
+            "detail": st, "why_none": why}
+
+
 ORG_ID = r"^[A-Za-z0-9_-]{1,32}$"            # goes into IC2 URLs
 
 
@@ -496,10 +579,11 @@ async def delete_tracker(tracker_id: int, request: Request, user: User = Depends
                          db: AsyncSession = Depends(get_db)):
     t = await _tracker(db, scope, tracker_id)
     tenant_id = t.tenant_id
-    src = await _source(db, tenant_id, kind="fleetio") if t.source == "fleetio" else None
-    if src is not None and src.enabled and t.error != "Not in Fleetio any more (archived or deleted there)":
-        raise HTTPException(400, f"{t.name} is in Fleetio, so it would come straight back. Switch it off here to hide it, "
-                                 "or archive it in Fleetio.")
+    src = await _source(db, tenant_id, kind=t.source) if t.source in svc.FEEDS else None
+    if src is not None and src.enabled and t.error != svc.gone_text(t.source):
+        feed = svc.FEEDS[t.source]
+        raise HTTPException(400, f"{t.name} is in {feed}, so it would come straight back. Switch it off here to hide it, "
+                                 f"or {'archive' if t.source == 'fleetio' else 'retire'} it in {feed}.")
     await db.execute(TrackerPoint.__table__.delete().where(TrackerPoint.tracker_id == t.id))
     audit(db, tenant_id, "tracker.removed", user_id=user.id, ip=client_ip(request), name=t.name, serial=t.serial)
     await db.delete(t)

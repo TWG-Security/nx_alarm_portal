@@ -67,6 +67,35 @@
           <li>Vehicles get positions in Fleetio from a GPS / telematics integration (or Fleetio Go). The test shows how fresh they are.</li>
         </ol></details>
     </form>
+    <form class="card" id="gx-form">
+      <h2>Fleet vehicles (Geotab · ZenduONE · GoFleet)</h2>
+      <p class="muted" style="margin-top:0">Every active vehicle in your Geotab (MyGeotab) database shows on the map at its last
+        position from its GO device, with speed. ZenduONE and GoFleet run on Geotab. New vehicles appear by themselves; switch one off below to hide it.</p>
+      <div id="gx-status"></div>
+      <label class="check"><input type="checkbox" id="gx-enabled"> Show Geotab vehicles</label>
+      <div class="rules-grid">
+        <div class="field"><label for="gx-db">Database</label><input id="gx-db" type="text" maxlength="120" class="mono" autocomplete="off"></div>
+        <div class="field"><label for="gx-user">User name</label><input id="gx-user" type="text" maxlength="200" autocomplete="off"></div>
+        <div class="field"><label for="gx-pass">Password</label><input id="gx-pass" type="password" maxlength="500" autocomplete="new-password"><small id="gx-pass-hint"></small></div>
+        <div class="field"><label for="gx-server">Server</label><input id="gx-server" type="text" maxlength="120" class="mono" placeholder="my.geotab.com" autocomplete="off"><small>Leave blank unless told otherwise</small></div>
+        <div class="field"><label for="gx-poll">Check every</label><input id="gx-poll" type="number" min="30" max="3600"><small>seconds (30 to 3600)</small></div>
+      </div>
+      <div id="gx-error"></div>
+      <div class="row manage-only" style="align-items:center;gap:8px">
+        <button class="btn btn-primary" type="submit" style="flex:0 0 auto">Save</button>
+        <button class="btn" type="button" id="gx-test" style="flex:0 0 auto">Test connection</button>
+        <span id="gx-test-result" class="muted"></span>
+      </div>
+      <details class="muted small-print"><summary>Getting a Geotab login for the portal</summary>
+        <ol class="steps">
+          <li>Sign in to <b>MyGeotab</b> as an administrator. The <b>database</b> name is the part after <b>my.geotab.com/</b> in the address bar.
+            ZenduONE / GoFleet customers without MyGeotab access: ask ZenduIT (servicedesk@zenduit.com) for a service account for your database.</li>
+          <li><b>Administration → Users → Add</b>: a user just for the portal (e.g. service-alarmportal@yourcompany.com), basic authentication, a strong password.</li>
+          <li><b>Data access</b>: the groups holding the vehicles to show. <b>Security clearance</b>: one that can view vehicles and their location; the portal only reads.</li>
+          <li>Type the database, user name and password above, tick <b>Show Geotab vehicles</b>, <b>Save</b>, then <b>Test connection</b>.</li>
+          <li>If Geotab refuses the login, the portal waits 10 minutes before trying again (so it never locks the user); saving again tries at once.</li>
+        </ol></details>
+    </form>
     <div class="card">
       <div class="card-head"><h2>Tracked guards and vehicles</h2></div>
       <p class="muted" style="margin-top:0"><b>Texts go to</b> is the person a <b>Dispatch</b> text goes to (they need a phone number and must have replied YES to texts).</p>

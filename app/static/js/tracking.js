@@ -8,6 +8,7 @@ const $ = (id) => document.getElementById(id);
 let data = null;
 
 const KIND = { vehicle: "Vehicle", guard: "Guard" };
+const FEED = { fleetio: "Fleetio", geotab: "Geotab" };     // fleet feeds: vehicles come from the account, not picked here
 const CONSENT = { yes: "", pending: " (hasn't replied YES)", none: " (texts not set up)", stopped: " (replied STOP)" };
 function personOptions(selected, onlyPhones = false) {
   const people = data.people.filter((p) => !onlyPhones || p.phone);
@@ -41,16 +42,17 @@ function paint() {
   $("gt-trackers").innerHTML = data.trackers.map((t) => `<tr data-id="${t.id}">
     <td>${MANAGE ? `<input type="text" value="${esc(t.name)}" maxlength="100" data-f="name" aria-label="Name">` : `<b>${esc(t.name)}</b>`}
       ${MANAGE ? `<select data-f="kind" aria-label="Kind">${Object.entries(KIND).map(([k, v]) => `<option value="${k}" ${k === t.kind ? "selected" : ""}>${v}</option>`).join("")}</select>` : `<div class="muted small-print">${KIND[t.kind]}</div>`}</td>
-    <td>${t.source === "phone" ? `<b>Phone (browser)</b>${linkState(t)}` : `${t.source === "fleetio" ? '<span class="chip">Fleetio</span> ' : ""}${esc(t.device_name || "")}<div class="muted small-print mono">${esc(t.source === "fleetio" ? "" : t.serial)}</div>`}
+    <td>${t.source === "phone" ? `<b>Phone (browser)</b>${linkState(t)}` : `${FEED[t.source] ? `<span class="chip">${FEED[t.source]}</span> ` : ""}${esc(t.device_name || "")}<div class="muted small-print mono">${esc(FEED[t.source] ? "" : t.serial)}</div>`}
       ${MANAGE ? `<label class="small-print" style="display:block;margin-top:4px">Texts go to <select data-f="user_id" aria-label="Texts go to">${personOptions(t.user_id)}</select></label>` : ""}
       ${t.online === false ? `<div class="small-print guard-offline-text">OFFLINE since ${esc(relTime(t.offline_since))}</div>` : ""}</td>
     <td>${t.fix_at ? `${esc(relTime(t.fix_at))}<div class="muted small-print">${t.lat.toFixed(5)}, ${t.lng.toFixed(5)}</div>` : '<span class="muted">none yet</span>'}
       ${t.error ? `<div class="alert alert-error small-print" style="margin:4px 0 0">${esc(t.error)}</div>` : ""}</td>
-    <td class="actions">${MANAGE ? `${t.source === "phone" ? "" : `<button class="btn btn-sm" type="button" data-refresh title="Get its position from ${t.source === "fleetio" ? "Fleetio" : "InControl2"} now">↻ Refresh</button>`}
+    <td class="actions">${MANAGE ? `${t.source === "phone" ? "" : `<button class="btn btn-sm" type="button" data-refresh title="Get its position from ${FEED[t.source] || "InControl2"} now">↻ Refresh</button>`}
       <label class="check" style="margin:0"><input type="checkbox" data-f="enabled" ${t.enabled ? "checked" : ""}> On</label>
       <button class="btn btn-sm btn-danger" type="button" data-remove>Remove</button>` : ""}</td></tr>`).join("")
     || '<tr><td colspan="4" class="empty">Nothing tracked yet. Add a router or a phone below.</td></tr>';
   paintFleetio();
+  paintGeotab();
   $("gt-auto").checked = data.auto_dispatch;
   const keep = $("gt-person").value;
   $("gt-person").innerHTML = personOptions(Number(keep) || null, true);
@@ -146,6 +148,50 @@ $("fl-test").addEventListener("click", async () => {
     out.innerHTML = r.ok ? `<span style="color:var(--ok)">Connected ✓ ${r.vehicles} vehicle${r.vehicles === 1 ? "" : "s"}, ${r.with_position} with a position${r.newest_position_at ? ` (newest ${esc(relTime(r.newest_position_at))}, oldest ${esc(relTime(r.oldest_position_at))})` : ""}</span>
       ${r.why_none ? `<div class="text-failed small-print">${esc(r.why_none)}</div>` : ""}
       ${r.detail ? `<div class="muted small-print">From Fleetio: ${r.detail.entry_in_list} with a location in the list, ${r.detail.entry_id_only} with a location id only (${r.detail.looked_up} read, ${r.detail.lookup_failed} refused), ${r.detail.no_entry} without a location${r.detail.field_missing ? `, ${r.detail.field_missing} without the location fields` : ""}.</div>` : ""}`
+      : `<span class="text-failed">${esc(r.error)}</span>`;
+  } catch (err) { out.innerHTML = `<span class="text-failed">${esc(err.message)}</span>`; }
+});
+
+// ---- Geotab (MyGeotab; ZenduONE, GoFleet): every active device in the database on the map
+function paintGeotab() {
+  const g = data.geotab;
+  $("gx-enabled").checked = g.enabled;
+  $("gx-db").value = g.database;
+  $("gx-user").value = g.username;
+  $("gx-server").value = g.server;
+  $("gx-poll").value = g.poll_s;
+  $("gx-pass").value = "";
+  $("gx-pass").placeholder = g.password_set ? "Saved (type to replace)" : "";
+  $("gx-pass-hint").textContent = g.password_set ? "Leave blank to keep the saved password." : "";
+  const cars = data.trackers.filter((t) => t.source === "geotab");
+  const ok = g.last_ok_at && (!g.last_error_at || g.last_ok_at > g.last_error_at);
+  $("gx-status").innerHTML = !g.enabled ? '<div class="alert">Geotab is off.</div>'
+    : ok ? `<div class="alert alert-ok">Working: ${cars.length} vehicle${cars.length === 1 ? "" : "s"}, last read from Geotab ${esc(relTime(g.last_ok_at))}.</div>`
+    : g.last_error ? `<div class="alert alert-error">Geotab problem ${esc(relTime(g.last_error_at))}: ${esc(g.last_error)}</div>`
+    : '<div class="alert">On. Waiting for the first read.</div>';
+}
+$("gx-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const body = { enabled: $("gx-enabled").checked, database: $("gx-db").value.trim(), username: $("gx-user").value.trim(),
+                 server: $("gx-server").value.trim(), poll_s: Number($("gx-poll").value) || 60 };
+  if ($("gx-pass").value) body.password = $("gx-pass").value;
+  const btn = e.submitter; if (btn) btn.disabled = true;
+  try {
+    data = await api("/api/tracking/geotab", { method: "PUT", body });
+    $("gx-error").innerHTML = "";
+    paint();
+    toast("Saved");
+  } catch (err) { $("gx-error").innerHTML = `<div class="alert alert-error">${esc(err.message)}</div>`; }
+  finally { if (btn) btn.disabled = false; }
+});
+$("gx-test").addEventListener("click", async () => {
+  const out = $("gx-test-result");
+  out.textContent = "Testing…";
+  try {
+    const r = await api("/api/tracking/geotab/test", { method: "POST" });
+    out.innerHTML = r.ok ? `<span style="color:var(--ok)">Connected ✓ ${r.vehicles} vehicle${r.vehicles === 1 ? "" : "s"}, ${r.with_position} with a position${r.newest_position_at ? ` (newest ${esc(relTime(r.newest_position_at))}, oldest ${esc(relTime(r.oldest_position_at))})` : ""}</span>
+      ${r.why_none ? `<div class="text-failed small-print">${esc(r.why_none)}</div>` : ""}
+      ${r.detail ? `<div class="muted small-print">From Geotab: ${r.detail.devices} devices, ${r.detail.active} active, ${r.detail.statuses} with a status.</div>` : ""}`
       : `<span class="text-failed">${esc(r.error)}</span>`;
   } catch (err) { out.innerHTML = `<span class="text-failed">${esc(err.message)}</span>`; }
 });

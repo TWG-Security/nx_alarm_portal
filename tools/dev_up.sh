@@ -16,7 +16,7 @@ mkdir -p .dev-logs
 [ -f .dev-apns.p8 ] || .venv/bin/python -c "from cryptography.hazmat.primitives.asymmetric import ec; from cryptography.hazmat.primitives import serialization as s; open('.dev-apns.p8','wb').write(ec.generate_private_key(ec.SECP256R1()).private_bytes(s.Encoding.PEM, s.PrivateFormat.PKCS8, s.NoEncryption()))"
 nohup .venv/bin/uvicorn tools.fake_nx:app --port 8199 > .dev-logs/fake_nx.log 2>&1 &
 POLL_INTERVAL_S=${POLL_INTERVAL_S:-5} CLIP_PRE_S=${CLIP_PRE_S:-5} CLIP_POST_S=${CLIP_POST_S:-6} \
-  WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=http://localhost:8099 TWILIO_API_BASE=http://127.0.0.1:8199 APNS_API_BASE=http://127.0.0.1:8199/_apns APNS_KEY_PATH=.dev-apns.p8 APNS_KEY_ID=DEVKEY0001 APNS_TEAM_ID=NY8H9358QD APNS_TOPIC=com.twgsecurity.alarms PEPLINK_API_BASE=http://127.0.0.1:8199/_ic2 FLEETIO_API_BASE=http://127.0.0.1:8199/_fleetio \
+  WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=http://localhost:8099 TWILIO_API_BASE=http://127.0.0.1:8199 APNS_API_BASE=http://127.0.0.1:8199/_apns APNS_KEY_PATH=.dev-apns.p8 APNS_KEY_ID=DEVKEY0001 APNS_TEAM_ID=NY8H9358QD APNS_TOPIC=com.twgsecurity.alarms PEPLINK_API_BASE=http://127.0.0.1:8199/_ic2 FLEETIO_API_BASE=http://127.0.0.1:8199/_fleetio GEOTAB_API_BASE=http://127.0.0.1:8199/_geotab \
   CAMHEALTH_WATCH_S=${CAMHEALTH_WATCH_S:-2} nohup .venv/bin/uvicorn app.main:app --port 8099 > .dev-logs/portal.log 2>&1 &
 if [ "${CAMHEALTH:-0}" = "1" ]; then
   CAMHEALTH_INTERVAL_S=${CAMHEALTH_INTERVAL_S:-20} CAMHEALTH_WATCH_S=1 CAMHEALTH_AI=off \

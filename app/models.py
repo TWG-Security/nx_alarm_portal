@@ -597,7 +597,8 @@ class IpAllow(Base):
 
 class TrackerSource(Base):
     """A company's GPS account (its admins enter it on the Sites page), one per kind: "peplink" = an InControl2 API
-    client (client_id + secret), "fleetio" = a Fleetio account (client_id = Account Token, secret = API key)."""
+    client (client_id + secret), "fleetio" = a Fleetio account (client_id = Account Token, secret = API key),
+    "geotab" = a MyGeotab database (client_id = user name, secret = password, options = {database, server})."""
 
     __tablename__ = "tracker_sources"
     __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_tracker_sources_tenant_kind"),)
@@ -609,6 +610,7 @@ class TrackerSource(Base):
     client_id: Mapped[str] = mapped_column(String(200), default="")
     secret_enc: Mapped[str] = mapped_column(Text, default="")
     poll_s: Mapped[int] = mapped_column(Integer, default=30)
+    options: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -631,7 +633,7 @@ class Tracker(Base):
     ic2_group: Mapped[int] = mapped_column(Integer, default=0)
     ic2_device: Mapped[int] = mapped_column(Integer, default=0)
     serial: Mapped[str] = mapped_column(String(40), default="")
-    ext_id: Mapped[str] = mapped_column(String(64), default="")               # source "fleetio": the Fleetio vehicle id
+    ext_id: Mapped[str] = mapped_column(String(64), default="")               # source "fleetio" / "geotab": the vehicle / device id there
     device_name: Mapped[str] = mapped_column(String(200), default="")         # the router's name in InControl2 (Fleetio: year make model)
     tz: Mapped[str] = mapped_column(String(64), default="")                   # the IC2 group's time zone (its timestamps are local)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)

@@ -64,6 +64,8 @@ class Settings(BaseSettings):
     peplink_api_base: str = "https://api.ic.peplink.com"
     # Fleet vehicles from Fleetio (app/fleetio.py; dev points it at tools/fake_nx.py's fake Fleetio)
     fleetio_api_base: str = "https://secure.fleetio.com/api"
+    # Fleet vehicles from Geotab / MyGeotab (ZenduONE, GoFleet; app/geotab.py): the server when the company leaves it blank
+    geotab_api_base: str = "https://my.geotab.com"
     # Site 3D models (app/routers/site_models.py): uploads and their converted 3D Tiles
     model_dir: str = "./site-models"
     model_max_mb: int = 3072             # largest upload

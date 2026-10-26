@@ -56,6 +56,7 @@ class Vehicle:
     lng: float | None
     at: datetime | None        # when Fleetio recorded the position (UTC)
     address: str
+    speed: float | None = None  # m/s (Geotab gives it; Fleetio doesn't)
 
 
 def _parse_time(s) -> datetime | None:

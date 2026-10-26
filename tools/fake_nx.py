@@ -595,6 +595,90 @@ async def fleet_archive(vid: int):
     FLEET["archived"].add(vid)
     return {"ok": True}
 
+# ---------------------------------------------------------------- fake Geotab / MyGeotab (app/geotab.py)
+# dev_up.sh points GEOTAB_API_BASE at /_geotab (calls go to /_geotab/apiv1). Database "dev", user "dev-user", password
+# "dev-pass". JSON-RPC like Geotab's API reference (errors as {"error": {"message", "data": {"type"}, "errors": [{"name"}]}}).
+# Patrol 1 drives (moves every DeviceStatusInfo read), Patrol 2 parked 3 h ago, Spare has no position (0, 0), Old Car is
+# retired (activeTo in the past). POST /_geotab/mode/{ok|unauthorized|expire|overlimit|fail|moved}: expire = the next Get
+# says the session is invalid once; moved = Authenticate sends the client to another server (served at /apiv1 here).
+GEO = {"mode": "ok", "auth": 0, "reads": 0, "calls": [], "sessions": set()}
+
+def _geo_iso(ts: float) -> str:
+    return _dt.fromtimestamp(ts, _tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+def _geo_error(name: str, message: str) -> dict:
+    return {"jsonrpc": "2.0", "error": {"code": -32000, "message": message, "name": "JSONRPCError",
+                                       "data": {"id": "x", "type": name, "requestIndex": 0},
+                                       "errors": [{"name": name, "message": message}]}}
+
+_GEO_DEVICES = [
+    {"id": "b1", "name": "Patrol 1", "serialNumber": "G9A1B2C3D4E5", "licensePlate": "CVTZ 101", "activeTo": "2050-01-01T00:00:00.000Z"},
+    {"id": "b2", "name": "Patrol 2", "serialNumber": "G9A1B2C3D4E6", "licensePlate": "CVTZ 102", "activeTo": "2050-01-01T00:00:00.000Z"},
+    {"id": "b3", "name": "Spare", "serialNumber": "G9A1B2C3D4E7", "licensePlate": "", "activeTo": "2050-01-01T00:00:00.000Z"},
+    {"id": "b9", "name": "Old Car", "serialNumber": "G8OLD", "licensePlate": "", "activeTo": "2024-01-01T00:00:00.000Z"},
+]
+
+def _geo_status(dev_id: str, step: int) -> dict:
+    now = time.time()
+    lat, lng, ts, speed = {"b1": (40.2650 + step * 0.0005, -76.8850 + step * 0.0004, now - 20, 46.0),
+                           "b2": (40.2610, -76.8990, now - 3 * 3600, 0.0),
+                           "b3": (0, 0, now - 86400, float("nan"))}.get(dev_id, (0, 0, now, 0.0))
+    return {"device": {"id": dev_id}, "latitude": lat, "longitude": lng, "dateTime": _geo_iso(ts), "bearing": 37,
+            "speed": None if speed != speed else speed, "isDeviceCommunicating": dev_id != "b3", "isDriving": dev_id == "b1"}
+
+@app.post("/_geotab/apiv1")
+@app.post("/apiv1")
+async def geo_rpc(request: Request):
+    body = await request.json()
+    method, params = body.get("method"), body.get("params") or {}
+    GEO["calls"].append((request.url.path, method, params.get("typeName")))
+    if GEO["mode"] == "fail":
+        return JSONResponse({"error": "boom"}, status_code=500)
+    if method == "Authenticate":
+        GEO["auth"] += 1
+        if GEO["mode"] == "unauthorized" or (params.get("database"), params.get("userName"), params.get("password")) != ("dev", "dev-user", "dev-pass"):
+            return _geo_error("InvalidUserException", "Incorrect login credentials")
+        sid = f"sess-{GEO['auth']}"
+        GEO["sessions"].add(sid)
+        path = "my99.geotab.test" if GEO["mode"] == "moved" and request.url.path.startswith("/_geotab") else "ThisServer"
+        return {"jsonrpc": "2.0", "result": {"credentials": {"database": "dev", "userName": "dev-user", "sessionId": sid}, "path": path}}
+    if method != "Get":
+        return _geo_error("MissingMethodException", f"The method '{method}' could not be found")
+    creds = params.get("credentials") or {}
+    if GEO["mode"] == "expire":
+        GEO["mode"] = "ok"
+        GEO["sessions"].discard(creds.get("sessionId"))
+    if creds.get("sessionId") not in GEO["sessions"]:
+        return _geo_error("InvalidUserException", "Incorrect login credentials @ 'dev'")
+    if GEO["mode"] == "overlimit":
+        return _geo_error("OverLimitException", "API calls quota exceeded. Maximum admitted 900 per 1m.")
+    tn, search = params.get("typeName"), params.get("search") or {}
+    if tn == "Device":
+        rows = [d for d in _GEO_DEVICES if not search.get("id") or d["id"] == search["id"]]
+        return {"jsonrpc": "2.0", "result": rows}
+    if tn == "DeviceStatusInfo":
+        GEO["reads"] += 1
+        want = (search.get("deviceSearch") or {}).get("id")
+        return {"jsonrpc": "2.0", "result": [_geo_status(d["id"], GEO["reads"]) for d in _GEO_DEVICES[:3] if not want or d["id"] == want]}
+    if tn == "LogRecord":
+        dev = (search.get("deviceSearch") or {}).get("id")
+        since = _dt.fromisoformat(search["fromDate"].replace("Z", "+00:00")).timestamp() if search.get("fromDate") else 0
+        rows = []
+        if dev == "b1":
+            now, step = time.time(), GEO["reads"]
+            for k in range(1, 6):
+                ts = now - 20 - 15 * k
+                if ts > since:
+                    rows.append({"device": {"id": "b1"}, "dateTime": _geo_iso(ts), "speed": 40,
+                                 "latitude": 40.2650 + step * 0.0005 - k * 0.0002, "longitude": -76.8850 + step * 0.0004 - k * 0.00015})
+        return {"jsonrpc": "2.0", "result": rows}
+    return _geo_error("ArgumentException", f"Unknown type {tn}")
+
+@app.post("/_geotab/mode/{mode}")
+async def geo_mode(mode: str):
+    GEO["mode"] = mode
+    return {"mode": mode}
+
 # ---------------------------------------------------------------- fake APNs (app/apns.py)
 # dev_up.sh points APNS_API_BASE at /_apns (HTTP/1.1 here; Apple's is HTTP/2). Records every push with its arrival
 # time, checks the provider token's shape and the topic. POST /_apns/mode/{ok|gone|bad|fail|hang}; GET /_apns/log.
