@@ -64,7 +64,11 @@ LIBRARY_MIN_SHARP = 0.5    # a frame joins the library only this sharp vs the re
                            # old blur rule missed joined it and then made the blur look normal)
 
 MIN_REGION_CELLS = 2
-MIN_REGION_AREA = 0.008    # of the frame
+# An area alert needs this much of the frame (2026-10-27, the user's screenshots: a cable spool moved on a stockroom
+# shelf (~1.6 %), a box on the top shelf (~1 %) and a white van's roof (~1.7 %) were all flagged; none is a camera
+# problem). Whole-view checks don't use it.
+MIN_REGION_AREA = 0.03
+MOVABLE_SHARE = 0.3        # GPU: an area cell this much person / vehicle (segmentation) never counts for glare / dark / blur
 WHOLE = 0.6                # of the cells with detail: the whole view (covered, out of focus, glare)
 VIEW_CHANGED = 0.55        # this much of the view changed = the whole view
 
@@ -73,6 +77,10 @@ MOVE_SHIFT = 0.03          # of the width
 MOVE_ROT = 1.5             # degrees
 MOVE_SCALE = 0.05
 MIN_INLIERS = 15
+# "Moved" also needs the measured shift to explain the picture: the reference shifted that way must match the frame
+# clearly better than unshifted (Trash Cans at night, 2026-10-27: "Camera moved" on an unmoved camera; ORB on IR
+# noise and gravel can line up on the wrong points).
+MOVE_GAIN = 0.05           # correlation gained by the shift (edges, 320 px wide)
 # View lost (camera turned far away / something right in front of it): the reference can't be lined up AND the whole
 # picture no longer looks like that place. Measured 2026-10-20 (the user turned site 2's PTZ onto the house wall):
 # DINOv2 mean patch similarity tamper 0.10, a 50 % pan 0.29, normal cameras 0.68-1.00; CPU thumbnail correlation tamper
@@ -324,11 +332,15 @@ class Result:
     objects: list = field(default_factory=list)   # people / vehicles in view (GPU)
 
 
+def _black(g: np.ndarray) -> bool:
+    return g.mean() < DARK_MEAN and np.percentile(g, 98) < 70
+
+
 def check_alone(f: Frame) -> list[dict]:
     """Checks that need no reference (also all a camera gets until it has one)."""
     g = f.gray
     out = []
-    if g.mean() < DARK_MEAN and np.percentile(g, 98) < 70:
+    if _black(g):
         out.append(issue("dark", severity="problem", boxes=[[0, 0, 1, 1]], detail="The whole picture is black"))
     elif g.std() < 6:
         out.append(issue("covered", boxes=[[0, 0, 1, 1]], detail="The picture is one flat colour"))
@@ -400,6 +412,15 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
             res.metrics["ai_error"] = str(exc)[:200]
     res.metrics.update(people=len(people), objects=len(res.objects))
     res.usable_as_reference = not alone and not people    # never a reference with someone standing in it
+    # A camera with nothing lit in view at night and no infrared is black every night: that's its night picture, not
+    # "Too dark" (2026-10-27, the user's screenshots). Black by night may become the night reference; black like the
+    # night reference is fine; black where the night reference shows a picture is still a problem (IR or light out).
+    black_night = [i["kind"] for i in alone] == ["dark"] and sun is not None and sun < TWILIGHT[0]
+    if black_night and ref is None:
+        res.usable_as_reference = True
+    if [i["kind"] for i in alone] == ["dark"] and ref is not None and ref.shape == f.shape and _black(ref.gray):
+        res.metrics["dark_as_reference"] = True
+        return res
     if ref is None or ref.shape != f.shape or twilight(sun):
         res.issues += alone
         if twilight(sun):
@@ -428,7 +449,8 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
         ref_gray = cv2.warpAffine(ref.gray, a.matrix, (f.shape[1], f.shape[0]), borderMode=cv2.BORDER_REFLECT)
         ref_bgr = cv2.warpAffine(ref.bgr, a.matrix, (f.shape[1], f.shape[0]), borderMode=cv2.BORDER_REFLECT)
         valid = cv2.warpAffine(np.ones(ref.shape, np.uint8), a.matrix, (f.shape[1], f.shape[0]))
-        if a.moved:
+        res.metrics["move_gain"] = gain = round(_shift_gain(ref.gray, f.gray, a), 3) if a.moved else None
+        if a.moved and gain >= MOVE_GAIN:
             h, w = ref.shape
             corners = np.float32([[0, 0], [w, 0], [w, h], [0, h]])
             poly = (corners @ a.matrix[:, :2].T + a.matrix[:, 2]) / np.float32([w, h])
@@ -523,6 +545,17 @@ def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[i
             hit[k] &= m | busy
     for k in keys:
         hit[k] &= seen & ~now_cells
+    # The detector misses vehicles from above (a white van's roof read as glare, 2026-10-27): segmentation decides too.
+    if ai is not None and hasattr(ai, "segment") and any(hit[k].any() for k in ("glare", "dark", "blur")):
+        try:
+            if seg is None:
+                seg = ai.segment(f.bgr)
+                movable = np.isin(seg, [i for i, n in enumerate(ai.seg_labels) if n in MOVABLE])
+            vehicle = _cells(movable.astype(np.float32), g) > MOVABLE_SHARE
+            for k in ("glare", "dark", "blur"):
+                hit[k] &= ~vehicle
+        except Exception as exc:  # noqa: BLE001 - the CPU result stands
+            res.metrics["ai_error"] = str(exc)[:200]
     best_sim = np.max(sims, axis=0) if sims else None
     res.metrics.update(flat=int(hit["flat"].sum()), dark=int(hit["dark"].sum()), glare=int(hit["glare"].sum()),
                        blur=int(hit["blur"].sum()), changed=int(hit["changed"].sum()))
@@ -557,6 +590,30 @@ def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[i
         res.issues.append(issue("scene_change", boxes=boxes,
                                 detail=f"{len(boxes)} area{'s differ' if len(boxes) > 1 else ' differs'} from earlier "
                                        f"pictures at this time of day ({_area(boxes) * 100:.0f}% of the view)"))
+
+
+def _edges(gray: np.ndarray) -> np.ndarray:
+    small = cv2.resize(gray, (320, max(1, round(gray.shape[0] * 320 / gray.shape[1]))), interpolation=cv2.INTER_AREA)
+    small = cv2.GaussianBlur(small, (0, 0), 1.5).astype(np.float32)
+    return cv2.magnitude(cv2.Sobel(small, cv2.CV_32F, 1, 0), cv2.Sobel(small, cv2.CV_32F, 0, 1))
+
+
+def _shift_gain(ref: np.ndarray, cur: np.ndarray, a: Alignment) -> float:
+    """How much better the reference matches the frame shifted as measured than left where it was (edge correlation,
+    over the part both cover)."""
+    k = 320 / ref.shape[1]
+    m = a.matrix.copy()
+    m[:, 2] *= k
+    e_ref, e_cur = _edges(ref), _edges(cur)
+    size = (e_cur.shape[1], e_cur.shape[0])
+    shifted = cv2.warpAffine(e_ref, m, size)
+    both = cv2.warpAffine(np.ones_like(e_ref), m, size) > 0.99
+
+    def corr(x, y):
+        x, y = x[both], y[both]
+        x, y = x - x.mean(), y - y.mean()
+        return float((x * y).sum() / (np.sqrt((x * x).sum() * (y * y).sum()) + 1e-6))
+    return corr(shifted, e_cur) - corr(e_ref, e_cur) if both.sum() > 1000 else 0.0
 
 
 def _thumb(gray: np.ndarray) -> np.ndarray:

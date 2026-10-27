@@ -517,3 +517,91 @@ async def test_processing_panel_follows_the_company_in_view(client, session):
     assert (await client.post("/api/scope", json={"scope": "all"})).status_code == 200
     d = (await client.get("/api/camera-health/processing")).json()["data"]
     assert len(d["queue"]) == 3 and "scoped" not in d
+
+
+# ---- tuning from the user's screenshots (2026-10-27) --------------------------------------------------------------
+def _with(img, box, value):
+    import numpy as np
+    x, y, w, h = box
+    out = img.astype(np.float32).copy()
+    out[y:y + h, x:x + w] = value
+    return A.frame_from_bgr(np.clip(out, 0, 255).astype(np.uint8))
+
+
+def test_small_areas_are_not_camera_problems():
+    """A spool moved on a stockroom shelf, a box on the top shelf (~1-2 % of the view): not flagged (they were under
+    the old 0.8 % minimum). The 8 % object in "change" still is (test_each_defect_is_found)."""
+    import cv2
+    import numpy as np
+    rng = np.random.default_rng(70)
+    img = H.render("normal", 70).astype(np.float32)
+    x, y, w, h = 850, 380, 150, 130                                                    # 2.1 % of the view
+    b = rng.normal(0, 25, (h, w)).astype(np.float32)
+    img[y:y + h, x:x + w] = np.clip(np.stack([60 + b, 140 + b, 200 + b], -1), 0, 255)
+    cv2.rectangle(img, (x, y), (x + w, y + h), (20, 20, 20), 6)
+    cv2.line(img, (x, y), (x + w, y + h), (20, 20, 20), 6)
+    small = A.frame_from_bgr(np.clip(img, 0, 255).astype(np.uint8))
+    assert check(small).issues == []
+    old, A.MIN_REGION_AREA = A.MIN_REGION_AREA, 0.008
+    try:
+        assert kinds(check(small)) == ["scene_change"]                                # what the old minimum did
+    finally:
+        A.MIN_REGION_AREA = old
+
+
+class SegOnly:
+    """A GPU stand-in: the detector misses everything; segmentation calls `car` what's inside `car_box`."""
+    seg_labels = ["wall", "road", "car"]
+
+    def __init__(self, car_box):
+        self.car_box = car_box
+
+    def objects(self, bgr):
+        return []
+
+    def patch_features(self, bgr):
+        import numpy as np
+        return np.full((8, 14, 4), 0.5, np.float32)        # everything "the same" for DINOv2
+
+    def segment(self, bgr):
+        import numpy as np
+        h, w = bgr.shape[:2]
+        out = np.ones((h, w), np.int64)
+        x, y, bw, bh = self.car_box
+        sx, sy = w / H.W, h / H.H
+        out[int(y * sy):int((y + bh) * sy), int(x * sx):int((x + bw) * sx)] = 2
+        return out
+
+
+def test_glare_on_a_vehicle_the_detector_missed_never_counts():
+    """A white van's roof seen from above, lit at night: the detector missed it, segmentation says car."""
+    box = (500, 300, 320, 240)                                                         # 8 % of the view
+    van = _with(H.render("normal", 71), box, 255)
+    assert "glare" in kinds(check(van)), check(van).issues                             # CPU only: glare
+    assert "glare" not in kinds(check(van, ai=SegOnly(box)))
+
+
+def test_moved_needs_the_shift_to_explain_the_picture():
+    """ORB lining up on the wrong points (IR noise, gravel) gives a shift the picture doesn't show: not "moved"."""
+    import numpy as np
+    f = frame("normal", 72)
+    wrong = A.Alignment(True, np.float32([[0.85, 0, 0], [0, 0.85, 0]]), 40, 0, 0, 0, 0, 0.85)
+    assert A._shift_gain(ref().gray, f.gray, wrong) < A.MOVE_GAIN
+    moved = frame("moved", 72)
+    assert A._shift_gain(ref().gray, moved.gray, A.align(ref().gray, moved.gray)) > 0.5
+    assert kinds(check(moved)) == ["moved"]
+
+
+def test_black_at_night_like_its_night_reference_is_fine():
+    """A camera with nothing lit in view and no infrared is black every night: that becomes its night reference.
+    Black where the night reference shows a picture is still "Too dark"."""
+    night = datetime(2026, 10, 27, 3, 0, tzinfo=timezone.utc)                          # 11 pm in Pennsylvania
+    noon = datetime(2026, 10, 27, 16, 0, tzinfo=timezone.utc)
+    at = {"lat": 40.6, "lng": -75.4}
+    black, black2 = frame("dark", 73), frame("dark", 74)
+    first = A.analyze(black, None, now=night, **at)
+    assert kinds(first) == ["dark"] and first.usable_as_reference                      # may be learned as the night picture
+    assert not A.analyze(black, None, now=noon, **at).usable_as_reference              # never by day
+    assert A.analyze(black2, black, now=night, **at).issues == []                      # the learning check agrees
+    assert A.analyze(black2, black, **{}).issues == []                                 # ... also without the location
+    assert kinds(A.analyze(black2, frame("night", 75), library=[A.LibFrame(frame("night", 76))], now=night, **at)) == ["dark"]

@@ -8,7 +8,7 @@ set -e
 cd "$(dirname "$0")/.."
 ./tools/dev_down.sh >/dev/null 2>&1 || true
 set -a; . ./.env.dev; set +a
-rm -rf dev.db media-cache tile-cache
+rm -rf dev.db media-cache tile-cache camhealth-data   # camhealth-data: the dev frame library (production: a volume)
 .venv/bin/alembic upgrade head >/dev/null
 echo 'Smoke-test-password-123!' | .venv/bin/python -m app.cli create-admin --email admin@twgsecurity.com --name "Dev Admin" --password-stdin >/dev/null
 mkdir -p .dev-logs

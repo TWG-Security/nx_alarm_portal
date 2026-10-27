@@ -46,6 +46,10 @@ with sync_playwright() as p:
                          timeout=90000)
     check(True, f"both cameras checked and their references learned in {time.time() - t0:.0f} s")
 
+    # The dock needs a normal picture for this time of day first (a camera's library fills over days; placed before
+    # that, the pallet is learned as normal and isn't a change).
+    pg.wait_for_function(f"""() => fetch('/api/camera-health').then(r => r.json()).then(l => l.cameras
+        .some(c => c.device_id === '{DOCK}' && (c.metrics.library || 0) >= 1))""", timeout=60000, polling=2000)
     # A pallet appears in front of the dock camera (an Online camera: frames come off the live MJPEG stream).
     scene(DOCK, "change")
     t0 = time.time()
