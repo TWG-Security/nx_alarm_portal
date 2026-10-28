@@ -4,7 +4,8 @@ Every data query filters with Scope.where(Model.tenant_id); every write to a ten
 through Scope.require_write(tenant_id) (or Scope.write_tenant() for creates).
 
 - Ordinary users: their own company, always.
-- Platform users (TWG) with platform.view choose a view, stored in the session:
+- Platform users (TWG) with platform.view choose a view, stored in the session (the phone apps send it on every
+  request instead: header X-TWG-Company: own | all | <id>):
     "own"  - their own company (the default)
     "all"  - every company at once, read-only overview; creates need a single company
     <id>   - one other company (support mode)
@@ -13,14 +14,16 @@ through Scope.require_write(tenant_id) (or Scope.write_tenant() for creates).
   store always includes it (alerting_where) so viewing another company never hides your own alarms.
 """
 
+import re
 from dataclasses import dataclass
 
 from fastapi import Depends, HTTPException, Request
 from sqlalchemy import select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.audit import audit
 from app.db import get_db
-from app.deps import current_user
+from app.deps import client_ip, current_user
 from app.models import Tenant, User
 
 
@@ -72,8 +75,10 @@ class Scope:
 async def get_scope(request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)) -> Scope:
     own = user._tenant
     mcp = request.scope.get("twg_mcp")
-    if request.scope.get("twg_mobile"):                 # the iPhone app: always the user's own company
-        sel = "own"
+    mobile = request.scope.get("twg_mobile")
+    if mobile:                                          # the phone apps: no cookie session, the header on every request
+        sel = request.headers.get("x-twg-company", "own").strip().lower()
+        sel = sel if _COMPANY.match(sel) else "own"
     else:
         sel = (mcp.get("company") or "own") if mcp else request.session.get("scope", "own")
     if sel == "own" or not user.can("platform.view"):
@@ -82,10 +87,21 @@ async def get_scope(request: Request, user: User = Depends(current_user), db: As
         return Scope(user, "all", None, None)
     tenant = await db.get(Tenant, int(sel)) if str(sel).isdigit() else None
     if tenant is None or tenant.id == own.id:
-        if not mcp:
+        if not mcp and not mobile:
             request.session["scope"] = "own"
         return Scope(user, "own", frozenset({own.id}), own)
+    if mobile and (mobile["sid"], tenant.id) not in _app_viewed:
+        # As POST /api/scope does for the website: the customer's log shows TWG looked, once per app sign-in.
+        if len(_app_viewed) > 10_000:
+            _app_viewed.clear()
+        _app_viewed.add((mobile["sid"], tenant.id))
+        audit(db, tenant.id, "support.viewed", user_id=user.id, ip=client_ip(request))
+        await db.commit()
     return Scope(user, "tenant", frozenset({tenant.id}), tenant)
+
+
+_COMPANY = re.compile(r"^(own|all|\d{1,9})$")
+_app_viewed: set[tuple[str, int]] = set()          # (app session, company) already logged as support.viewed
 
 
 async def tenant_names(db: AsyncSession) -> dict[int, str]:

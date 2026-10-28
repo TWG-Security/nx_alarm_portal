@@ -85,7 +85,7 @@ async def test_a_joined_alarm_chimes_the_call_and_tells_the_dispatched_guard(cli
         events.append(sub.queue.get_nowait())
     bus.unsubscribe(sub)
     # The call's timeline changed as a guard-style update (update chime + Active calls card flash on screens)
-    assert ("alarm.timeline", {"alarm_id": call.id, "guard": True}) in events
+    assert ("alarm.timeline", {"alarm_id": call.id, "guard": True, "tenant_id": t.id}) in events
     assert not any(e == "alarm.new" for e, _ in events)                          # no new feed card
     texts = [(c, body_of(c)) for c in twilio.calls[before:]]
     upd = [b for c, b in texts if b.startswith("TWG UPDATE")]

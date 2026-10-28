@@ -332,7 +332,7 @@ async def test_dispatch_several_guards_mdt_status_and_a_live_timeline(session, c
     events = []
     while not sub.queue.empty():
         events.append(sub.queue.get_nowait())
-    assert ("alarm.timeline", {"alarm_id": alarm.id, "guard": False}) in events  # dispatchers' screens refresh (no chime)
+    assert ("alarm.timeline", {"alarm_id": alarm.id, "guard": False, "tenant_id": alarm.tenant_id}) in events  # dispatchers' screens refresh (no chime)
 
     # Guard 1 opens the link from the text and taps En route, then On scene (their router places them).
     to_guard1 = twilio.calls[sent_to(twilio).index("+15705558001")]
@@ -348,7 +348,7 @@ async def test_dispatch_several_guards_mdt_status_and_a_live_timeline(session, c
     while not sub.queue.empty():
         events.append(sub.queue.get_nowait())
     timeline_events = [d for name, d in events if name == "alarm.timeline"]
-    assert timeline_events and all(d == {"alarm_id": alarm.id, "guard": True} for d in timeline_events)   # the update chime
+    assert timeline_events and all(d == {"alarm_id": alarm.id, "guard": True, "tenant_id": alarm.tenant_id} for d in timeline_events)   # the update chime
 
     await login(client, "mike@twgsecurity.com")
     board = (await client.get(f"/api/alarms/{alarm.id}/guards")).json()["dispatched"]
@@ -584,7 +584,7 @@ async def test_a_guard_writes_notes_from_their_alarm_link(session, client):
     events = []
     while not sub.queue.empty():
         events.append(sub.queue.get_nowait())
-    assert ("alarm.timeline", {"alarm_id": alarm.id, "guard": True}) in events
+    assert ("alarm.timeline", {"alarm_id": alarm.id, "guard": True, "tenant_id": alarm.tenant_id}) in events
     assert any(name == "alarm.note" and d["text"] == "Gate chained, no one on site" for name, d in events)
     assert "Gate chained, no one on site" in (await client.get(f"/a/{link}/")).text      # back on their page after a reload
     assert (await client.post(f"/api/a/{link}/note", json={"text": "   "})).status_code == 422
