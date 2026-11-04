@@ -108,7 +108,9 @@ async def test_operator_mutes_and_unmutes(client, session, admin):
     assert r.json()["mute"]["cameras"]["cam-1"]["name"] == "Driveway"
     assert (await client.post(f"/api/sites/{site.id}/mute", json={"minutes": 2, "device_id": "nope"})).status_code == 404
     assert (await client.post(f"/api/sites/{site.id}/mute", json={"minutes": 0})).status_code == 422
-    assert (await client.post(f"/api/sites/{site.id}/mute", json={"minutes": 241})).status_code == 422
+    assert (await client.post(f"/api/sites/{site.id}/mute", json={"minutes": 1441})).status_code == 422
+    r = await client.post(f"/api/sites/{site.id}/mute", json={"minutes": 1440, "device_id": "cam-1"})     # 24 h, the longest
+    assert r.status_code == 200 and abs(r.json()["mute"]["cameras"]["cam-1"]["until_ms"] - now_ms() - 86_400_000) < 5_000
 
     r = await client.delete(f"/api/sites/{site.id}/mute")
     assert r.status_code == 200 and "site" not in r.json()["mute"] and "cam-1" in r.json()["mute"]["cameras"]
@@ -116,7 +118,7 @@ async def test_operator_mutes_and_unmutes(client, session, admin):
     assert r.json()["mute"] == {}
 
     actions = (await session.scalars(select(AuditLog.action).where(AuditLog.site_id == site.id).order_by(AuditLog.id))).all()
-    assert actions == ["site.muted", "site.muted", "site.unmuted", "site.unmuted"]
+    assert actions == ["site.muted", "site.muted", "site.muted", "site.unmuted", "site.unmuted"]
     tl = (await client.get(f"/api/alarms/{alarm.id}/timeline")).json()
     rows = tl if isinstance(tl, list) else tl.get("rows") or tl.get("timeline") or []
     assert any("Muted the site for 5 min" in (x.get("what") or "") for x in rows)

@@ -263,6 +263,11 @@ PUSH_PURPOSE = {"call_update": "App call-update notification", "alarm": "App not
                 "stand_down": "App stand-down notification", "closed": "App notification (alarm closed)"}
 
 
+
+def _mute_len(minutes: int) -> str:
+    """As the buttons say it (common.js muteLen): "30 min", "4 h"."""
+    return f"{minutes} min" if minutes < 60 or minutes % 60 else f"{minutes // 60} h"
+
 def _audit_row(a: AuditLog) -> dict:
     d = a.detail or {}
     ts = int(a.ts.replace(tzinfo=a.ts.tzinfo or timezone.utc).timestamp() * 1000)
@@ -342,7 +347,7 @@ def _audit_row(a: AuditLog) -> dict:
         return {"ts": ts, "what": to, "who": who, "kind": "operator",
                 "detail": " · ".join(x for x in (d.get("name", ""), d.get("number", "")) if x)}
     if a.action == "site.muted":
-        return {"ts": ts, "what": f"Muted {('camera ' + d['camera']) if d.get('camera') else 'the site'} for {d.get('minutes')} min",
+        return {"ts": ts, "what": f"Muted {('camera ' + d['camera']) if d.get('camera') else 'the site'} for {_mute_len(d.get('minutes') or 0)}",
                 "who": who, "kind": "operator",
                 "detail": "its alarms are still listed but don't sound, pop up, text or push until the mute ends"}
     if a.action in ("site.armed", "site.disarmed"):

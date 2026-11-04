@@ -11,7 +11,7 @@ sites.mute = {"site": {...} | absent, "cameras": {device_id: {...}}}, each entry
 background job; expired entries are simply ignored (and dropped on the next change).
 """
 
-MINUTES_MAX = 240
+MINUTES_MAX = 24 * 60         # the user, 2026-11-04: presets up to 24 h ("Presets only, longer")
 
 
 def active(mute: dict | None, now_ms: int) -> dict:
