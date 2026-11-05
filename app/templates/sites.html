@@ -14,6 +14,44 @@
     </table>
   </div>
   {% if user.is_admin %}
+  <section class="card vpn" id="vpn" style="margin-top:24px">
+    <h2>VPN connections</h2>
+    <p class="muted" style="margin-top:0">Reach a site's NX server over your own VPN instead of the internet or Nx Cloud. Each connection belongs
+      to this company only. Add one here, then pick it in <b>Edit site → Connection</b> and enter the NX server's address on the site's network.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Connection</th><th>Status</th><th>Used by</th><th></th></tr></thead>
+      <tbody id="vpn-rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table></div>
+    <form id="vpn-form" class="vpn-add">
+      <h3>Add a connection</h3>
+      <div class="rules-grid">
+        <div class="field"><label for="vpn-kind">Type</label><select id="vpn-kind"><option value="wireguard">WireGuard (UniFi, Peplink, pfSense…)</option><option value="tailscale">Tailscale</option></select></div>
+        <div class="field"><label for="vpn-name">Name</label><input id="vpn-name" type="text" maxlength="200" required placeholder="e.g. Warehouse UniFi"></div>
+      </div>
+      <div class="field" data-for="wireguard"><label for="vpn-file">WireGuard client file (.conf)</label>
+        <input id="vpn-file" type="file" accept=".conf,.txt,text/plain">
+        <textarea id="vpn-config" rows="6" class="mono" maxlength="20000" placeholder="…or paste it: [Interface] PrivateKey = … [Peer] Endpoint = …"></textarea>
+        <small>Only the WireGuard settings are kept (keys, addresses, endpoint); anything else in the file is ignored. The file is stored encrypted and never shown again.</small></div>
+      <div class="field" data-for="tailscale" hidden><label for="vpn-key">Tailscale auth key</label>
+        <input id="vpn-key" type="password" maxlength="300" autocomplete="new-password" placeholder="tskey-auth-…">
+        <small>The portal joins your tailnet as one machine, with incoming connections blocked. Use a tagged key so the machine never expires.</small></div>
+      <div id="vpn-error"></div>
+      <button class="btn btn-primary" type="submit">Add connection</button>
+      <details class="muted small-print"><summary>Getting a WireGuard file from a UniFi gateway</summary>
+        <ol class="steps">
+          <li>In the site's UniFi Network app: <b>Settings → VPN → VPN Server → Create New → WireGuard</b>. Note the port (default 51820).</li>
+          <li>The gateway must be reachable from the internet on that port (a public IP, or a port forward if it's behind another router).</li>
+          <li>Under <b>Clients</b>, <b>Add client</b>, name it "TWG Alarm Portal", and <b>Download</b> the configuration file.</li>
+          <li>Upload that file here. The portal always connects out to the site; nothing needs to reach TWG.</li>
+        </ol></details>
+      <details class="muted small-print"><summary>Setting up Tailscale</summary>
+        <ol class="steps">
+          <li>At the site, a device on the LAN runs Tailscale as a <b>subnet router</b> for the NX server's network (or the NX server runs Tailscale itself). Approve its routes in the Tailscale admin console.</li>
+          <li>Tailscale admin console → <b>Settings → Keys → Generate auth key</b>: tick <b>Pre-approved</b> and add a <b>tag</b> (e.g. tag:twg-portal); allow that tag to reach the site in your access controls.</li>
+          <li>Paste the key here. Then in Edit site, use the NX server's LAN address or Tailscale name.</li>
+        </ol></details>
+    </form>
+  </section>
   <div class="tracking" id="tracking" style="margin-top:24px">
     <form class="card" id="gt-form">
       <h2>Guards &amp; vehicles (GPS)</h2>
@@ -138,4 +176,4 @@
 </div>
 {% endblock %}
 {% block scripts %}<script type="module" src="{{ asset('js/sites.js') }}"></script>
-{% if user.is_admin %}<script type="module" src="{{ asset('js/tracking.js') }}"></script>{% endif %}{% endblock %}
+{% if user.is_admin %}<script type="module" src="{{ asset('js/tracking.js') }}"></script><script type="module" src="{{ asset('js/vpn.js') }}"></script>{% endif %}{% endblock %}

@@ -18,14 +18,33 @@ import httpx
 _RELAY_HOST = re.compile(r"^https?://([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.relay[\w-]*\.vmsproxy\.com", re.I)
 
 
+class _VpnTransport(httpx.AsyncBaseTransport):
+    """Through a site's VPN connection (app/tunnels.py): not reaching the local proxy at all means the VPN itself is
+    down, so it's reported as a proxy problem (describe_http_error words it) rather than as NX not answering."""
+
+    def __init__(self, inner: httpx.AsyncHTTPTransport):
+        self.inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            return await self.inner.handle_async_request(request)
+        except httpx.ConnectError as exc:
+            raise httpx.ProxyError(f"The site's VPN connection isn't running ({exc})", request=request) from exc
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+
 class NXClient:
-    def __init__(self, host: str, username: str, password: str, timeout: float = 15.0):
+    def __init__(self, host: str, username: str, password: str, timeout: float = 15.0, proxy: str | None = None):
         self.base_url = host.rstrip("/")
         self.username = username
         self.password = password
+        self.proxy = proxy                  # socks5://… = the site's VPN connection (app/tunnels.py)
         self._token: str | None = None
         self._site_info: dict | None = None
-        self._client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=timeout)
+        transport = _VpnTransport(httpx.AsyncHTTPTransport(verify=False, proxy=proxy)) if proxy else None
+        self._client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=timeout, transport=transport)
 
     async def _login(self) -> None:
         login_path = "/rest/v3/login/sessions"

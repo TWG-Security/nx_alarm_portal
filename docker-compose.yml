@@ -22,7 +22,9 @@ services:
     env_file: .env
     environment:
       DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@db:5432/portal
+      TUNNEL_BIND: 0.0.0.0              # site VPN proxies (app/tunnels.py): reachable by `vision` on this network only
     volumes:
+      - tunnels:/app/tunnels-data       # Tailscale sign-in state (keys are in the DB; a lost state needs a new auth key)
       - tilecache:/app/tile-cache
       - mediacache:/app/media-cache
       - sitemodels:/app/site-models     # uploaded 3D models + their 3D Tiles (not in tools/backup.sh: re-upload)
@@ -43,6 +45,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://portal:${POSTGRES_PASSWORD}@db:5432/portal
       CAMHEALTH_DIR: /app/camhealth-data
+      TUNNEL_PROXY_HOST: app                              # sites behind a VPN connection: through the app's proxies
       NVIDIA_DRIVER_CAPABILITIES: compute,utility         # utility: NVML numbers for TWG's processing panel
       PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True   # 4 GB card: less fragmentation between the models
     volumes:
@@ -81,5 +84,6 @@ volumes:
   mediacache:
   sitemodels:
   camhealth:
+  tunnels:
   caddy_data:
   caddy_config:

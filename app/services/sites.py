@@ -4,8 +4,10 @@ import re
 
 import httpx
 
+from app import tunnels
 from app.config import get_settings
 from app.nx.client import NXClient
+from app.security import decrypt
 
 UUID_RE = re.compile(r"^\{?([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\}?$")
 RELAY_RE = re.compile(r"^https?://([0-9a-f-]{36})\.relay[\w-]*\.vmsproxy\.com", re.I)
@@ -30,8 +32,13 @@ def resolve_host(value: str) -> tuple[str, str | None]:
     return value, (m.group(1).lower() if m else None)
 
 
-def make_client(host: str, user: str, password: str) -> NXClient:
-    return NXClient(host, user, password, timeout=get_settings().nx_timeout_s)
+def make_client(host: str, user: str, password: str, tunnel_id: int | None = None) -> NXClient:
+    return NXClient(host, user, password, timeout=get_settings().nx_timeout_s, proxy=tunnels.proxy_url(tunnel_id))
+
+
+def site_client(site) -> NXClient:
+    """The NX client for a saved site: through its VPN connection when it has one."""
+    return make_client(site.host, site.nx_user, decrypt(site.nx_pass_enc), site.tunnel_id)
 
 
 def describe_http_error(exc: Exception) -> ConnectError:
@@ -46,6 +53,9 @@ def describe_http_error(exc: Exception) -> ConnectError:
         if code in (401, 403):
             return ConnectError("NX rejected the username or password", "auth_error")
         return ConnectError(f"NX returned HTTP {code}")
+    if isinstance(exc, httpx.ProxyError) or exc.__class__.__name__ in ("ProxyError", "ProxyConnectionError"):
+        return ConnectError("Could not reach the NX server through the site's VPN connection: the VPN is down, or "
+                            "the NX address isn't reachable on the site's network (Sites → VPN connections)")
     if isinstance(exc, httpx.TimeoutException):
         return ConnectError("Timed out reaching the NX server")
     if isinstance(exc, httpx.HTTPError):

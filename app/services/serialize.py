@@ -113,6 +113,7 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "nx_site_name": s.nx_site_name,
         "nx_version": s.nx_version,
         "camera_count": s.camera_count,
+        "tunnel": {"id": s.tunnel.id, "name": s.tunnel.name, "kind": s.tunnel.kind} if s.tunnel_id and s.tunnel else None,
         "camera_places": s.camera_places or {},
         "model": _model(s),
         "open_critical": critical,

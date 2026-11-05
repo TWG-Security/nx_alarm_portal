@@ -22,13 +22,12 @@ from app.config import get_settings
 from app.db import sessionmaker
 from app.models import Alarm, Site, Tenant
 from app.nx.client import NXClient
-from app.security import decrypt
 from app.services import arming, mute
 from app.services.alarm_filter import DEFAULT_POLICY, Policy, classify, rule_tag
 from app.services.bus import bus
 from app.services.nx_events import event_key, summarize
 from app.services.serialize import alarm_dict
-from app.services.sites import describe_http_error, make_client
+from app.services.sites import describe_http_error, site_client
 
 log = logging.getLogger("portal.poller")
 
@@ -288,7 +287,7 @@ class PollerManager:
         return rt.client
 
     def _runtime(self, site: Site) -> SiteRuntime:
-        client = make_client(site.host, site.nx_user, decrypt(site.nx_pass_enc))
+        client = site_client(site)
         rt = SiteRuntime(site.id, site.tenant_id, client)
         self._rt[site.id] = rt
         return rt
@@ -373,6 +372,17 @@ class PollerManager:
                 except (asyncio.CancelledError, Exception):
                     pass
         await rt.client.close()
+
+    async def reconnect_tunnel(self, tunnel_id: int) -> None:
+        """A site VPN connection (app/tunnels.py) just came up: its sites that are offline or whose live push is down
+        reconnect now (a restart polls at once), not at their next retry."""
+        async with sessionmaker()() as db:
+            sites = (await db.scalars(select(Site).where(Site.tunnel_id == tunnel_id, Site.enabled.is_(True),
+                                                         Site.archived_at.is_(None)))).all()
+        for site in sites:
+            if not self.push_state(site.id) or site.status != "online":
+                log.info("site %s: its VPN connection is up, reconnecting now", site.id)
+                await self.restart(site)
 
     async def restart(self, site: Site) -> None:
         await self.stop(site.id)

@@ -27,9 +27,8 @@ from app.camhealth.library import Library
 from app.config import get_settings
 from app.db import init_engine, sessionmaker
 from app.models import CameraHealth, CameraHealthEvent, CameraHealthImage, Site, VisionStatus
-from app.security import decrypt
 from app.services.arming import zone
-from app.services.sites import describe_http_error, make_client
+from app.services.sites import describe_http_error, site_client
 
 log = logging.getLogger("portal.camhealth")
 
@@ -117,10 +116,10 @@ class Worker:
         live = set()
         for s in sites:
             live.add(s.id)
-            key = (s.host, s.nx_user, s.nx_pass_enc)
+            key = (s.host, s.nx_user, s.nx_pass_enc, s.tunnel_id)
             conn = self.sites.get(s.id)
             if conn is None or conn.key != key:
-                conn = SiteConn(s, make_client(s.host, s.nx_user, decrypt(s.nx_pass_enc)), key=key)
+                conn = SiteConn(s, site_client(s), key=key)
                 self.sites[s.id] = conn
             conn.site = s
         for sid in [k for k in self.sites if k not in live]:

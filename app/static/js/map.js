@@ -172,7 +172,7 @@ function renderDetail() {
     ${rulesLineHtml(s)}
     ${healthLineHtml(s)}
     <dl class="sp-kv">
-      <dt>NX</dt><dd>${esc(s.nx_site_name || "—")}${s.nx_version ? ` <span class="muted">v${esc(s.nx_version)}</span>` : ""}</dd>
+      <dt>NX</dt><dd>${esc(s.nx_site_name || "—")}${s.nx_version ? ` <span class="muted">v${esc(s.nx_version)}</span>` : ""}${s.tunnel ? ` <span class="muted">· VPN ${esc(s.tunnel.name)}</span>` : ""}</dd>
       ${s.notes ? `<dt>Notes</dt><dd class="sp-notes">${esc(s.notes)}</dd>` : ""}
     </dl>
     <div class="sp-actions">

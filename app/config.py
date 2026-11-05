@@ -71,6 +71,16 @@ class Settings(BaseSettings):
     model_max_mb: int = 3072             # largest upload
     model_build_max_s: int = 1800        # a conversion is stopped after this long
     model_build_mem_mb: int = 2048       # memory cap for the converter process (the server has 4 GB)
+    # Site VPN connections (app/tunnels.py): one wireproxy / tailscaled per connection, each a SOCKS5 proxy on
+    # tunnel_port_base + 2 * id. The app binds them on tunnel_bind (0.0.0.0 in docker, so the camera-health container
+    # reaches them as tunnel_proxy_host "app"; the port is never published outside the docker network).
+    tunnels_dir: str = "./tunnels-data"
+    wireproxy_path: str = "wireproxy"
+    tailscaled_path: str = "tailscaled"
+    tailscale_path: str = "tailscale"
+    tunnel_port_base: int = 40000
+    tunnel_bind: str = "127.0.0.1"
+    tunnel_proxy_host: str = "127.0.0.1"
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     prefetch_clips: bool = True          # build clips for critical/alarm events as soon as footage exists

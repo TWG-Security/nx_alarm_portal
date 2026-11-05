@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, current_user, require_admin
-from app.models import Alarm, AlarmNote, AuditLog, Site, Tenant, User, UserGroup, UserGroupMember
+from app.models import Alarm, AlarmNote, AuditLog, Site, Tenant, Tunnel, User, UserGroup, UserGroupMember
 from app.permissions import applicable, require
 from app.scope import Scope, get_scope
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
@@ -46,6 +46,7 @@ class SiteIn(BaseModel):
     timezone: str = Field(default="", max_length=64)         # IANA name for the arming schedule; "" = default
     arm_schedule: list[dict] | None = None                   # [{action, time "HH:MM", days [...]}]; None = keep
     connect: bool = True                                     # False = save without testing
+    tunnel_id: int | None = None                             # the company's VPN connection (app/tunnels.py); None = internet
 
     @field_validator("name", "host", "nx_user", "address")
     @classmethod
@@ -61,6 +62,7 @@ class ConnTest(BaseModel):
     nx_user: str
     nx_pass: str = ""
     site_id: int | None = None
+    tunnel_id: int | None = None
 
 
 async def _open_counts(db: AsyncSession, scope: Scope) -> dict[int, dict[int, int]]:
@@ -114,8 +116,18 @@ def _apply_arming_settings(site: Site, body: SiteIn, user: User) -> list[str]:
     return changed
 
 
-async def _probe(host: str, nx_user: str, nx_pass: str) -> dict:
-    client = make_client(host, nx_user, nx_pass)
+async def _tunnel(db: AsyncSession, tunnel_id: int | None, tenant_id: int) -> Tunnel | None:
+    """A VPN connection a site of this company may use: only its own company's (app/tunnels.py)."""
+    if not tunnel_id:
+        return None
+    t = await db.get(Tunnel, tunnel_id)
+    if t is None or t.tenant_id != tenant_id:
+        raise HTTPException(400, {"message": "That VPN connection doesn't belong to this site's company"})
+    return t
+
+
+async def _probe(host: str, nx_user: str, nx_pass: str, tunnel_id: int | None = None) -> dict:
+    client = make_client(host, nx_user, nx_pass, tunnel_id)
     try:
         return await probe(client)
     except ConnectError as exc:
@@ -140,10 +152,12 @@ async def test_connection(body: ConnTest, user: User = Depends(require_admin), s
         host, _ = resolve_host(body.host)
     except ValueError as exc:
         raise HTTPException(400, {"message": str(exc)}) from exc
-    password = body.nx_pass
-    if not password and body.site_id:
-        password = decrypt((await _get_site(db, scope, body.site_id, write=True)).nx_pass_enc)
-    info = await _probe(host, body.nx_user, password)
+    password, tenant_id = body.nx_pass, None
+    if body.site_id:
+        site = await _get_site(db, scope, body.site_id, write=True)
+        password, tenant_id = password or decrypt(site.nx_pass_enc), site.tenant_id
+    tunnel = await _tunnel(db, body.tunnel_id, tenant_id or (scope.write_tenant() if body.tunnel_id else 0))
+    info = await _probe(host, body.nx_user, password, tunnel.id if tunnel else None)
     info.pop("devices", None)
     return {"host": host, **info}
 
@@ -160,12 +174,13 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
         raise HTTPException(400, {"message": "NX password is required"})
     if not body.address:
         raise HTTPException(400, {"message": ADDRESS_REQUIRED})
+    tunnel = await _tunnel(db, body.tunnel_id, tenant_id)
     site = Site(tenant_id=tenant_id, name=body.name, host=host, cloud_id=cloud_id, nx_user=body.nx_user,
                 nx_pass_enc=encrypt(body.nx_pass), address=body.address, lat=body.lat, lng=body.lng,
-                notes=body.notes)
+                notes=body.notes, tunnel_id=tunnel.id if tunnel else None)
     _apply_arming_settings(site, body, user)
     if body.connect:
-        info = await _probe(host, body.nx_user, body.nx_pass)
+        info = await _probe(host, body.nx_user, body.nx_pass, site.tunnel_id)
         site.nx_site_name, site.nx_version = info["nx_site_name"], info["nx_version"]
         site.camera_count, site.cloud_id = info["camera_count"], info["cloud_id"] or cloud_id
         site.status = "online"
@@ -179,7 +194,7 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
         await db.rollback()
         raise HTTPException(409, {"message": f"A site named '{body.name}' already exists"}) from exc
     audit(db, tenant_id, "site.created", user_id=user.id, site_id=site.id, ip=client_ip(request),
-          name=site.name, host=host, connected=body.connect)
+          name=site.name, host=host, connected=body.connect, tunnel=tunnel.name if tunnel else "")
     await db.commit()
     await db.refresh(site)
     manager.start(site)
@@ -199,9 +214,12 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
     except ValueError as exc:
         raise HTTPException(400, {"message": str(exc)}) from exc
     password = body.nx_pass or decrypt(site.nx_pass_enc)
-    creds_changed = host != site.host or body.nx_user != site.nx_user or bool(body.nx_pass)
+    tunnel = await _tunnel(db, body.tunnel_id, site.tenant_id)
+    tunnel_id = tunnel.id if tunnel else None
+    creds_changed = (host != site.host or body.nx_user != site.nx_user or bool(body.nx_pass)
+                     or tunnel_id != site.tunnel_id)
     if creds_changed and body.connect:
-        info = await _probe(host, body.nx_user, password)
+        info = await _probe(host, body.nx_user, password, tunnel_id)
         site.nx_site_name, site.nx_version, site.camera_count = info["nx_site_name"], info["nx_version"], info["camera_count"]
         cloud_id = info["cloud_id"] or cloud_id
     changed = sorted(k for k, v in {"name": body.name, "host": host, "nx_user": body.nx_user, "address": body.address,
@@ -209,6 +227,9 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
                      if getattr(site, k) != v)
     if body.nx_pass:
         changed.append("nx_pass")
+    if tunnel_id != site.tunnel_id:
+        changed.append("tunnel")
+        site.tunnel_id, site.tunnel = tunnel_id, tunnel
     changed += _apply_arming_settings(site, body, user)
     site.name, site.host, site.cloud_id, site.nx_user = body.name, host, cloud_id, body.nx_user
     site.nx_pass_enc = encrypt(password)

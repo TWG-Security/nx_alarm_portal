@@ -1365,3 +1365,9 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 .pf-contact { display: grid; grid-template-columns: 1.2fr 1fr 1fr auto; gap: 6px; margin-bottom: 6px; }
 @media (max-width: 640px) { .pf-contact { grid-template-columns: 1fr 1fr; } }
 .pf-form .field p.muted { margin: 4px 0 0; font-size: 12px; }
+
+/* Sites page → VPN connections (js/vpn.js) */
+.vpn-add { margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border); }
+.vpn-add h3 { margin: 0 0 8px; font-size: 15px; }
+.vpn-add textarea { width: 100%; margin-top: 6px; font-size: 12px; }
+.vpn-add details { margin-top: 10px; }

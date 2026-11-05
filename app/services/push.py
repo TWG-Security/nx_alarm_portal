@@ -55,6 +55,8 @@ async def _session(manager, rt) -> None:
         ticket = (await client._post("/rest/v4/login/tickets"))["token"]
     url = client.base_url.replace("https://", "wss://").replace("http://", "ws://") + f"/jsonrpc?_ticket={ticket}"
     kwargs = {"ssl": _ssl()} if url.startswith("wss://") else {}
+    if client.proxy:                                   # the site's VPN connection; names resolved on the far side
+        kwargs["proxy"] = client.proxy.replace("socks5://", "socks5h://", 1)
     async with websockets.connect(url, max_size=None, open_timeout=15, ping_interval=15, ping_timeout=15,
                                   **kwargs) as ws:
         start = int(time.time() * 1000) - 10_000

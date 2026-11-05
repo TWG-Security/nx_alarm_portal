@@ -28,7 +28,7 @@ function render() {
         ${s.status_detail ? `<div class="muted" style="max-width:260px">${esc(s.status_detail)}</div>` : ""}</td>
       <td>${c[1] + c[2] ? `<a class="badge" href="/alarms?site_id=${s.id}" style="text-decoration:none">${c[1] + c[2]}</a>` : '<span class="muted">0</span>'}
         ${c[3] ? `<span class="chip p3">${c[3]} warning</span>` : ""}</td>
-      <td>${esc(s.nx_site_name || "—")}<div class="muted">${s.nx_version ? "v" + esc(s.nx_version) : ""}</div></td>
+      <td>${esc(s.nx_site_name || "—")}<div class="muted">${s.nx_version ? "v" + esc(s.nx_version) : ""}${s.tunnel ? ` · via ${esc(s.tunnel.name)}` : ""}</div></td>
       <td>${s.camera_count}</td>
       <td>${relTime(s.last_seen_at)}</td>
       ${CFG.isAdmin ? `<td style="white-space:nowrap">

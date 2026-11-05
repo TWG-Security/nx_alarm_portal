@@ -356,11 +356,14 @@ class Site(Base):
     camera_places: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     # 3D model shown in the 3D view (app/routers/site_models.py): {ready, job, next_version}
     model: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # The company's VPN connection NX is reached through (app/tunnels.py, migration 0038); None = the internet
+    tunnel_id: Mapped[int | None] = mapped_column(ForeignKey("tunnels.id"), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     tenant: Mapped[Tenant] = relationship(lazy="joined")
+    tunnel: Mapped["Tunnel | None"] = relationship(lazy="joined")
 
 
 class Alarm(Base):
@@ -599,6 +602,24 @@ class IpAllow(Base):
     label: Mapped[str] = mapped_column(String(100), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+
+
+class Tunnel(Base):
+    """A company's VPN connection to one of its sites' networks (app/tunnels.py): kind "wireguard" (secret = the
+    router's client file) or "tailscale" (secret = an auth key). info = what the Sites page may show (no keys)."""
+
+    __tablename__ = "tunnels"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_tunnels_tenant_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    secret_enc: Mapped[str] = mapped_column(Text)
+    info: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
 class TrackerSource(Base):

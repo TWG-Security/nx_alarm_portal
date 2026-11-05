@@ -16,7 +16,7 @@ from app.audit import CLIENT, client_of
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, apps, auth, camhealth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles
+from app.routers import account, api, apps, auth, camhealth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles, tunnels
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -76,6 +76,9 @@ async def lifespan(app: FastAPI):
     tasks = []
     await platform_settings.refresh()
     if get_settings().start_pollers:
+        from app import tunnels as vpn
+        vpn.supervisor.on_up = manager.reconnect_tunnel
+        await vpn.supervisor.start_all()          # first: a site behind a VPN connects through it
         await manager.start_all()
         tasks.append(asyncio.create_task(arming.run_scheduler(), name="arming-scheduler"))
         tasks.append(asyncio.create_task(security_guard.run_sweeper(), name="security-sweeper"))
@@ -96,6 +99,8 @@ async def lifespan(app: FastAPI):
     from app import apns
     await apns.close()
     await manager.shutdown()
+    from app import tunnels as vpn
+    await vpn.supervisor.shutdown()
 
 
 def create_app() -> FastAPI:
@@ -179,6 +184,7 @@ def create_app() -> FastAPI:
     app.include_router(mobile.router)
     app.include_router(camhealth.router)
     app.include_router(apps.router)
+    app.include_router(tunnels.router)
     return app
 
 

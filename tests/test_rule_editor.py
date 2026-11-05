@@ -42,7 +42,7 @@ class AsgiNX:
 @pytest.fixture(autouse=True)
 def fresh_fake(monkeypatch):
     rules, events = copy.deepcopy(fake_nx.RULES), list(fake_nx.EVENTS)
-    monkeypatch.setattr(rule_catalog, "make_client", AsgiNX)
+    monkeypatch.setattr(rule_catalog, "site_client", AsgiNX)
     rule_catalog._cache.clear()
     fake_nx.RULE_MODE.update(patch="replace", write="ok", manifest="ok")
     yield
