@@ -1371,3 +1371,10 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 .vpn-add h3 { margin: 0 0 8px; font-size: 15px; }
 .vpn-add textarea { width: 100%; margin-top: 6px; font-size: 12px; }
 .vpn-add details { margin-top: 10px; }
+
+/* Webhooks to NX (js/webhooks.js) and the NX buttons on a site's panel / alarm details (common.nxButtonsHtml) */
+.wh-url { display: flex; gap: 6px; margin: 8px 0; }
+.wh-url input { flex: 1; min-width: 0; font-size: 12px; }
+#wh-made pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; }
+.nx-buttons:empty { display: none; }
+.nx-buttons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }

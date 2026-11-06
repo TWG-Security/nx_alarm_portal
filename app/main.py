@@ -16,7 +16,7 @@ from app.audit import CLIENT, client_of
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, apps, auth, camhealth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles, tunnels
+from app.routers import account, api, apps, auth, camhealth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles, tunnels, webhooks
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -29,7 +29,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # Sign-in pages a banned IP may not use. Signed-in sessions are never cut off by a ban.
-BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/", "/g/")   # /a/, /g/: texted links
+BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/", "/g/",   # /a/, /g/: texted links
+               "/hook/")                                                                         # webhooks into NX
 
 
 class BanGate:
@@ -185,6 +186,8 @@ def create_app() -> FastAPI:
     app.include_router(camhealth.router)
     app.include_router(apps.router)
     app.include_router(tunnels.router)
+    app.include_router(webhooks.router)
+    app.include_router(webhooks.public)
     return app
 
 

@@ -1,5 +1,5 @@
 // Overview: sites (left), map (center), live alarm feed with active timers (right).
-import { CFG, api, esc, toast, siteLinkChip, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany, siteMatches, silent, muteChip, muteBoxHtml } from "./common.js";
+import { CFG, api, esc, toast, siteLinkChip, fmtTime, relTime, timerHtml, on, openAlarms, openCounts, openAck, alarmQueue, createMap, pinIcon, markerState, STATUS, PRIORITY, setArmed, armCardHtml, inView, tenantTag, multiCompany, siteMatches, silent, muteChip, muteBoxHtml, nxButtonsHtml } from "./common.js";
 import { openDrawer, closeDrawer } from "./drawer.js";
 import { modelPanel } from "./model_panel.js";
 import { clientCardHtml, packageChip } from "./profile.js";
@@ -169,6 +169,7 @@ function renderDetail() {
       ${viewBtn("3d", "data-globe", "3D", "Fly into a 3D aerial view of this site")}</div>` : ""}
     ${armCardHtml(s)}
     ${s.arming?.armed === false ? "" : muteBoxHtml(s)}
+    ${nxButtonsHtml(s.id)}
     ${rulesLineHtml(s)}
     ${healthLineHtml(s)}
     <dl class="sp-kv">

@@ -281,16 +281,18 @@ class NXClient:
         source: str,
         caption: str | None = None,
         description: str | None = None,
-        metadata: dict | None = None,
+        device_ids: list[str] | None = None,
         state: str = "instant",
     ) -> Any:
+        """POST /rest/v4/events/generic (NX 6.1 openapi_v4: source, caption, description, deviceIds = cameras to link,
+        state started / stopped / instant; needs the "Generate events" permission)."""
         body: dict[str, Any] = {"source": source, "state": state}
         if caption:
             body["caption"] = caption
         if description:
             body["description"] = description
-        if metadata:
-            body["metadata"] = metadata
+        if device_ids:
+            body["deviceIds"] = device_ids
         return await self._post("/rest/v4/events/generic", body=body)
 
     # -------------------------------------------------------------------------
@@ -304,6 +306,8 @@ class NXClient:
         return await self._get(f"/rest/v4/events/triggers/{trigger_id}")
 
     async def fire_trigger(self, trigger_id: str, device_id: str | None = None, state: str = "started") -> Any:
+        """POST /rest/v4/events/triggers (NX 6.1 openapi_v4: triggerId + deviceId required, deviceId = one of the
+        trigger's cameras; state started / stopped (prolonged) or instant; needs software-trigger rights on it)."""
         body: dict[str, Any] = {"triggerId": trigger_id, "state": state}
         if device_id:
             body["deviceId"] = device_id

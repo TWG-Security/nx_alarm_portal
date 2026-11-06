@@ -3,7 +3,7 @@
 // it's verified (Real event), and Next (the next open alarm in the feed's order: most urgent first, oldest
 // first). Used on every page.
 
-import { CFG, api, esc, siteLinkChip, fmtTime, fmtDuration, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue, canMute, muteBoxHtml } from "./common.js";
+import { CFG, api, esc, siteLinkChip, fmtTime, fmtDuration, relTime, timerHtml, acknowledge, applyAlarm, on, toast, PRIORITY, VERDICT, verdictChip, can, isMine, createMap, openAlarms, inView, alarmQueue, canMute, muteBoxHtml, nxButtonsHtml } from "./common.js";
 import { responseHtml } from "./profile.js";
 import { freshness } from "./guards.js";
 import { mountLive } from "./live.js";
@@ -422,7 +422,7 @@ const muteHtml = (a) => (canMute(a) && a.state !== "disarmed" && curSite?.id ===
   ? muteBoxHtml(curSite, { deviceId: a.device_id, deviceName: a.source_name, alarmId: a.id }) : "");
 function paintMute() {
   const slot = drawer.querySelector(".mute-slot");
-  if (slot && current) slot.innerHTML = muteHtml(current);
+  if (slot && current) slot.innerHTML = muteHtml(current) + (curSite?.id === current.site_id ? nxButtonsHtml(current.site_id) : "");
   const resp = drawer.querySelector(".response-slot");
   if (resp && current && curSite?.id === current.site_id) resp.innerHTML = responseHtml(curSite, current);
 }

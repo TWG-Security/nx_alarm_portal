@@ -325,6 +325,69 @@ async def inject(kind: str, rule_id: str = ""):
     return {"ok": True}
 
 
+# ---------------------------------------------------------------- soft triggers and generic events from the portal
+# (app/webhooks.py). Request formats as NX 6.1.2's /static/openapi_v4.json. Each one is logged and pushed like NX does
+# when a rule covers it, so the portal raises it. POST /_nx_events_mode/refuse|allow: 403 like an account without rights.
+TRIGGERS = [{"triggerId": "256dacab-d698-4a32-b9ec-135ba73ba127", "prolonged": False, "name": "Strobe speaker armed",
+             "icon": "", "devices": {"ids": ["11111111-1111-1111-1111-111111111111"], "all": False}, "schedule": []},
+            {"triggerId": "ae447eb3-a40e-445a-8d11-4c8f01c2021e", "prolonged": True, "name": "Siren (hold)",
+             "icon": "_bell_off", "devices": {"ids": [], "all": True}, "schedule": []}]
+NX_SENT: list = []
+NX_EVENTS_MODE = {"mode": "ok"}
+
+@app.post("/_nx_events_mode/{mode}")
+async def nx_events_mode(mode: str):
+    NX_EVENTS_MODE["mode"] = "refuse" if mode == "refuse" else "ok"
+    return NX_EVENTS_MODE
+
+@app.get("/_nx_sent")
+async def nx_sent(): return NX_SENT
+
+@app.get("/rest/v4/events/triggers")
+async def triggers(): return TRIGGERS
+
+async def _log(ev: dict) -> None:
+    us = max(time.time_ns() // 1000, FRAMES.get("last_us", 0) + 1); FRAMES["last_us"] = us
+    dev = (ev.get("deviceId") or (ev.get("deviceIds") or [""])[0] or "")
+    row = {"timestampMs": us // 1000, "ruleId": "", "flags": "noFlags", "aggregatedInfo": {"total": 1},
+           "eventData": {**ev, "timestamp": str(us)},
+           "actionData": {"id": str(uuid.uuid4()), "type": "writeToLog", "serverId": "{srv-1}", "deviceIds": [dev] if dev else []}}
+    EVENTS.append(row)
+    for ws in list(SUBSCRIBERS):
+        try: await ws.send_json({"jsonrpc": "2.0", "method": "rest.v4.events.log.update", "params": row})
+        except Exception: SUBSCRIBERS.discard(ws)
+
+@app.post("/rest/v4/events/triggers")
+async def fire_trigger(req: Request):
+    body = await req.json()
+    if NX_EVENTS_MODE["mode"] == "refuse":
+        return JSONResponse({"error": "4", "errorString": "Forbidden"}, status_code=403)
+    t = next((t for t in TRIGGERS if t["triggerId"] == str(body.get("triggerId", "")).strip("{}")), None)
+    if t is None or not body.get("deviceId"):
+        return JSONResponse({"error": "2", "errorString": "Invalid parameter 'triggerId' / 'deviceId'"}, status_code=400)
+    if not t["devices"]["all"] and body["deviceId"].strip("{}") not in t["devices"]["ids"]:
+        return JSONResponse({"error": "2", "errorString": "The software trigger isn't assigned to this device"}, status_code=400)
+    if body.get("state") not in (None, "started", "stopped", "instant"):
+        return JSONResponse({"error": "2", "errorString": "Invalid parameter 'state'"}, status_code=400)
+    NX_SENT.append({"kind": "trigger", "at": time.time(), **body})
+    await _log({"type": "softTrigger", "state": body.get("state") or "instant", "deviceId": "{%s}" % body["deviceId"].strip("{}"),
+                "triggerId": t["triggerId"], "triggerName": t["name"], "userId": "{u-1}"})
+    return {}
+
+@app.post("/rest/v4/events/generic")
+async def generic_event(req: Request):
+    body = await req.json()
+    if NX_EVENTS_MODE["mode"] == "refuse":
+        return JSONResponse({"error": "4", "errorString": "Forbidden"}, status_code=403)
+    if body.get("state") not in (None, "started", "stopped", "instant") or "metadata" in body:
+        return JSONResponse({"error": "2", "errorString": "Invalid parameter"}, status_code=400)
+    NX_SENT.append({"kind": "generic", "at": time.time(), **body})
+    await _log({"type": "generic", "state": body.get("state") or "instant", "source": body.get("source", ""),
+                "caption": body.get("caption", ""), "description": body.get("description", ""),
+                "deviceIds": ["{%s}" % d.strip("{}") for d in body.get("deviceIds") or []]})
+    return {}
+
+
 # ---------------------------------------------------------------- fake Twilio (alarm texts)
 TEXTS, TWILIO_MODE, STATUS = [], {"mode": "ok"}, {}
 

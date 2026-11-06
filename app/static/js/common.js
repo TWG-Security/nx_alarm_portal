@@ -607,6 +607,33 @@ export function fmtUntil(ms) {
   const day = days === 0 ? "" : days === 1 ? "tomorrow " : d.toLocaleDateString([], { weekday: "short" }) + " ";
   return `until ${day}${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
+// NX buttons (app/routers/webhooks.py): a site's webhooks its admins marked "Button", on the map's site panel and in
+// its alarms' details. The list is cached a minute per site; every placeholder for the site fills in when it arrives.
+const nxButtons = new Map();          // site id -> {at, list}
+export function nxButtonsHtml(siteId) {
+  const c = nxButtons.get(siteId);
+  if (!c || Date.now() - c.at > 60_000) {
+    nxButtons.set(siteId, { at: Date.now(), list: c?.list || [] });
+    api(`/api/sites/${siteId}/buttons`).then((list) => {
+      nxButtons.set(siteId, { at: Date.now(), list });
+      for (const el of document.querySelectorAll(`[data-nx-buttons="${siteId}"]`)) el.outerHTML = nxButtonsHtml(siteId);
+    }).catch(() => {});
+  }
+  const list = nxButtons.get(siteId).list;
+  return `<div class="nx-buttons" data-nx-buttons="${siteId}">${list.length ? `<span class="mute-lead">NX</span>${list.map((b) =>
+    `<button type="button" class="btn btn-sm" data-nx-send="${b.id}" data-name="${esc(b.name)}" title="${esc(b.kind_label)} on this site's NX">${esc(b.name)}</button>`).join("")}` : ""}</div>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-nx-send]");
+  if (!b) return;
+  if (!confirm(`Send “${b.dataset.name}” to this site's NX?`)) return;
+  b.disabled = true;
+  try {
+    const r = await api(`/api/webhooks/${b.dataset.nxSend}/send`, { method: "POST", body: { fields: {} } });
+    toast(`<b>${esc(b.dataset.name)}</b> sent to NX (${r.ms} ms)`);
+  } catch (err) { toast(`${esc(b.dataset.name)}: ${esc(err.message)}`, { kind: "error" }); }
+  finally { b.disabled = false; }
+});
 // Mute controls (alarm details, map site panel): what's muted now with Unmute, and 2 / 5 / 30 min buttons.
 export function muteBoxHtml(site, { deviceId = "", deviceName = "", alarmId = null } = {}) {
   if (!site) return "";

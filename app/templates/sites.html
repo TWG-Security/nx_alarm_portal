@@ -52,6 +52,50 @@
         </ol></details>
     </form>
   </section>
+  <section class="card vpn" id="webhooks" style="margin-top:24px">
+    <h2>Webhooks to NX</h2>
+    <p class="muted" style="margin-top:0">Let another system (an alarm panel, Ajax, n8n, Zapier…) send something to a site's NX: each webhook is
+      an address that sends a <b>generic event</b> or fires a <b>soft trigger</b> there when it's called. NX rules on that event or trigger then do
+      the rest (a bookmark, a siren, a camera on the video wall…). Tick <b>Button</b> to also put it on the site's panel for operators.</p>
+    <div class="table-wrap"><table>
+      <thead><tr><th>Webhook</th><th>Sends</th><th>Last call</th><th></th></tr></thead>
+      <tbody id="wh-rows"><tr><td colspan="4" class="empty">Loading…</td></tr></tbody>
+    </table></div>
+    <div id="wh-made" hidden></div>
+    <form id="wh-form" class="vpn-add">
+      <h3 id="wh-title">Add a webhook</h3>
+      <div class="rules-grid">
+        <div class="field"><label for="wh-site">Site</label><select id="wh-site" required></select></div>
+        <div class="field"><label for="wh-name">Name</label><input id="wh-name" type="text" maxlength="200" required placeholder="e.g. Ajax hub intrusion"></div>
+        <div class="field"><label for="wh-kind">Sends</label><select id="wh-kind"><option value="generic">Generic event</option><option value="trigger">Soft trigger</option></select></div>
+      </div>
+      <div data-for="generic">
+        <div class="rules-grid">
+          <div class="field"><label for="wh-source">Source</label><input id="wh-source" type="text" maxlength="1000" placeholder="blank = the call's “source”, else the webhook's name"></div>
+          <div class="field"><label for="wh-caption">Caption</label><input id="wh-caption" type="text" maxlength="1000" placeholder="e.g. {event} in {zone}  (blank = the call's “caption”)"></div>
+          <div class="field"><label for="wh-description">Description</label><input id="wh-description" type="text" maxlength="1000" placeholder="blank = the call's “description”"></div>
+        </div>
+        <div class="rules-grid">
+          <div class="field"><label for="wh-gstate">State</label><select id="wh-gstate"><option value="instant">Instant</option><option value="started">Started</option><option value="stopped">Stopped</option></select></div>
+          <div class="field"><label for="wh-cam">Camera to link (optional)</label><select id="wh-cam"><option value="">None</option></select></div>
+        </div>
+        <small class="muted">Write <code>{name}</code> to fill in a field the caller sends, e.g. <code>{zone}</code> or <code>{event.zone}</code> from JSON, <code>?zone=…</code> on the address, or <code>{text}</code> for a plain-text body.
+          A rule in NX on <b>Generic Event</b> decides what happens (match it on Source or Caption).</small>
+      </div>
+      <div data-for="trigger" hidden>
+        <div class="rules-grid">
+          <div class="field"><label for="wh-trigger">Soft trigger</label><select id="wh-trigger"><option value="">Pick a site first</option></select></div>
+          <div class="field"><label for="wh-tcam">On camera</label><select id="wh-tcam"></select></div>
+          <div class="field"><label for="wh-tstate">State</label><select id="wh-tstate"><option value="instant">Instant (one press)</option><option value="started">Start (prolonged)</option><option value="stopped">Stop (prolonged)</option></select></div>
+        </div>
+        <small class="muted">The soft triggers come from the site's NX (its rules on Soft Trigger). A call can send <code>state=started</code> / <code>stopped</code> to start and stop a prolonged one.</small>
+      </div>
+      <label class="check" style="margin-top:8px"><input type="checkbox" id="wh-button"> <span><b>Button</b> on the site's panel and its alarms, for operators</span></label>
+      <div id="wh-error"></div>
+      <button class="btn btn-primary" type="submit" id="wh-submit">Add webhook</button>
+      <button class="btn" type="button" id="wh-cancel" hidden>Cancel</button>
+    </form>
+  </section>
   <div class="tracking" id="tracking" style="margin-top:24px">
     <form class="card" id="gt-form">
       <h2>Guards &amp; vehicles (GPS)</h2>
@@ -176,4 +220,4 @@
 </div>
 {% endblock %}
 {% block scripts %}<script type="module" src="{{ asset('js/sites.js') }}"></script>
-{% if user.is_admin %}<script type="module" src="{{ asset('js/tracking.js') }}"></script><script type="module" src="{{ asset('js/vpn.js') }}"></script>{% endif %}{% endblock %}
+{% if user.is_admin %}<script type="module" src="{{ asset('js/tracking.js') }}"></script><script type="module" src="{{ asset('js/vpn.js') }}"></script><script type="module" src="{{ asset('js/webhooks.js') }}"></script>{% endif %}{% endblock %}

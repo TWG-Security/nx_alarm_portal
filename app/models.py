@@ -622,6 +622,30 @@ class Tunnel(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
 
+class Webhook(Base):
+    """A company's webhook into one of its sites' NX (app/webhooks.py): calling /hook/<token> sends a generic event or
+    fires a soft trigger there. config: generic {source, caption, description (templates), state} | trigger {trigger_id,
+    trigger_name, device_id, state}. Only the token's SHA-256 is stored; `button` also puts it on the site panel for
+    operators. recent = the last calls (time, ok, ms, from, detail)."""
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(10))                 # generic | trigger
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    button: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hint: Mapped[str] = mapped_column(String(16), default="")
+    config: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    recent: Mapped[list | None] = mapped_column(JSONType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class TrackerSource(Base):
     """A company's GPS account (its admins enter it on the Sites page), one per kind: "peplink" = an InControl2 API
     client (client_id + secret), "fleetio" = a Fleetio account (client_id = Account Token, secret = API key),
