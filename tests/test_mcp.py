@@ -1,5 +1,5 @@
 """The portal's MCP server (app/mcp_server.py) and API tokens (app/api_tokens.py). The user, 2026-10-15: "Make a MCP
-for this platform", scope "Read + actions + dispatch"."""
+for this platform", scope "Read + actions + dispatch". 2026-11-06: TWG staff only, every company (tests/test_mcp_control.py)."""
 import json
 
 import httpx
@@ -94,19 +94,21 @@ async def test_alarms_read_note_and_verdict_as_the_tokens_person(client, session
         assert err and "verdict" in bad
 
 
-async def test_a_token_sees_only_its_company(client, session):
+async def test_customers_get_no_tokens_and_old_ones_stop(client, session):
+    """An internal TWG tool (the user, 2026-11-06): a customer company's people can't make a token, and one made before
+    that change is refused at /mcp."""
     t, site, p = await world(session)
-    alarm = await make_alarm(session, site, event_ts_ms=now_ms())          # TWG's site
-    token = await _token(client, "x@acme.test")                           # Acme's admin
-    listed, err = await call(client, token, "list_alarms", state="all")
-    assert not err and listed["alarms"] == []
-    bad, err = await call(client, token, "get_alarm", alarm_id=alarm.id)
-    assert err and "not found" in bad.lower()
-    bad, err = await call(client, token, "add_alarm_note", alarm_id=alarm.id, text="hi")
-    assert err
-    # company_id can't widen it: only TWG staff with platform access choose a company
-    listed, err = await call(client, token, "list_alarms", state="all", company_id=t.id)
-    assert not err and listed["alarms"] == []
+    await login(client, "x@acme.test")                                      # Acme's admin
+    r = await client.post("/api/account/tokens", json={"name": "Claude", "days": 90})
+    assert r.status_code == 403 and "internal TWG tool" in r.text
+    assert "tok-card" not in (await client.get("/account")).text
+    from app import api_tokens
+    acme = await session.scalar(select(User).where(User.email == "x@acme.test"))
+    _, old = await api_tokens.create(session, acme, "made before", 90)
+    await session.commit()
+    client.cookies.clear(); client.headers.pop("X-CSRF-Token", None)
+    r = await client.post("/mcp", headers={"Authorization": f"Bearer {old}"}, json={"jsonrpc": "2.0", "id": 1, "method": "ping"})
+    assert r.status_code == 403 and "TWG staff only" in r.text
 
 
 @respx.mock

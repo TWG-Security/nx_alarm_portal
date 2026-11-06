@@ -1,6 +1,9 @@
 """The portal's MCP server: AI assistants (Claude through the TWG MCP Gateway) read and act on alarms.
 
-The user, 2026-10-15: "Make a MCP for this platform", scope "Read + actions + dispatch".
+The user, 2026-10-15: "Make a MCP for this platform", scope "Read + actions + dispatch". 2026-11-06: "a MCP for me to
+control the alarm portal not just for twg but for all clients, this is an internal tool only": only TWG staff who can
+see every company (platform.view) get tokens or get in; site controls (arm / disarm / mute / check), NX events and soft
+triggers, NX rule edits and webhooks added. Changes inside a customer's company still need platform.support.
 
 Transport: MCP Streamable HTTP at POST /mcp, stateless (no Mcp-Session-Id), every answer a single JSON body
 (the spec lets a server answer a POST with application/json instead of an SSE stream). GET and DELETE: 405 (no
@@ -12,7 +15,7 @@ which deps.current_user trusts; nothing from outside can set it), so the same co
 and audit rows apply as on the website, and every audit row says "via": "MCP (<token name>)". Bad tokens count as
 failed sign-ins from that IP (security_guard: bans), and each token gets CALLS_PER_MIN tool calls a minute.
 
-Platform (TWG) users see every company by default; company_id narrows to one. Tools that need one company
+TWG users see every company by default; company_id narrows to one. Tools that need one company
 (users, test texts) use the person's own unless company_id says otherwise.
 """
 import asyncio
@@ -44,7 +47,11 @@ INSTRUCTIONS = (
     "alarm and warning. An open alarm waits for an operator: set_alarm_verdict closes it as real / false / dismissed "
     "(real texts the people set to get confirmed alarms). dispatch_guards texts guards a link to the alarm and makes "
     "it an active call until end_call. Dispatch and verdicts reach real people: confirm with the user before using "
-    "them. Times are UTC ISO 8601. Each alarm has a 'link' that opens it in the portal.")
+    "them. This is TWG's internal tool: it sees every client company (list_companies; company_id narrows a call to one). "
+    "Site controls: arm_site / disarm_site (while disarmed a site's security alarms are recorded, not raised), "
+    "mute_site, check_site. NX: send_nx_generic_event, fire_nx_soft_trigger (these make NX rules run at the site: "
+    "sirens, strobes, recordings), edit_nx_rule, webhooks. Confirm anything that changes a client's site with the user "
+    "first. Times are UTC ISO 8601. Each alarm has a 'link' that opens it in the portal.")
 
 _calls: dict[int, list[float]] = {}          # token id -> monotonic times of recent tool calls
 
@@ -127,6 +134,14 @@ def _site(s: dict) -> dict:
     arming = s.get("arming") or {}
     if arming:
         out["arming"] = arming
+    return out
+
+
+def _site_full(s: dict) -> dict:
+    out = _site(s)
+    out.update({"live_push": s.get("push"), "mute": s.get("mute") or None, "nx_rules_tagged_arm": s.get("arm_rules"),
+                "vpn": (s.get("tunnel") or {}).get("name"), "nx_rules_readable": s.get("rules_readable"),
+                "repeat_delays": s.get("rule_delays") or None, "link": f"{_base()}/?site={s['id']}"})
     return out
 
 
@@ -297,6 +312,90 @@ async def t_test_text(ctx, args):
     return await _api(ctx, "POST", f"/api/users/{uid}/test-text")
 
 
+async def t_companies(ctx, args):
+    rows = await _api({**ctx, "company": "own"}, "GET", "/api/tenants")
+    return {"companies": [{"company_id": t["id"], "name": t["label"] or t["name"], "kind": t["kind"], "active": t["is_active"],
+                           "sites": t["sites"], "sites_offline": t["sites_offline"], "sites_disarmed": t["sites_disarmed"],
+                           "open_alarms": {"critical": t["open_critical"], "alarm": t["open_alarm"], "warning": t["open_warning"]},
+                           "last_alarm_at": _iso_ms(t.get("last_alarm_ms")), "users": t["users"]} for t in rows]}
+
+
+async def t_get_site(ctx, args):
+    return _site_full(await _api(ctx, "GET", f"/api/sites/{_int(args, 'site_id')}"))
+
+
+async def t_arm(ctx, args):
+    s = await _api(ctx, "POST", f"/api/sites/{_int(args, 'site_id')}/arm", body={"note": str(args.get("note") or "")})
+    return {"armed": True, "site": _site_full(s)}
+
+
+async def t_disarm(ctx, args):
+    minutes = _int(args, "minutes", False)
+    if minutes is None and args.get("indefinitely") is not True:
+        raise ApiError("Give minutes (it re-arms by itself after that) or indefinitely=true (until someone arms it)")
+    s = await _api(ctx, "POST", f"/api/sites/{_int(args, 'site_id')}/disarm",
+                   body={"note": str(args.get("note") or ""), "minutes": minutes})
+    return {"disarmed": True, "site": _site_full(s)}
+
+
+async def t_mute(ctx, args):
+    body = {"minutes": _int(args, "minutes"), "device_id": str(args.get("camera_id") or "")}
+    s = await _api(ctx, "POST", f"/api/sites/{_int(args, 'site_id')}/mute", body=body)
+    return {"muted": True, "mute": (s or {}).get("mute")}
+
+
+async def t_unmute(ctx, args):
+    s = await _api(ctx, "DELETE", f"/api/sites/{_int(args, 'site_id')}/mute", {"device_id": str(args.get("camera_id") or "")})
+    return {"unmuted": True, "mute": (s or {}).get("mute")}
+
+
+async def t_check(ctx, args):
+    r = await _api(ctx, "POST", f"/api/sites/{_int(args, 'site_id')}/check")
+    return {"error": r.get("error") or None, "site": _site_full(r["site"]) if r.get("site") else None}
+
+
+async def t_triggers(ctx, args):
+    return {"soft_triggers": await _api(ctx, "GET", f"/api/sites/{_int(args, 'site_id')}/nx-triggers")}
+
+
+async def t_generic(ctx, args):
+    body = {k: str(args.get(k) or "") for k in ("source", "caption", "description")}
+    body.update({"device_ids": [str(x) for x in args.get("camera_ids") or []], "state": args.get("state") or "instant"})
+    return await _api(ctx, "POST", f"/api/sites/{_int(args, 'site_id')}/nx/generic", body=body)
+
+
+async def t_trigger(ctx, args):
+    body = {"trigger_id": str(args.get("trigger_id") or ""), "device_id": str(args.get("camera_id") or ""),
+            "state": args.get("state") or ""}
+    return await _api(ctx, "POST", f"/api/sites/{_int(args, 'site_id')}/nx/trigger", body=body)
+
+
+async def t_edit_rule(ctx, args):
+    sid, rid = _int(args, "site_id"), str(args.get("rule_id") or "")
+    body = {"level": args.get("level"), "always": args.get("always_24h"), "arm": args.get("arm_tag"),
+            "enabled": args.get("enabled"), "comment": args.get("comment"), "interval_s": _int(args, "interval_s", False)}
+    r = await _api(ctx, "PATCH", f"/api/sites/{sid}/rules/{rid}", body={k: v for k, v in body.items() if v is not None})
+    rule = next((x for x in r["rules"]["rules"] if x["id"] == rid.strip("{}")), None)
+    return {"changed": r["changed"], "rule": rule}
+
+
+async def t_webhooks(ctx, args):
+    sid = _int(args, "site_id", False)
+    rows = await _api(ctx, "GET", "/api/webhooks")
+    return {"webhooks": [{"webhook_id": h["id"], "name": h["name"], "site_id": h["site_id"], "site": h["site_name"],
+                          "sends": h["kind_label"], "config": h["config"], "enabled": h["enabled"], "button": h["button"],
+                          "calls": h["uses"], "last_call": (h.get("recent") or [None])[0]}
+                         for h in rows if sid is None or h["site_id"] == sid]}
+
+
+async def t_send_webhook(ctx, args):
+    fields = args.get("fields") or {}
+    if not isinstance(fields, dict):
+        raise ApiError("fields must be an object")
+    r = await _api(ctx, "POST", f"/api/webhooks/{_int(args, 'webhook_id')}/send", body={"fields": fields})
+    return {"ok": r["ok"], "ms": r["ms"], "sent": r["sent"]}
+
+
 _COMPANY = {"company_id": {"type": "integer", "description": "TWG staff only: one company's id (default: every company you can see)"}}
 _ALARM = {"alarm_id": {"type": "integer", "description": "The alarm's id"}}
 RO = {"readOnlyHint": True, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
@@ -363,6 +462,58 @@ TOOLS = [
     ("send_test_text", "Send test text", "Text a portal user a test message to check their number (admins only; they "
      "must have replied YES to alarm texts).", _schema({"user_id": {"type": "integer"}}, ("user_id",)),
      {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": False, "openWorldHint": True}, t_test_text),
+]
+_SITE = {"site_id": {"type": "integer", "description": "The site's id (list_sites)"}}
+_CAM = {"camera_id": {"type": "string", "description": "A camera's id (list_cameras)"}}
+ACT = {"readOnlyHint": False, "destructiveHint": False, "idempotentHint": True, "openWorldHint": False}
+RISKY = {"readOnlyHint": False, "destructiveHint": True, "idempotentHint": False, "openWorldHint": True}
+TOOLS += [
+    ("list_companies", "List companies", "Every client company: sites, how many offline or disarmed, open alarms, last alarm. "
+     "Use a company's company_id on other tools to work inside it.", _schema({}), RO, t_companies),
+    ("get_site", "Get site", "One site in full: status and why, live push, arming (who, until when, next change), mutes, "
+     "NX rules tagged #arm, VPN, NX rules that delay repeat alarms, open alarms.", _schema(_SITE, ("site_id",)), RO, t_get_site),
+    ("arm_site", "Arm site", "Arm a site now: its security alarms are raised again. Holds until the next scheduled change.",
+     _schema({**_SITE, "note": {"type": "string", "maxLength": 500}}, ("site_id",)), ACT, t_arm),
+    ("disarm_site", "Disarm site", "Disarm a site: its security events are recorded but NOT raised (no sound, pop-up or "
+     "texts) until it re-arms; NX rules tagged #arm are switched off. Give minutes (re-arms by itself) or "
+     "indefinitely=true. Confirm with the user first.",
+     _schema({**_SITE, "minutes": {"type": "integer", "minimum": 1, "maximum": 10080}, "indefinitely": {"type": "boolean"},
+              "note": {"type": "string", "maxLength": 500, "description": "Who asked and why"}}, ("site_id",)), RISKY, t_disarm),
+    ("mute_site", "Mute site or camera", "Mute a whole site, or one camera, for some minutes: its new non-critical "
+     "alarms are listed but silent (no sound, pop-up, texts or push). Confirm with the user first.",
+     _schema({**_SITE, **_CAM, "minutes": {"type": "integer", "minimum": 1, "maximum": 1440}}, ("site_id", "minutes")),
+     RISKY, t_mute),
+    ("unmute_site", "Unmute", "End a mute early: the site's (no camera_id) or one camera's.",
+     _schema({**_SITE, **_CAM}, ("site_id",)), ACT, t_unmute),
+    ("check_site", "Check site now", "Ask the site's NX now: status, cameras, rules and new events (instead of waiting).",
+     _schema(_SITE, ("site_id",)), {**ACT, "openWorldHint": True}, t_check),
+    ("list_soft_triggers", "List soft triggers", "A site's NX soft triggers: id, name, prolonged or not, and their cameras.",
+     _schema(_SITE, ("site_id",)), {**RO, "openWorldHint": True}, t_triggers),
+    ("send_nx_generic_event", "Send NX generic event", "Send a Generic Event to a site's NX now. NX rules on Generic Event "
+     "run (match on source / caption): recordings, bookmarks, sirens... and, if a rule logs it, the portal raises it as an "
+     "alarm. Confirm with the user first.",
+     _schema({**_SITE, "source": {"type": "string", "maxLength": 1000}, "caption": {"type": "string", "maxLength": 1000},
+              "description": {"type": "string", "maxLength": 1000},
+              "camera_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 20, "description": "Cameras to link"},
+              "state": {"type": "string", "enum": ["instant", "started", "stopped"]}}, ("site_id",)), RISKY, t_generic),
+    ("fire_nx_soft_trigger", "Fire NX soft trigger", "Fire one of a site's NX soft triggers now, as if pressed in Nx "
+     "Witness (sirens, strobes, speakers...). camera_id defaults to the trigger's first camera; a prolonged trigger "
+     "starts unless state=stopped. Confirm with the user first.",
+     _schema({**_SITE, "trigger_id": {"type": "string", "description": "From list_soft_triggers"}, **_CAM,
+              "state": {"type": "string", "enum": ["instant", "started", "stopped"]}}, ("site_id", "trigger_id")), RISKY, t_trigger),
+    ("edit_nx_rule", "Edit NX rule", "Change one of a site's NX rules (ids from list_nx_rules): its portal level tag, "
+     "#24h (raise while disarmed), #arm (off in NX while disarmed), on/off, comment, Interval of action. Written to NX "
+     "and read back. Confirm with the user first.",
+     _schema({**_SITE, "rule_id": {"type": "string"},
+              "level": {"type": "string", "enum": ["critical", "alarm", "warning", "ignore", "none"]},
+              "always_24h": {"type": "boolean"}, "arm_tag": {"type": "boolean"}, "enabled": {"type": "boolean"},
+              "comment": {"type": "string", "maxLength": 500}, "interval_s": {"type": "integer", "minimum": 0, "maximum": 86400}},
+             ("site_id", "rule_id")), RISKY, t_edit_rule),
+    ("list_webhooks", "List webhooks", "Webhooks into NX (Sites page): what each sends, whether it's a site panel button, "
+     "and its last call.", _schema({"site_id": {"type": "integer"}}), RO, t_webhooks),
+    ("send_webhook", "Send webhook", "Run a webhook now from the portal (its generic event or soft trigger on the site's "
+     "NX). fields fill its {templates}. Confirm with the user first.",
+     _schema({"webhook_id": {"type": "integer"}, "fields": {"type": "object"}}, ("webhook_id",)), RISKY, t_send_webhook),
 ]
 _BY_NAME = {t[0]: t for t in TOOLS}
 
@@ -454,6 +605,8 @@ async def mcp_post(request: Request):
         row, user, tenant = found
         from app.permissions import load_permissions
         user._tenant, user._perms = tenant, await load_permissions(db, user, tenant)
+        if not user.can("platform.view"):          # internal TWG tool (the user, 2026-11-06): customers' tokens don't work
+            return JSONResponse({"error": "forbidden", "message": "The portal's MCP is for TWG staff only"}, 403)
         ctx = {"app": request.app, "ip": ip, "host": request.headers.get("host", "localhost"), "user_id": user.id,
                "token_id": row.id, "token_name": row.name, "company": "all" if user.can("platform.view") else None}
     pv = request.headers.get("mcp-protocol-version")

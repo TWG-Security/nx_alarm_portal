@@ -151,7 +151,7 @@ async function loadTokens() {
       <td><button class="btn btn-sm" type="button" data-revoke="${t.id}" data-name="${esc(t.name)}">Revoke</button></td></tr>`).join("")
     || '<tr><td colspan="5" class="empty">No tokens.</td></tr>';
 }
-$("tok-form").addEventListener("submit", async (e) => {
+$("tok-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
     const days = $("tok-days").value;
@@ -168,7 +168,7 @@ $("tok-form").addEventListener("submit", async (e) => {
     await loadTokens();
   } catch (err) { toast(esc(err.message), { kind: "error" }); }
 });
-$("tok-rows").addEventListener("click", async (e) => {
+$("tok-rows")?.addEventListener("click", async (e) => {
   const d = e.target.dataset;
   if (!d.revoke || !confirm(`Revoke the token "${d.name}"? Anything using it stops working right away.`)) return;
   try { await api(`/api/account/tokens/${d.revoke}`, { method: "DELETE" }); toast("Token revoked"); $("tok-new").innerHTML = ""; await loadTokens(); }
@@ -210,7 +210,7 @@ $("pu-devices").addEventListener("click", async (e) => {
 
 async function load() {
   loadPush().catch((err) => toast(esc(err.message), { kind: "error" }));
-  loadTokens().catch((err) => toast(esc(err.message), { kind: "error" }));
+  if ($("tok-card")) loadTokens().catch((err) => toast(esc(err.message), { kind: "error" }));
   me = await api("/api/account");
   $("acct-who").innerHTML = `${esc(me.display_name || me.email)} · ${esc(me.email)} · ${esc(me.company)} (${me.role === "admin" ? "admin" : "operator"})`;
   $("pw-hint").textContent = me.password_hint;

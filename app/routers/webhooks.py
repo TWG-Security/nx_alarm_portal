@@ -9,6 +9,8 @@ platform.support. The token is shown once, when made or rotated.
 - POST   /api/webhooks/{id}/send          {fields?}: admins' "Send test"; operators press it when it's a site panel button
 - GET    /api/sites/{id}/nx-triggers      the site's NX soft triggers and their cameras (for the form)
 - GET    /api/sites/{id}/buttons          the site panel's buttons (anyone who sees the site)
+- POST   /api/sites/{id}/nx/generic       admins: a one-off generic event now (the MCP's send_nx_generic_event)
+- POST   /api/sites/{id}/nx/trigger       admins: fire a soft trigger now (the MCP's fire_nx_soft_trigger)
 - GET|POST|PUT /hook/{token}              the webhook itself: no sign-in, the token is the key
 """
 import json
@@ -193,6 +195,60 @@ async def site_triggers(site_id: int, user: User = Depends(require_admin), scope
                     "prolonged": bool(t.get("prolonged")), "all_cameras": bool(devs.get("all")),
                     "cameras": [{**c, "id": c["id"].strip("{}")} for c in cams]})
     return out
+
+
+class NxGenericIn(BaseModel):
+    source: str = Field(default="", max_length=1000)
+    caption: str = Field(default="", max_length=1000)
+    description: str = Field(default="", max_length=1000)
+    device_ids: list[str] = Field(default_factory=list, max_length=20)
+    state: str = Field(default="instant", pattern="^(instant|started|stopped)$")
+
+
+class NxTriggerIn(BaseModel):
+    trigger_id: str = Field(min_length=32, max_length=40)
+    device_id: str = Field(default="", max_length=40)              # "" = the trigger's first camera
+    state: str = Field(default="", pattern="^(|instant|started|stopped)$")   # "" = started if prolonged, else instant
+
+
+async def _send_now(db, request, user, site, kind: str, config: dict, fields: dict) -> dict:
+    """A one-off send to the site's NX without a saved webhook (the MCP's send_nx_generic_event / fire_nx_soft_trigger)."""
+    from types import SimpleNamespace
+    await db.commit()
+    result = await webhooks.send(manager.client_for(site), SimpleNamespace(kind=kind, name="TWG Alarm Portal", config=config), fields)
+    audit(db, site.tenant_id, "nx.event_sent", user_id=user.id, site_id=site.id, ip=client_ip(request), kind=kind,
+          ok=result["ok"], ms=result["ms"], detail=result["detail"], sent=result["sent"])
+    await db.commit()
+    if not result["ok"]:
+        raise HTTPException(502, {"message": result["detail"]})
+    return result
+
+
+@router.post("/api/sites/{site_id}/nx/generic")
+async def send_generic(site_id: int, body: NxGenericIn, request: Request, user: User = Depends(require_admin),
+                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Administrators: a generic event on the site's NX now (text as given, no templates)."""
+    site = await _get_site(db, scope, site_id, write=True)
+    config = _config("generic", {"state": body.state, "device_ids": body.device_ids})
+    return await _send_now(db, request, user, site, "generic", config,
+                           {"source": body.source, "caption": body.caption, "description": body.description})
+
+
+@router.post("/api/sites/{site_id}/nx/trigger")
+async def send_trigger(site_id: int, body: NxTriggerIn, request: Request, user: User = Depends(require_admin),
+                       scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    """Administrators: fire one of the site's NX soft triggers now, on its camera."""
+    site = await _get_site(db, scope, site_id, write=True)
+    trig = next((t for t in await site_triggers(site_id, user, scope, db) if t["id"] == body.trigger_id.strip("{}")), None)
+    if trig is None:
+        raise HTTPException(404, {"message": "This site's NX has no soft trigger with that id (list_soft_triggers)"})
+    cams = [c["id"] for c in trig["cameras"]]
+    device = body.device_id.strip("{}") or (cams[0] if cams else "")
+    if device not in cams:
+        raise HTTPException(400, {"message": f"That soft trigger isn't on that camera; it's on: {', '.join(c['name'] for c in trig['cameras']) or 'no camera'}"})
+    state = body.state or ("started" if trig["prolonged"] else "instant")
+    config = _config("trigger", {"trigger_id": trig["id"], "trigger_name": trig["name"], "device_id": device, "state": state})
+    return await _send_now(db, request, user, site, "trigger", config, {})
 
 
 @router.get("/api/sites/{site_id}/buttons")

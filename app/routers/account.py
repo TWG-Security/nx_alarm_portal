@@ -432,6 +432,8 @@ async def list_tokens(request: Request, user: User = Depends(current_user), db: 
 @router.post("/api/account/tokens")
 async def create_token(body: TokenIn, request: Request, user: User = Depends(current_user), db: AsyncSession = Depends(get_db)):
     _no_mcp(request)
+    if not user.can("platform.view"):
+        raise HTTPException(403, "The portal's MCP is an internal TWG tool: only TWG staff who can see every company get API tokens")
     try:
         row, token = await api_tokens.create(db, user, body.name, body.days)
     except ValueError as e:
