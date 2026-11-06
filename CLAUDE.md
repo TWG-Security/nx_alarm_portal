@@ -182,7 +182,7 @@ Settings → Alarm levels → **"Only NX rules tagged #critical, #alarm or #warn
 `alarms.level_source` records which rule applied, and the details drawer shows it.
 
 ### Arming (per site)
-- **Portal-side only; NX rules are untouched.** While a site is disarmed, **security** events are still ingested and stored with `alarms.state = "disarmed"`. They are not raised: no feed card, sound or pop-up, and they are not open or ackable. They're listed under Alarms → "While disarmed".
+- **Portal-side, except NX rules tagged `#arm`** (below). While a site is disarmed, **security** events are still ingested and stored with `alarms.state = "disarmed"`. They are not raised: no feed card, sound or pop-up, and they are not open or ackable. They're listed under Alarms → "While disarmed".
   System-category events (site offline, storage, server failure, unknown types) always raise, and so does any NX rule with **`#24h`** in its Title/Comment.
 - The state is a **pure function** `arming.state_at(schedule, override, tz, t)`. The latest of these at or before `t` wins:
   - weekly entries in the site time zone
@@ -193,6 +193,7 @@ Settings → Alarm levels → **"Only NX rules tagged #critical, #alarm or #warn
 - **A schedule edit never flips the state:** the save stores the current state as an override and sets `schedule.since_ms`.
 - NX pushes one row per rule, so a `#24h` row arriving after another rule's row promotes the stored "disarmed" alarm to new (audited as `alarm.raised`).
 - `#24h` needs rule-read rights on the NX account, which site 2 lacks today.
+- **`#arm` NX rules follow arming** (the user, 2026-11-06: "disable the rules that have a specific # on them maybe #arm"; chose "the tag is the switch", no other setting; a rule may also carry a level tag, "#arm #alarm"). `app/services/arm_rules.py`: one task per site (`rt.arm_task`, started/stopped with the poller) switches every rule with `#arm` (`arming.rule_follows_arming`; `#24h` wins, never switched off) off in NX while disarmed, on while armed, via `rule_edit.edit(enabled=)` (PATCH + read-back), all rules side by side. Woken by `manager.kick_arm_rules`: the arm/disarm API, `arming.check_all` flips (timer, schedule), and `_refresh_rules` when a tagged rule is out of step (newly tagged, changed in Nx Witness, missed while down). Fails → retried 2/5/10/30/60 s; after 3 in a row a system alarm `portalArmRulesOn` (alarm) / `portalArmRulesOff` (warning), not while the site is offline; fixed later → "Switched at …" on it. Audit `site.arm_rules` (switched / failed / took_ms; one row per failing run). `rule_info` → `arm_rules` {armed, rules, state ok|switching|failed, detail}; SSE `site.arm_rules`. UI: arm line/card, disarm dialog ("Also switches off N NX rules tagged #arm"), NX rules list `#arm` chip, both rule editors have an **#arm** checkbox (`with_tags(..., arm=)`). While off, NX doesn't log the rule, so its events aren't under "While disarmed". Tests `tests/test_arm_rules.py` (8), e2e `tools/e2e/arm_rules.py` (off in NX 27 ms after the Disarm click, back on 71 ms after Arm, alarms after 28-54 ms, NX 403 → system alarm 7 s after disarming and the site says why, rights back → fixed by the next retry).
 - Operators can arm and disarm; the schedule is edited on the admin site form. The default time zone is `DEFAULT_TIMEZONE` (America/New_York); a new site's form pre-fills the browser's zone.
 
 ### Delivery guarantees (keep these intact)
@@ -272,6 +273,7 @@ POLL_INTERVAL_S=60 tools/dev_up.sh                   # fake NX :8199 + portal :8
 .venv/bin/python -m tools.e2e.latency                # push latency + degraded-mode (banner/tone/fallback) checks
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.player /tmp   # growing clip, controls, boxes, critical pop-up
 POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.arming   # ~3 min: disarm/arm UI, suppression, #24h, timer, schedule
+POLL_INTERVAL_S=60 tools/dev_up.sh && .venv/bin/python -m tools.e2e.arm_rules [dir]   # ~40 s: #arm NX rules off/on with arming, NX refusing → alarm, retry
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.export /tmp      # export ZIP from the drawer, checksums, alarm latency mid-export
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.verdicts /tmp    # live beside recorded, verdict buttons, groups, operator bulk edit
 tools/dev_up.sh && .venv/bin/python -m tools.e2e.signin /tmp      # 5 bad sign-ins -> blocked page, operator's alarms unaffected, unblock on Platform page

@@ -40,11 +40,18 @@ MAX_ENTRIES = 50
 MAX_DISARM_MINUTES = 7 * 24 * 60
 
 RULE_24H = re.compile(r"(?<![\w#])#24h\b", re.I)
+RULE_ARM = re.compile(r"(?<![\w#])#arm\b", re.I)
 
 
 def rule_always_armed(comment: str | None) -> bool:
     """NX rule Title/Comment contains #24h: raise its alarms even while the site is disarmed."""
     return bool(RULE_24H.search(comment or ""))
+
+
+def rule_follows_arming(comment: str | None) -> bool:
+    """NX rule Title/Comment contains #arm (and not #24h, which wins): the portal switches the rule off in NX while
+    the site is disarmed and back on when it arms (app/services/arm_rules.py)."""
+    return bool(RULE_ARM.search(comment or "")) and not rule_always_armed(comment)
 
 
 def zone(name: str | None) -> ZoneInfo:
@@ -201,7 +208,9 @@ async def check_all(now_ms: int) -> int:
                 flips.append(s)
         if flips:
             await db.commit()
+            from app.services.poller import manager
             for s in flips:
+                manager.kick_arm_rules(s.id)          # NX rules tagged #arm follow (app/services/arm_rules.py)
                 log.info("site %s %s by %s", s.id, "armed" if s.armed else "disarmed", site_state(s, now_ms).source)
                 bus.publish(s.tenant_id, "site.updated", site_dict(s))
             changed = len(flips)

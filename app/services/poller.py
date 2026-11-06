@@ -57,6 +57,9 @@ class SiteRuntime:
     push_task: asyncio.Task | None = None
     push_connected: bool = False
     ingest_lock: asyncio.Lock = field(default_factory=asyncio.Lock)   # push and poll never ingest at once
+    arm_rules: dict = field(default_factory=dict)       # NX rules tagged #arm, switched with arming (app/services/arm_rules.py)
+    arm_kick: asyncio.Event = field(default_factory=asyncio.Event)
+    arm_task: asyncio.Task | None = None
 
 
 FUTURE_SKEW_MS = 60_000             # an event stamped further ahead than this is dated when it reached us
@@ -237,6 +240,7 @@ def describe_rules(rules: list[dict], policy: Policy, site_override: dict | None
                     "action_has_login": has_secrets(act),
                     "event_type": t, "event_label": EVENT_TYPES.get(t, (t,))[0], "category": category_of(t),
                     "action": act.get("type", ""), "enabled": enabled, "tag": tag, "always": arming.rule_always_armed(comment),
+                    "arm": arming.rule_follows_arming(comment),
                     "level": level, "why": why, "interval_s": interval,
                     "delayed": interval > 0 and level not in ("ignore", "off")})
     return sorted(out, key=lambda x: (_LEVEL_ORDER.get(x["level"], 9), x["category"] != "security", x["name"].lower()))
@@ -312,6 +316,15 @@ class PollerManager:
         if settings.push_enabled and (rt.push_task is None or rt.push_task.done()):
             from app.services.push import run_push  # late import: push uses this module
             rt.push_task = asyncio.create_task(run_push(self, rt), name=f"push-site-{site.id}")
+        if rt.arm_task is None or rt.arm_task.done():
+            from app.services import arm_rules
+            rt.arm_task = asyncio.create_task(arm_rules.run(self, rt), name=f"arm-rules-site-{site.id}")
+
+    def kick_arm_rules(self, site_id: int) -> None:
+        """The site armed or disarmed: switch its NX rules tagged #arm now (app/services/arm_rules.py)."""
+        rt = self._rt.get(site_id)
+        if rt is not None:
+            rt.arm_kick.set()
 
     def device_names(self, site_id: int) -> dict[str, str]:
         """{device id: name} from the last device refresh (empty until the site's first poll)."""
@@ -322,10 +335,11 @@ class PollerManager:
         """For the Sites/map pages: can we read the site's NX rules, and which alarm rules delay repeats."""
         rt = self._rt.get(site_id)
         if rt is None or not rt.rules_refreshed:
-            return {"rules_readable": None, "rule_delays": [], "system_delays": {"count": 0, "max_s": 0}}
+            return {"rules_readable": None, "rule_delays": [], "system_delays": {"count": 0, "max_s": 0},
+                    "arm_rules": rt.arm_rules or None if rt else None}
         sec = [d for d in rt.rule_delays if d["category"] == "security"]
         system = [d for d in rt.rule_delays if d["category"] != "security"]
-        return {"rules_readable": not rt.rules_forbidden, "rule_delays": sec,
+        return {"rules_readable": not rt.rules_forbidden, "rule_delays": sec, "arm_rules": rt.arm_rules or None,
                 "system_delays": {"count": len(system), "max_s": max((d["interval_s"] for d in system), default=0),
                                   "worst": max(system, key=lambda d: d["interval_s"])["name"] if system else ""}}
 
@@ -364,7 +378,7 @@ class PollerManager:
         rt = self._rt.pop(site_id, None)
         if rt is None:
             return
-        for task in (rt.task, rt.push_task):
+        for task in (rt.task, rt.push_task, rt.arm_task):
             if task:
                 task.cancel()
                 try:
@@ -544,6 +558,13 @@ class PollerManager:
         rt.rule_delays = rule_delays(rules, policy, site.alarm_types)
         rt.rule_levels = {rid: lvl for r in rules
                           if (lvl := rule_tag(r.get("comment"))) and (rid := (r.get("id") or "").strip("{}"))}
+        from app.services import arm_rules
+        if arm_rules.tagged(rules) or rt.arm_rules:
+            want = arming.site_state(site, now_ms()).armed
+            behind = bool(arm_rules.out_of_step(rules, want))
+            arm_rules.pending(rt, [_rule_label(r) for r in arm_rules.tagged(rules)], want, behind)
+            if behind:
+                rt.arm_kick.set()
         changed_rules = {rid for rid in set(old) | set(rt.rule_levels) if old.get(rid) != rt.rule_levels.get(rid)}
         if not changed_rules:
             return 0

@@ -270,6 +270,7 @@ async def arm_site(site_id: int, body: ArmIn, request: Request, scope: Scope = D
     audit(db, site.tenant_id, "site.armed" if armed else "site.disarmed", user_id=user.id, site_id=site.id,
           ip=client_ip(request), source="manual", note=body.note.strip(), until_ms=until)
     await db.commit()
+    manager.kick_arm_rules(site.id)                     # NX rules tagged #arm follow (app/services/arm_rules.py)
     data = _site_out(site, await _open_counts(db, scope))
     bus.publish(site.tenant_id, "site.updated", data)
     return data
@@ -423,6 +424,7 @@ class RuleEditIn(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
     level: str | None = Field(default=None, pattern="^(critical|alarm|warning|ignore|none)$")   # None = keep
     always: bool | None = None              # #24h
+    arm: bool | None = None                 # #arm: off in NX while the site is disarmed
     enabled: bool | None = None
     interval_s: int | None = Field(default=None, ge=0, le=86400)
 
@@ -441,7 +443,8 @@ async def edit_site_rule(site_id: int, rule_id: str, body: RuleEditIn, request: 
     level = rule_edit.UNCHANGED if body.level is None else (None if body.level == "none" else body.level)
     try:
         before, changes, after = await rule_edit.edit(manager.client_for(site), rule_id, comment=body.comment, level=level,
-                                                      always=body.always, enabled=body.enabled, interval_s=body.interval_s)
+                                                      always=body.always, enabled=body.enabled, interval_s=body.interval_s,
+                                                      arm=body.arm)
     except rule_edit.RuleEditError as e:
         audit(db, site.tenant_id, "nx.rule_edit_failed", user_id=user.id, site_id=site.id, ip=client_ip(request),
               rule_id=rule_id, error=str(e))
@@ -561,6 +564,7 @@ class RuleFullIn(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
     level: str | None = Field(default=None, pattern="^(critical|alarm|warning|ignore|none)$")
     always: bool | None = None
+    arm: bool | None = None
     enabled: bool | None = None
 
 
@@ -592,7 +596,7 @@ async def save_site_rule(site_id: int, rule_id: str, body: RuleFullIn, request: 
     before, changes, _ = await _rule_call(db, site, user, request, rule_id, rule_edit.save(
         manager.client_for(site), rule_id, catalog,
         event=body.event.model_dump() if body.event else None, action=body.action.model_dump() if body.action else None,
-        comment=body.comment, level=_level(body.level), always=body.always, enabled=body.enabled))
+        comment=body.comment, level=_level(body.level), always=body.always, enabled=body.enabled, arm=body.arm))
     if changes:
         detail = {}
         for k, v in changes.items():
@@ -611,6 +615,7 @@ class RuleNewIn(BaseModel):
     comment: str = Field(default="", max_length=500)
     level: str = Field(default="none", pattern="^(critical|alarm|warning|ignore|none)$")
     always: bool = False
+    arm: bool = False
     enabled: bool = True
 
 
@@ -625,7 +630,7 @@ async def create_site_rule(site_id: int, body: RuleNewIn, request: Request, user
     level = None if body.level == "none" else body.level
     made = await _rule_call(db, site, user, request, "", rule_edit.create(
         manager.client_for(site), catalog, event=body.event.model_dump(), action=body.action.model_dump(),
-        comment=body.comment, level=level, always=body.always, enabled=body.enabled))
+        comment=body.comment, level=level, always=body.always, enabled=body.enabled, arm=body.arm))
     rid = (made.get("id") or "").strip("{}")
     audit(db, site.tenant_id, "nx.rule_created", user_id=user.id, site_id=site.id, ip=client_ip(request), rule_id=rid,
           rule=rule_edit.redact(made))

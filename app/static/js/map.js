@@ -197,12 +197,13 @@ const RULES_FILTER_KEY = "twg-rules-filter";
 let rulesFilter = (() => { try { return localStorage.getItem(RULES_FILTER_KEY) || "all"; } catch { return "all"; } })();
 let rulesState = null;          // { s, v } the list on screen
 let editingRule = null;         // rule id being edited
-const stripTags = (t) => (t || "").replace(/(^|\s)#(critical|alarm|warning|ignore|24h)\b/gi, " ").replace(/\s{2,}/g, " ").trim();
+const stripTags = (t) => (t || "").replace(/(^|\s)#(critical|alarm|warning|ignore|24h|arm)\b/gi, " ").replace(/\s{2,}/g, " ").trim();
 function editorRow(r) {
   return `<tr class="rule-editor"><td colspan="4"><div class="rule-edit-grid" data-rule-form="${esc(r.id)}">
       <label>Level in the portal <select data-re="level">${[["none", "No tag (event type decides; ignored with tagged rules only)"], ["critical", "#critical"], ["alarm", "#alarm"], ["warning", "#warning"], ["ignore", "#ignore"]]
         .map(([v, l]) => `<option value="${v}" ${(r.tag || "none") === v ? "selected" : ""}>${l}</option>`).join("")}</select></label>
       <label class="check"><input type="checkbox" data-re="always" ${r.always ? "checked" : ""}> <span><b>#24h</b>: raise even while the site is disarmed</span></label>
+      <label class="check"><input type="checkbox" data-re="arm" ${r.arm || (r.always && /(^|\s)#arm\b/i.test(r.comment)) ? "checked" : ""}> <span><b>#arm</b>: switched off in NX while the site is disarmed (not with #24h)</span></label>
       <label>Title / Comment (tags are added for you) <input type="text" data-re="comment" maxlength="400" value="${esc(stripTags(r.comment))}"></label>
       <label class="check"><input type="checkbox" data-re="enabled" ${r.enabled ? "checked" : ""}> <span>Rule is on in NX</span></label>
       <label>Interval of action (seconds; 0 = off, every event comes through at once)
@@ -234,10 +235,11 @@ function paintRules(s, v, error = "") {
     ${shown.length ? `<div class="table-wrap"><table class="rules-table"><thead><tr><th>In the portal</th><th>NX rule (Title / Comment)</th><th>Event</th><th>Notes</th></tr></thead><tbody>
       ${shown.map((r) => `<tr class="${["ignore", "off"].includes(r.level) ? "rule-off" : ""}" data-rule-row="${esc(r.id)}">
         <td>${LEVEL_CHIP[r.level] || esc(r.level)}<div class="muted small-print">${esc(r.why)}</div></td>
-        <td><b>${esc(r.name)}</b>${r.tag || r.always ? `<div class="small-print">${r.tag ? `<code>#${esc(r.tag)}</code> ` : ""}${r.always ? "<code>#24h</code>" : ""}</div>` : ""}</td>
+        <td><b>${esc(r.name)}</b>${r.tag || r.always || r.arm ? `<div class="small-print">${r.arm ? "<code>#arm</code> " : ""}${r.tag ? `<code>#${esc(r.tag)}</code> ` : ""}${r.always ? "<code>#24h</code>" : ""}</div>` : ""}</td>
         <td>${esc(r.event_label)}<div class="muted small-print mono">${esc(r.event_type)} → ${esc(r.action)}</div></td>
         <td class="small-print">${r.delayed ? `<span class="text-warn">Repeats held back up to ${r.interval_s} s (Interval of action)</span>` : ""}
           ${r.always && v.tagged_only && !r.tag ? '<span class="text-warn">#24h but no level tag: ignored</span>' : ""}
+          ${r.arm ? `<div class="muted">On/off follows arming: ${s.arming?.armed === false ? "off while the site is disarmed" : "on while armed"}</div>` : ""}
           ${admin && v.readable !== false ? `<div><button type="button" class="btn btn-sm" data-rule-edit="${esc(r.id)}">Edit</button></div>` : ""}</td></tr>
         ${editingRule === r.id ? editorRow(r) : ""}`).join("")}
       </tbody></table></div>` : `<p class="muted">${v.readable === false ? "" : rulesFilter === "tagged" && v.rules.length ? "No tagged rules on this site." : "No rules read yet. Press Check now."}</p>`}`;
@@ -305,7 +307,7 @@ rulesDlg.addEventListener("click", async (e) => {
   if (save && rulesState) {
     const form = save.closest("[data-rule-form]"), id = form.dataset.ruleForm, r = rulesState.v.rules.find((x) => x.id === id);
     const val = (k) => form.querySelector(`[data-re="${k}"]`);
-    const body = { level: val("level").value, always: val("always").checked, comment: val("comment").value.trim(), enabled: val("enabled").checked };
+    const body = { level: val("level").value, always: val("always").checked, arm: val("arm").checked, comment: val("comment").value.trim(), enabled: val("enabled").checked };
     if (!val("interval").disabled) body.interval_s = Math.max(0, Math.min(86400, Number(val("interval").value) || 0));
     if (!confirm(`Change this rule on ${rulesState.s.name}'s NX server?\n\n${r.name}`)) return;
     save.disabled = true; save.textContent = "Saving…";
@@ -1166,6 +1168,7 @@ on("site.status", ({ site_id, status, detail }) => {
 });
 on("site.updated", (s) => { sites.set(s.id, { ...sites.get(s.id), ...s }); renderAll(); models.siteChanged(); });
 on("site.push", ({ site_id, push }) => { const s = sites.get(site_id); if (s) { s.push = push; renderDetail(); } });
+on("site.arm_rules", ({ site_id, arm_rules }) => { const s = sites.get(site_id); if (s) { s.arm_rules = arm_rules; renderDetail(); } });
 on("site.removed", (s) => { sites.delete(s.id); markers.get(s.id)?.remove(); markers.delete(s.id); renderAll(); });
 on("reconnect", () => { loadSites().then(renderAll).catch(() => {}); loadHealth(); });
 loadHealth();

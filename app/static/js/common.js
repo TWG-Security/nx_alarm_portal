@@ -209,11 +209,23 @@ function whoHtml(a) {
   const who = a.source === "manual" ? `by ${esc(a.by || "operator")}` : ARM_SOURCE[a.source] || "";
   return [who, a.note ? `“${esc(a.note)}”` : ""].filter(Boolean).join(" · ");
 }
+// NX rules tagged #arm (app/services/arm_rules.py): off in NX while disarmed. `quiet`: nothing to say when all is
+// well and the site is armed (tables).
+export function armRulesHtml(site, quiet = false) {
+  const r = site.arm_rules, n = r?.rules?.length || 0;
+  if (!r || !n) return "";
+  const what = `${n} NX rule${n > 1 ? "s" : ""} tagged #arm`;
+  const dir = r.armed ? "on" : "off";
+  if (r.state === "failed") return `<span class="text-failed" title="${esc(r.detail || "")}">Couldn't switch ${what} ${dir}: ${esc(r.detail || "")} (retrying)</span>`;
+  if (r.state === "switching") return `<span class="text-warn">Switching ${what} ${dir}…</span>`;
+  if (r.armed && quiet) return "";
+  return `<span class="muted" title="${esc(r.rules.join(", "))}">${what} ${r.armed ? "on" : "switched off in NX"}</span>`;
+}
 // One line for tables: who/why, and what happens next.
 export function armLine(site) {
   const a = site.arming;
   if (!a) return "";
-  return [a.armed ? "" : `for ${timerHtml(a.since_ms)}`, whoHtml(a), nextHtml(a)].filter(Boolean).join(" · ");
+  return [a.armed ? "" : `for ${timerHtml(a.since_ms)}`, whoHtml(a), nextHtml(a), armRulesHtml(site, true)].filter(Boolean).join(" · ");
 }
 
 const SHIELD = '<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6l-8-3z"/>';
@@ -224,7 +236,7 @@ const ICON_DISARMED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 export function armCardHtml(site) {
   const a = site.arming;
   if (!a) return "";
-  const lines = [whoHtml(a), nextHtml(a)].filter(Boolean);
+  const lines = [whoHtml(a), nextHtml(a), armRulesHtml(site)].filter(Boolean);
   return `<div class="arm-card ${a.armed ? "is-armed" : "is-disarmed"}">
     <div class="arm-card-head">${a.armed ? ICON_ARMED : ICON_DISARMED}
       <span class="arm-card-state">${a.armed ? "Armed" : "Disarmed"}</span>
@@ -257,7 +269,9 @@ export async function setArmed(site, armed) {
     + (schedArm ? "" : '<option value="">Only when someone re-arms it</option>');
   sel.value = schedArm ? "" : "240";
   document.getElementById("arm-title").textContent = `Disarm ${site.name}`;
-  document.getElementById("arm-summary").textContent = site.address || "";
+  const nArm = site.arm_rules?.rules?.length || 0;
+  document.getElementById("arm-summary").textContent = [site.address || "",
+    nArm ? `Also switches off ${nArm} NX rule${nArm > 1 ? "s" : ""} tagged #arm until it re-arms: ${site.arm_rules.rules.join(", ")}` : ""].filter(Boolean).join(" · ");
   note.value = "";
   return new Promise((resolve) => {
     const onClose = async () => {
@@ -439,7 +453,7 @@ function scheduleReconnect() {
   backoff = Math.min(backoff * 2, 15_000);
 }
 
-const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarm.note", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push",
+const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarm.note", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push", "site.arm_rules",
   "tracker.moved", "tracker.removed", "alarm.timeline", "camera.health"];
 function connect() {
   es = new EventSource("/api/events");

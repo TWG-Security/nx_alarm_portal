@@ -59,6 +59,6 @@ tbody.addEventListener("click", async (e) => {
   catch (err) { alert(err.message); e.target.disabled = false; }
 });
 
-for (const ev of ["site.status", "site.updated", "site.removed", "reconnect"]) on(ev, () => load().catch(() => {}));
+for (const ev of ["site.status", "site.updated", "site.removed", "site.arm_rules", "reconnect"]) on(ev, () => load().catch(() => {}));
 on("store", render);
 await load().catch((e) => { tbody.innerHTML = `<tr><td colspan="8" class="empty">${esc(e.message)}</td></tr>`; });

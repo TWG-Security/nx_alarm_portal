@@ -11,7 +11,7 @@ const CHECK_LABEL = { containsKeywords: "contains", doesNotContainKeywords: "doe
   notInList: "isn't in lookup list", hasAttributes: "has attributes" };
 const GROUP_LABEL = { "": "Detections and triggers", deviceIssueGroup: "Camera problems", serverIssueGroup: "Server problems" };
 const LEVEL_TAG = /(^|\s)#(critical|alarm|warning|ignore)\b/i;
-const stripTags = (t) => (t || "").replace(/(^|\s)#(critical|alarm|warning|ignore|24h)\b/gi, " ").replace(/\s{2,}/g, " ").trim();
+const stripTags = (t) => (t || "").replace(/(^|\s)#(critical|alarm|warning|ignore|24h|arm)\b/gi, " ").replace(/\s{2,}/g, " ").trim();
 const clone = (v) => (v === undefined ? undefined : JSON.parse(JSON.stringify(v)));
 const uid = (v) => String(v || "").replace(/[{}]/g, "").toLowerCase();
 
@@ -44,12 +44,13 @@ export function openRuleEditor(host, { site, ruleId = null, onDone, onCancel, on
     };
     const tag = (rule.comment || "").match(LEVEL_TAG);
     return { event: take("event", ev), action: take("action", act), comment: stripTags(rule.comment),
-      level: tag ? tag[2].toLowerCase() : "none", always: /(^|\s)#24h\b/i.test(rule.comment || ""), enabled: rule.enabled !== false };
+      level: tag ? tag[2].toLowerCase() : "none", always: /(^|\s)#24h\b/i.test(rule.comment || ""),
+      arm: /(^|\s)#arm\b/i.test(rule.comment || ""), enabled: rule.enabled !== false };
   }
   function blank() {
     const withAnalytics = Object.values(st.cat.analytics).some((a) => a.event_types.length);
     const ev = kind("event", withAnalytics ? "analytics" : "motion") ? (withAnalytics ? "analytics" : "motion") : st.cat.events[0].id;
-    return { event: defaults("event", ev), action: { type: "writeToLog", fields: { intervalS: 0 } }, comment: "", level: "alarm", always: false, enabled: true };
+    return { event: defaults("event", ev), action: { type: "writeToLog", fields: { intervalS: 0 } }, comment: "", level: "alarm", always: false, arm: false, enabled: true };
   }
   function defaults(side, t) {
     const fields = {};
@@ -258,7 +259,7 @@ export function openRuleEditor(host, { site, ruleId = null, onDone, onCancel, on
     const filters = ["caption", "description", "source", "attributes"].filter((k) => f[k]?.value).map((k) => `${k} ${CHECK_LABEL[f[k].checkType] || ""} “${f[k].value}”`);
     const lvl = { none: "level by event type", critical: "Critical", alarm: "Alarm", warning: "Warning", ignore: "ignored" }[d.level];
     return `<b>${esc(ek?.name || d.event.type)}</b>${t ? ` · ${esc(t.label || t.name)}` : typeId ? ` · <code>${esc(typeId)}</code>` : ""}${camsTxt ? ` on ${esc(camsTxt)}` : ""}${filters.length ? `, ${esc(filters.join(", "))}` : ""}
-      → NX: <b>${esc(ak?.name || d.action.type)}</b> → portal: <b>${esc(lvl)}</b>${d.always ? " even while disarmed" : ""}${d.enabled ? "" : " · <span class='text-warn'>rule off</span>"}`;
+      → NX: <b>${esc(ak?.name || d.action.type)}</b> → portal: <b>${esc(lvl)}</b>${d.always ? " even while disarmed" : d.arm ? " · <b>off in NX while disarmed</b>" : ""}${d.enabled ? "" : " · <span class='text-warn'>rule off</span>"}`;
   }
   // Only what's being changed has to be complete: an existing rule saved with just a new tag goes through as it is.
   const partChanged = (side) => !st.ruleId || !st.initial || JSON.stringify(st.draft[side]) !== JSON.stringify(st.initial[side]);
@@ -293,6 +294,7 @@ export function openRuleEditor(host, { site, ruleId = null, onDone, onCancel, on
         <label class="rx-field"><span class="rx-label">Alarm level</span><select data-d="level">${LEVELS.map(([v, l]) => opt(v, l, d.level)).join("")}</select></label>
         <label class="rx-field"><span class="rx-label">Title / comment in NX (tags are added for you)</span><input type="text" maxlength="400" data-d="comment" value="${esc(d.comment)}" placeholder="e.g. Front lot after hours"></label>
         <label class="check rx-field"><input type="checkbox" data-d="always" ${d.always ? "checked" : ""}> <span><b>#24h</b>: raise even while the site is disarmed</span></label>
+        <label class="check rx-field"><input type="checkbox" data-d="arm" ${d.arm ? "checked" : ""}> <span><b>#arm</b>: switched off in NX while the site is disarmed, back on when it arms${d.arm && d.always ? ' <span class="text-warn">(#24h wins: stays on)</span>' : ""}</span></label>
         <label class="check rx-field"><input type="checkbox" data-d="enabled" ${d.enabled ? "checked" : ""}> <span>Rule is on in NX</span></label>
       </div></section>
       <section class="rx-sec"><h3>When this happens</h3><div class="rx-grid">
@@ -415,7 +417,7 @@ export function openRuleEditor(host, { site, ruleId = null, onDone, onCancel, on
     if (x === "save") {
       const d = st.draft;
       const keepAction = st.rule?.action_locked || (!kind("action", d.action.type)?.editable && st.rule?.action?.type === d.action.type);
-      const body = { comment: d.comment, level: d.level, always: d.always, enabled: d.enabled };
+      const body = { comment: d.comment, level: d.level, always: d.always, arm: d.arm, enabled: d.enabled };
       if (partChanged("event")) body.event = d.event;
       if (partChanged("action")) body.action = keepAction ? { type: d.action.type } : d.action;
       if (!confirm(`${st.ruleId ? "Change this rule" : "Create this rule"} on ${st.site.name}'s NX server?`)) return;

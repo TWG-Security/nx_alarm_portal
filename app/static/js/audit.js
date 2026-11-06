@@ -14,7 +14,7 @@ const LABELS = {
   "site.created": "Site added", "site.updated": "Site edited", "site.enabled": "Site enabled", "site.disabled": "Site disabled",
   "support.viewed": "TWG support opened this company", "tenant.created": "Company created", "tenant.updated": "Company edited", "tenant.logo": "Logo changed",
   "group.created": "Group created", "group.updated": "Group edited", "group.deleted": "Group deleted",
-  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "location.test": "Location test (phone)", "tracker.location_requested": "Location requested", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
+  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "site.arm_rules": "#arm NX rules switched", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "location.test": "Location test (phone)", "tracker.location_requested": "Location requested", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
   "mfa.exempted": "Two-step turned off for a user", "mfa.required_again": "Two-step required again for a user",
   "app.downloaded": "App downloaded", "app.invited": "Invited to the app", login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited", "user.deleted": "User deleted",
 };
@@ -34,6 +34,10 @@ function details(r) {
       return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> ${esc((d.format || "").toUpperCase())}${d.note ? ` · “${esc(d.note)}”` : ""}`
         + (d.clip_sha256 ? `<div class="muted mono">clip sha256 ${esc(d.clip_sha256.slice(0, 16))}…</div>` : "");
     case "site.updated": return `Changed: ${esc((d.fields || []).join(", ") || "nothing")}`;
+    case "site.arm_rules":
+      return esc([(d.switched || []).length ? `${d.armed ? "On" : "Off"}: ${d.switched.join(", ")}` : "",
+                  (d.failed || []).length ? `Couldn't switch ${d.armed ? "on" : "off"}: ${d.failed.map((f) => [f.rule, f.error].filter(Boolean).join(": ")).join("; ")}` : "",
+                  d.took_ms != null ? `${d.took_ms} ms` : ""].filter(Boolean).join(" · "));
     case "site.armed": case "site.disarmed":
       return esc([d.source === "manual" ? "by hand" : d.source === "timer" ? "disarm timer ran out" : `by ${d.source}`,
                   d.until_ms ? `timer ends ${fmtTime(d.until_ms)}` : "", d.note ? `“${d.note}”` : ""].filter(Boolean).join(" · "))
