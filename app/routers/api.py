@@ -21,7 +21,7 @@ from app.scope import Scope, get_scope
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
-from app.services import arming, mute
+from app.services import arm_event, arming, mute
 from app.services import profile as client_profile
 from app.services.bus import bus
 from app.services.poller import manager, now_ms
@@ -45,6 +45,7 @@ class SiteIn(BaseModel):
     notes: str = Field(default="", max_length=5000)
     timezone: str = Field(default="", max_length=64)         # IANA name for the arming schedule; "" = default
     arm_schedule: list[dict] | None = None                   # [{action, time "HH:MM", days [...]}]; None = keep
+    arm_event: dict | None = None                            # tell NX on arm/disarm (services/arm_event.py); None = keep
     connect: bool = True                                     # False = save without testing
     tunnel_id: int | None = None                             # the company's VPN connection (app/tunnels.py); None = internet
 
@@ -179,6 +180,7 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
                 nx_pass_enc=encrypt(body.nx_pass), address=body.address, lat=body.lat, lng=body.lng,
                 notes=body.notes, tunnel_id=tunnel.id if tunnel else None)
     _apply_arming_settings(site, body, user)
+    _apply_arm_event(site, body.arm_event)
     if body.connect:
         info = await _probe(host, body.nx_user, body.nx_pass, site.tunnel_id)
         site.nx_site_name, site.nx_version = info["nx_site_name"], info["nx_version"]
@@ -230,7 +232,7 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
     if tunnel_id != site.tunnel_id:
         changed.append("tunnel")
         site.tunnel_id, site.tunnel = tunnel_id, tunnel
-    changed += _apply_arming_settings(site, body, user)
+    changed += _apply_arming_settings(site, body, user) + _apply_arm_event(site, body.arm_event)
     site.name, site.host, site.cloud_id, site.nx_user = body.name, host, cloud_id, body.nx_user
     site.nx_pass_enc = encrypt(password)
     site.address, site.lat, site.lng, site.notes = body.address, body.lat, body.lng, body.notes
@@ -270,7 +272,8 @@ async def arm_site(site_id: int, body: ArmIn, request: Request, scope: Scope = D
     audit(db, site.tenant_id, "site.armed" if armed else "site.disarmed", user_id=user.id, site_id=site.id,
           ip=client_ip(request), source="manual", note=body.note.strip(), until_ms=until)
     await db.commit()
-    manager.kick_arm_rules(site.id)                     # NX rules tagged #arm follow (app/services/arm_rules.py)
+    # NX rules tagged #arm follow (services/arm_rules.py); NX gets a Generic Event if set up (services/arm_event.py)
+    arm_event.changed(manager, site, armed, "manual", by=user.label, note=body.note.strip(), until_ms=until)
     data = _site_out(site, await _open_counts(db, scope))
     bus.publish(site.tenant_id, "site.updated", data)
     return data
@@ -390,6 +393,20 @@ async def list_site_cameras(site_id: int, scope: Scope = Depends(get_scope), db:
 class ArmScheduleIn(BaseModel):
     timezone: str = Field(default="", max_length=64)
     arm_schedule: list[dict] = Field(default_factory=list, max_length=200)
+    arm_event: dict | None = None                            # None = keep
+
+
+def _apply_arm_event(site: Site, cfg: dict | None) -> list[str]:
+    if cfg is None:
+        return []
+    try:
+        new = arm_event.clean(cfg)
+    except ValueError as exc:
+        raise HTTPException(400, {"message": str(exc)}) from exc
+    if new == arm_event.config(site):
+        return []
+    site.arm_event = new
+    return ["arm_event"]
 
 
 @router.put("/sites/{site_id}/arm-schedule")
@@ -398,7 +415,7 @@ async def put_arm_schedule(site_id: int, body: ArmScheduleIn, request: Request, 
     """Save only the arming schedule and its time zone (the schedule card's own Save button): the NX
     connection is never touched, so nothing reconnects."""
     site = await _get_site(db, scope, site_id, write=True)
-    changed = _apply_arming_settings(site, body, user)
+    changed = _apply_arming_settings(site, body, user) + _apply_arm_event(site, body.arm_event)
     if changed:
         audit(db, site.tenant_id, "site.updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
     await db.commit()

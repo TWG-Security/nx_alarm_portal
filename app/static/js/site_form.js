@@ -46,7 +46,7 @@ function payload(connect = true) {
   return { tunnel_id: $("tunnel").value ? Number($("tunnel").value) : null,
     name: $("name").value, host: $("host").value, nx_user: $("nx_user").value, nx_pass: $("nx_pass").value,
     address: $("address").value, lat: num($("lat").value), lng: num($("lng").value), notes: $("notes").value, connect,
-    timezone: $("timezone").value, arm_schedule: schedule(),
+    timezone: $("timezone").value, arm_schedule: schedule(), arm_event: armEvent(),
   };
 }
 
@@ -145,7 +145,18 @@ function problems(entries) {
 }
 
 let savedKey = "";
-const currentKey = () => JSON.stringify({ tz: $("timezone").value, s: schedule() });
+const currentKey = () => JSON.stringify({ tz: $("timezone").value, s: schedule(), e: armEvent() });
+// "Tell NX when this site arms or disarms" (app/services/arm_event.py): saved with the schedule.
+const AE_DEFAULT = { rules: true, enabled: false, source: "TWG Alarm Portal", armed: "Site armed", disarmed: "Site disarmed" };
+function armEvent() {
+  return { rules: $("ae-rules").checked, enabled: $("ae-on").checked, source: $("ae-source").value.trim(), armed: $("ae-armed").value.trim(), disarmed: $("ae-disarmed").value.trim() };
+}
+function loadArmEvent(s) {
+  const e = { ...AE_DEFAULT, ...(s?.arm_event || {}) };
+  $("ae-rules").checked = e.rules; $("ae-on").checked = e.enabled; $("ae-source").value = e.source; $("ae-armed").value = e.armed; $("ae-disarmed").value = e.disarmed;
+  $("ae-fields").hidden = !e.enabled;
+}
+$("arm-event").addEventListener("input", () => { $("ae-fields").hidden = !$("ae-on").checked; changed(); });
 function changed() {
   const entries = schedule(), bad = problems(entries);
   rowsEl.querySelector(".empty")?.remove();
@@ -180,6 +191,7 @@ $("sched-preset").addEventListener("click", () => {
 });
 
 function loadSchedule(s) {
+  loadArmEvent(s);
   rowsEl.innerHTML = "";
   (s?.arm_schedule || []).forEach((e) => addEntry(e, { quiet: true }));
   savedKey = currentKey();
@@ -191,7 +203,7 @@ $("sched-save").addEventListener("click", async () => {
   btn.disabled = true;
   $("sched-state").textContent = "Saving…";
   try {
-    const data = await api(`/api/sites/${site.id}/arm-schedule`, { method: "PUT", body: { timezone: $("timezone").value, arm_schedule: schedule() } });
+    const data = await api(`/api/sites/${site.id}/arm-schedule`, { method: "PUT", body: { timezone: $("timezone").value, arm_schedule: schedule(), arm_event: armEvent() } });
     Object.assign(site, data);
     loadSchedule(site);
     $("arm-now").innerHTML = `Now: ${armChip(site)} ${armLine(site)}`;

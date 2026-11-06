@@ -91,6 +91,9 @@
         <small class="muted">The soft triggers come from the site's NX (its rules on Soft Trigger). A call can send <code>state=started</code> / <code>stopped</code> to start and stop a prolonged one.</small>
       </div>
       <label class="check" style="margin-top:8px"><input type="checkbox" id="wh-button"> <span><b>Button</b> on the site's panel and its alarms, for operators</span></label>
+      <label class="check"><input type="checkbox" id="wh-on-arm"> <span><b>Run when the site arms</b> (button, schedule or timer)</span></label>
+      <label class="check"><input type="checkbox" id="wh-on-disarm"> <span><b>Run when the site disarms</b>
+        <span class="muted">· templates can use {arming} (armed / disarmed), {by} and {note}</span></span></label>
       <div id="wh-error"></div>
       <button class="btn btn-primary" type="submit" id="wh-submit">Add webhook</button>
       <button class="btn" type="button" id="wh-cancel" hidden>Cancel</button>

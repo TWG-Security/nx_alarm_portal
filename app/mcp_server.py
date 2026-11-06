@@ -140,7 +140,7 @@ def _site(s: dict) -> dict:
 def _site_full(s: dict) -> dict:
     out = _site(s)
     out.update({"live_push": s.get("push"), "mute": s.get("mute") or None, "nx_rules_tagged_arm": s.get("arm_rules"),
-                "vpn": (s.get("tunnel") or {}).get("name"), "nx_rules_readable": s.get("rules_readable"),
+                "vpn": (s.get("tunnel") or {}).get("name"), "tells_nx_on_arm": s.get("arm_event"), "nx_rules_readable": s.get("rules_readable"),
                 "repeat_delays": s.get("rule_delays") or None, "link": f"{_base()}/?site={s['id']}"})
     return out
 

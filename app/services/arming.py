@@ -208,9 +208,12 @@ async def check_all(now_ms: int) -> int:
                 flips.append(s)
         if flips:
             await db.commit()
+            from app.services import arm_event
             from app.services.poller import manager
             for s in flips:
-                manager.kick_arm_rules(s.id)          # NX rules tagged #arm follow (app/services/arm_rules.py)
+                st = site_state(s, now_ms)
+                # NX rules tagged #arm follow, and NX hears about it if the site is set up for that
+                arm_event.changed(manager, s, s.armed, st.source, until_ms=st.until_ms)
                 log.info("site %s %s by %s", s.id, "armed" if s.armed else "disarmed", site_state(s, now_ms).source)
                 bus.publish(s.tenant_id, "site.updated", site_dict(s))
             changed = len(flips)

@@ -47,7 +47,7 @@
       </div>
     </div>
     <div class="card form-wide">
-      <h2>Arming schedule</h2>
+      <h2>Arming</h2>
       <p class="muted" style="margin-top:0">Arm and disarm this site automatically every week. While disarmed, security events are recorded but not raised.
         System alarms and NX rules tagged <b>#24h</b> always raise. A manual arm or disarm (map or Sites page) holds until the next scheduled time.
         Saving a schedule never arms or disarms on the spot: it takes over at the next scheduled time.</p>
@@ -61,8 +61,24 @@
         <button type="button" class="btn btn-sm" id="sched-add" style="flex:0 0 auto">+ Add time</button>
         <button type="button" class="btn btn-sm" id="sched-preset" style="flex:0 0 auto">Business hours: disarm 7:00 AM, arm 6:00 PM, Mon–Fri</button>
       </div>
+      <div class="arm-event" id="arm-event">
+        <h3>When it arms or disarms, also in NX</h3>
+        <label class="check"><input type="checkbox" id="ae-rules"> <span><b>Switch NX rules tagged #arm</b>: off while disarmed, back on when armed.
+          Unticked, they stay on.</span></label>
+        <label class="check"><input type="checkbox" id="ae-on"> <span><b>Tell NX when this site arms or disarms</b>: send it a
+          Generic Event (by button, schedule or timer), so NX rules can react: chirp a siren, flash a strobe, switch an Axis input…</span></label>
+        <small class="muted" style="display:block;margin:6px 0 0 28px">In Nx Witness, make a rule on <b>Generic Event</b> with <b>Source</b> contains the source and <b>Caption</b> contains
+          one of the captions. The Description says who or what armed it and why. Arming switches NX rules tagged <b>#arm</b> on before it sends
+          “armed”; disarming sends “disarmed” before it switches them off. The portal doesn't raise these as alarms.
+          To fire a <b>soft trigger</b> too (or a second event), tick “Run when the site arms / disarms” on a webhook (Sites → Webhooks to NX).</small>
+        <div class="rules-grid" id="ae-fields">
+          <div class="field"><label for="ae-source">Source</label><input id="ae-source" type="text" maxlength="200"></div>
+          <div class="field"><label for="ae-armed">Caption when armed</label><input id="ae-armed" type="text" maxlength="200"></div>
+          <div class="field"><label for="ae-disarmed">Caption when disarmed</label><input id="ae-disarmed" type="text" maxlength="200"></div>
+        </div>
+      </div>
       <div class="sched-save" id="sched-save-bar">
-        <button type="button" class="btn btn-primary" id="sched-save" disabled>Save schedule</button>
+        <button type="button" class="btn btn-primary" id="sched-save" disabled>Save arming</button>
         <button type="button" class="btn" id="sched-undo" hidden>Undo changes</button>
         <span class="muted" id="sched-state"></span>
       </div>

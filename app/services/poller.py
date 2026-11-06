@@ -89,7 +89,10 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     candidates: dict[str, tuple[dict, object]] = {}
     always: set[str] = set()       # event keys that some #24h rule fired on
     acks = lambda r: bool((r.get("actionData") or {}).get("acknowledge"))  # noqa: E731
+    from app.services.arm_event import is_echo
     for row in rows:
+        if is_echo(site, row):                 # the portal's own "Site armed / disarmed" message to NX, logged back
+            continue
         c = classify(row, policy, site.alarm_types, rule_levels, known_rules)
         if not c.is_alarm:
             continue
@@ -560,7 +563,7 @@ class PollerManager:
                           if (lvl := rule_tag(r.get("comment"))) and (rid := (r.get("id") or "").strip("{}"))}
         from app.services import arm_rules
         if arm_rules.tagged(rules) or rt.arm_rules:
-            want = arming.site_state(site, now_ms()).armed
+            want = arm_rules.wanted(site, now_ms())
             behind = bool(arm_rules.out_of_step(rules, want))
             arm_rules.pending(rt, [_rule_label(r) for r in arm_rules.tagged(rules)], want, behind)
             if behind:

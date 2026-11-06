@@ -20,7 +20,7 @@ function lastCall(h) {
 }
 function paint() {
   $("wh-rows").innerHTML = rows.map((h) => `<tr data-id="${h.id}">
-      <td><b>${esc(h.name)}</b> <span class="chip">${esc(h.kind_label)}</span>${h.button ? ' <span class="chip">Button</span>' : ""}
+      <td><b>${esc(h.name)}</b> <span class="chip">${esc(h.kind_label)}</span>${h.button ? ' <span class="chip">Button</span>' : ""}${h.config?.on_arm ? ' <span class="chip">On arm</span>' : ""}${h.config?.on_disarm ? ' <span class="chip">On disarm</span>' : ""}
         <div class="small-print">${esc(h.site_name)}</div><div class="small-print mono muted">${esc(h.url_hint)}</div></td>
       <td class="small-print">${sends(h)}</td>
       <td>${lastCall(h)}</td>
@@ -89,10 +89,11 @@ $("wh-trigger").addEventListener("change", () => pickTrigger());
 function formBody() {
   const kind = $("wh-kind").value;
   const t = triggers.find((x) => x.id === $("wh-trigger").value);
+  const on = { on_arm: $("wh-on-arm").checked, on_disarm: $("wh-on-disarm").checked };
   const config = kind === "generic"
     ? { source: $("wh-source").value, caption: $("wh-caption").value, description: $("wh-description").value, state: $("wh-gstate").value,
-        device_ids: $("wh-cam").value ? [$("wh-cam").value] : [] }
-    : { trigger_id: $("wh-trigger").value, trigger_name: t?.name || "", device_id: $("wh-tcam").value, state: $("wh-tstate").value };
+        device_ids: $("wh-cam").value ? [$("wh-cam").value] : [], ...on }
+    : { trigger_id: $("wh-trigger").value, trigger_name: t?.name || "", device_id: $("wh-tcam").value, state: $("wh-tstate").value, ...on };
   return { site_id: Number($("wh-site").value), name: $("wh-name").value, kind, config, button: $("wh-button").checked };
 }
 function resetForm() {
@@ -108,6 +109,7 @@ async function startEdit(h) {
   $("wh-site").value = String(h.site_id); $("wh-site").disabled = true;
   $("wh-kind").value = h.kind; $("wh-kind").disabled = true;
   $("wh-name").value = h.name; $("wh-button").checked = h.button;
+  $("wh-on-arm").checked = !!h.config?.on_arm; $("wh-on-disarm").checked = !!h.config?.on_disarm;
   showKind();
   await loadSite();
   const c = h.config || {};

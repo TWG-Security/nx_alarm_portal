@@ -40,6 +40,13 @@ FAIL_ALARM_AFTER = 3
 ALARM_ON, ALARM_OFF = "portalArmRulesOn", "portalArmRulesOff"
 
 
+def wanted(site, t_ms: int) -> bool:
+    """On or off in NX right now: the site's arming, unless the site has "switch #arm rules" off (Edit site → Arming),
+    in which case they stay on (switching it off never leaves them off)."""
+    from app.services import arm_event
+    return arming.site_state(site, t_ms).armed or not arm_event.config(site)["rules"]
+
+
 def tagged(rules: list[dict]) -> list[dict]:
     return [r for r in rules if arming.rule_follows_arming(r.get("comment"))]
 
@@ -120,7 +127,7 @@ async def _once(manager, rt, fails: int) -> int:
         site = await db.get(Site, rt.site_id)
         if site is None or not site.enabled or site.archived_at is not None:
             return 0
-        want = arming.site_state(site, int(time.time() * 1000)).armed
+        want = wanted(site, int(time.time() * 1000))
     t0 = time.monotonic()
     try:
         names, switched, failed = await _switch(rt, want)

@@ -40,6 +40,15 @@ def fresh_fake():
     fake_nx.RULE_MODE.update(patch="replace", write="ok")
 
 
+async def kicked(rt) -> bool:
+    """Arm/disarm wakes the switching task from arm_event's background job (it orders the rules and the NX event)."""
+    for _ in range(100):
+        if rt.arm_kick.is_set():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
 def on(kind):
     return fake_nx.RULES[kind]["enabled"] is not False
 
@@ -75,7 +84,7 @@ async def test_disarm_switches_tagged_rules_off_and_arm_switches_them_back(clien
     await login(client, user.email)
 
     assert (await client.post(f"/api/sites/{site.id}/disarm", json={"minutes": 60})).status_code == 200
-    assert rt.arm_kick.is_set()                                   # the button wakes the site's switching task
+    assert await kicked(rt)                                   # the button wakes the site's switching task
     assert await arm_rules._once(m, rt, 0) == 0
     assert not on("line")                                         # #arm #alarm: off in NX
     assert on("panic") and on("dock") and on("panic24")           # untagged and #24h: untouched
@@ -85,7 +94,7 @@ async def test_disarm_switches_tagged_rules_off_and_arm_switches_them_back(clien
 
     rt.arm_kick.clear()
     assert (await client.post(f"/api/sites/{site.id}/arm", json={})).status_code == 200
-    assert rt.arm_kick.is_set()
+    assert await kicked(rt)
     await arm_rules._once(m, rt, 0)
     assert on("line") and rt.arm_rules["armed"] is True
     assert await arm_rules._once(m, rt, 0) == 0                   # nothing out of step: nothing written
@@ -105,11 +114,11 @@ async def test_the_schedule_and_rule_reads_bring_rules_into_step(session, admin)
     await session.commit()
     import time
     assert await arming.check_all(int(time.time() * 1000)) == 1  # the schedule disarms it...
-    assert rt.arm_kick.is_set()                                    # ...and the switching task is woken
+    assert await kicked(rt)                                    # ...and the switching task is woken
     rt.arm_kick.clear()
     # A rule tagged #arm in Nx Witness while disarmed: the poller's next rule read spots it.
     await manager._refresh_rules(rt, session, site, Policy(), force=True)
-    assert rt.arm_kick.is_set() and rt.arm_rules["state"] == "switching"
+    assert await kicked(rt) and rt.arm_rules["state"] == "switching"
     await arm_rules._once(Mgr(), rt, 0)
     assert not on("line") and rt.arm_rules["state"] == "ok"
 

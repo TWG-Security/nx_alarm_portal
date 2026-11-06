@@ -81,7 +81,7 @@ def clean_config(kind: str, cfg: dict) -> dict:
             raise ValueError("State must be instant, started or stopped")
         out = {k: str(cfg.get(k) or "").strip()[:TEMPLATE_MAX] for k in ("source", "caption", "description")}
         cams = [str(d).strip("{}") for d in (cfg.get("device_ids") or []) if str(d).strip()][:20]
-        return {**out, "state": state, "device_ids": cams}
+        return {**out, "state": state, "device_ids": cams, **_on(cfg)}
     if kind == "trigger":
         tid = str(cfg.get("trigger_id") or "").strip("{} ")
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", tid):
@@ -92,8 +92,14 @@ def clean_config(kind: str, cfg: dict) -> dict:
         dev = str(cfg.get("device_id") or "").strip("{} ")
         if not re.fullmatch(r"[0-9a-fA-F-]{36}", dev):
             raise ValueError("Pick the camera the soft trigger is on")
-        return {"trigger_id": tid, "trigger_name": str(cfg.get("trigger_name") or "")[:200], "device_id": dev, "state": state}
+        return {"trigger_id": tid, "trigger_name": str(cfg.get("trigger_name") or "")[:200], "device_id": dev, "state": state,
+                **_on(cfg)}
     raise ValueError("Kind must be generic or trigger")
+
+
+def _on(cfg: dict) -> dict:
+    """Also run by itself when the site arms / disarms (app/services/arm_event.py)."""
+    return {"on_arm": bool(cfg.get("on_arm")), "on_disarm": bool(cfg.get("on_disarm"))}
 
 
 def allowed(hook_id: int) -> bool:

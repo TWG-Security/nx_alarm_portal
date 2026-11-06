@@ -1378,3 +1378,6 @@ body:has(.drawer--docked:not([hidden])) .map-canvas .globe-bar { visibility: hid
 #wh-made pre { white-space: pre-wrap; word-break: break-all; font-size: 12px; }
 .nx-buttons:empty { display: none; }
 .nx-buttons { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+.arm-event { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border); }
+.arm-event .rules-grid { margin-top: 8px; }
+.arm-event h3 { margin: 0 0 6px; font-size: 15px; }

@@ -173,6 +173,8 @@ async def rule_patch(rid: str, req: Request):
         return JSONResponse({"error": "not found"}, status_code=404)
     body = await req.json()
     RULE_PATCHES.append({"id": rid, **body})
+    if "enabled" in body:
+        NX_ORDER.append(("rule", r.get("comment", ""), body["enabled"]))
     for k, v in body.items():
         if RULE_MODE["patch"] == "merge" and isinstance(v, dict) and isinstance(r.get(k), dict):
             r[k] = {**r[k], **v}
@@ -333,6 +335,7 @@ TRIGGERS = [{"triggerId": "256dacab-d698-4a32-b9ec-135ba73ba127", "prolonged": F
             {"triggerId": "ae447eb3-a40e-445a-8d11-4c8f01c2021e", "prolonged": True, "name": "Siren (hold)",
              "icon": "_bell_off", "devices": {"ids": [], "all": True}, "schedule": []}]
 NX_SENT: list = []
+NX_ORDER: list = []         # ("rule", comment, enabled) / ("generic", caption) in the order NX got them
 NX_EVENTS_MODE = {"mode": "ok"}
 
 @app.post("/_nx_events_mode/{mode}")
@@ -342,6 +345,9 @@ async def nx_events_mode(mode: str):
 
 @app.get("/_nx_sent")
 async def nx_sent(): return NX_SENT
+
+@app.get("/_nx_order")
+async def nx_order(): return NX_ORDER
 
 @app.get("/rest/v4/events/triggers")
 async def triggers(): return TRIGGERS
@@ -382,6 +388,7 @@ async def generic_event(req: Request):
     if body.get("state") not in (None, "started", "stopped", "instant") or "metadata" in body:
         return JSONResponse({"error": "2", "errorString": "Invalid parameter"}, status_code=400)
     NX_SENT.append({"kind": "generic", "at": time.time(), **body})
+    NX_ORDER.append(("generic", body.get("caption", "")))
     await _log({"type": "generic", "state": body.get("state") or "instant", "source": body.get("source", ""),
                 "caption": body.get("caption", ""), "description": body.get("description", ""),
                 "deviceIds": ["{%s}" % d.strip("{}") for d in body.get("deviceIds") or []]})

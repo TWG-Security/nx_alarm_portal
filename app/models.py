@@ -336,6 +336,7 @@ class Site(Base):
     arm_schedule: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # {"entries": [...], "since_ms": ...}
     arm_override: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # last manual arm/disarm
     armed: Mapped[bool] = mapped_column(Boolean, default=True)
+    arm_event: Mapped[dict | None] = mapped_column(JSONType, nullable=True)       # tell NX on arm/disarm (services/arm_event.py)
     # Site / camera mutes for a few minutes (app/services/mute.py, migration 0034)
     mute: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     # Client profile (app/services/profile.py, migration 0035): who to call, package (ground response or
