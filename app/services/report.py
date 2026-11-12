@@ -263,6 +263,11 @@ PUSH_PURPOSE = {"call_update": "App call-update notification", "alarm": "App not
                 "stand_down": "App stand-down notification", "closed": "App notification (alarm closed)"}
 
 
+
+def _mute_len(minutes: int) -> str:
+    """As the buttons say it (common.js muteLen): "30 min", "4 h"."""
+    return f"{minutes} min" if minutes < 60 or minutes % 60 else f"{minutes // 60} h"
+
 def _audit_row(a: AuditLog) -> dict:
     d = a.detail or {}
     ts = int(a.ts.replace(tzinfo=a.ts.tzinfo or timezone.utc).timestamp() * 1000)
@@ -283,6 +288,10 @@ def _audit_row(a: AuditLog) -> dict:
         away = f", {d['distance']} away" if d.get("distance") else (", position unknown" if "distance" in d else "")
         return {"ts": ts, "what": f"Dispatched {d.get('guard', '')}" + (" (automatic, on confirm)" if d.get("auto") else ""),
                 "who": who, "kind": "operator", "detail": f"text to {d.get('to', '')}{away}"}
+    if a.action == "alarm.site_restored":
+        from app.services.poller import _duration
+        return {"ts": ts, "what": "Site back online", "who": "system", "kind": "system",
+                "detail": f"the portal reached NX again after {_duration(d.get('down_s') or 0)}"}
     if a.action == "alarm.joined_call":
         cam = f" · {d['camera']}" if d.get("camera") else ""
         return {"ts": ts, "what": "Alarm during the call", "who": d.get("camera") or "NX", "kind": "joined",
@@ -333,6 +342,14 @@ def _audit_row(a: AuditLog) -> dict:
         return {"ts": ts, "what": f"Exported ({d.get('format', '').upper()})", "who": who, "detail": d.get("note", "")}
     if a.action == "alarm.raised":
         return {"ts": ts, "what": "Raised by a #24h rule", "who": who, "detail": d.get("reason", "")}
+    if a.action == "alarm.called":
+        to = {"police": "Called the police", "client": "Called the client", "contact": "Called a contact"}.get(d.get("to"), "Called")
+        return {"ts": ts, "what": to, "who": who, "kind": "operator",
+                "detail": " · ".join(x for x in (d.get("name", ""), d.get("number", "")) if x)}
+    if a.action == "site.muted":
+        return {"ts": ts, "what": f"Muted {('camera ' + d['camera']) if d.get('camera') else 'the site'} for {_mute_len(d.get('minutes') or 0)}",
+                "who": who, "kind": "operator",
+                "detail": "its alarms are still listed but don't sound, pop up, text or push until the mute ends"}
     if a.action in ("site.armed", "site.disarmed"):
         how = {"manual": f"by {who}", "schedule": "by schedule", "timer": "disarm timer ran out"}.get(d.get("source"), "")
         note = f" · “{d['note']}”" if d.get("note") else ""

@@ -69,7 +69,16 @@ async def test_losing_a_site_raises_an_alarm_and_restore_is_noted(session, admin
     assert (alarm.event_type, alarm.priority, alarm.caption) == ("portalSiteOffline", 2, "Site connection lost")
     await manager._set_status(rt, "offline", "still down")          # no duplicate while it stays down
     assert len((await session.scalars(select(Alarm))).all()) == 1
+    from app.services.serialize import alarm_dict
+    assert alarm_dict(alarm)["site_status"] == "offline"                # "Site still offline" on the alarm
     s = (await session.execute(select(Site).execution_options(populate_existing=True))).scalar_one()
+    s.status = "online"                                                  # as the poller sets it before noting the restore
+    await session.commit()
     await manager._mark_restored(session, s)
     await session.refresh(alarm)
-    assert "Connection restored" in alarm.description and alarm.state == "new"
+    # Stays open (the user, 2026-10-20: "alarm should stay open but it shows online or offline in the alarm")
+    assert "Back online at" in alarm.description and "(unreachable for " in alarm.description and alarm.state == "new"
+    assert alarm_dict(alarm)["site_status"] == "online"                 # "Site back online"
+    from app.services import report
+    rows = await report.timeline(session, alarm)
+    assert any(r["what"] == "Site back online" and "after" in r["detail"] for r in rows)

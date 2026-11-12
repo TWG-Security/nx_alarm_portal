@@ -85,7 +85,7 @@ async def test_a_joined_alarm_chimes_the_call_and_tells_the_dispatched_guard(cli
         events.append(sub.queue.get_nowait())
     bus.unsubscribe(sub)
     # The call's timeline changed as a guard-style update (update chime + Active calls card flash on screens)
-    assert ("alarm.timeline", {"alarm_id": call.id, "guard": True}) in events
+    assert ("alarm.timeline", {"alarm_id": call.id, "guard": True, "tenant_id": t.id}) in events
     assert not any(e == "alarm.new" for e, _ in events)                          # no new feed card
     texts = [(c, body_of(c)) for c in twilio.calls[before:]]
     upd = [b for c, b in texts if b.startswith("TWG UPDATE")]
@@ -120,5 +120,6 @@ async def test_the_dispatched_guards_app_gets_a_call_update(client, session, apn
     h, b = upd[0]
     assert b["alarm_id"] == call.id and b["joined_alarm_id"] and b["aps"]["alert"]["title"] == f"UPDATE · {site.name}"
     assert b["aps"]["alert"]["body"].startswith("Gate line crossed") and b["aps"]["thread-id"] == f"alarm-{call.id}"
+    assert b["aps"]["mutable-content"] == 1 and b["aps"]["category"] == "ALARM"
     assert h["apns-collapse-id"] == f"update-{b['joined_alarm_id']}"
     assert b["aps"]["sound"] == "twg-alarm.wav"                           # the joined alarm's level

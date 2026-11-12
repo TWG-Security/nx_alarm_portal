@@ -244,3 +244,48 @@ async def test_tagged_only_ingest_and_the_rules_list(session, admin):
     assert out["r-plain"]["level"] == "ignore" and "tagged rules only" in out["r-plain"]["why"]
     assert out["r-off"]["level"] == "off"
     assert {r["id"]: r["level"] for r in describe_rules(rules, Policy())}["r-plain"] == "critical"   # setting off: its default
+
+
+@respx.mock
+async def test_camera_stamping_events_a_day_ahead(session, admin):
+    """2 Rothmere Dr, 2026-10-24..25: camera-side analytics stamped a day ahead pushed the poll cursor into the
+    future (the backstop then asked NX for "tomorrow") and their clips waited forever."""
+    import time
+    from app.services.serialize import alarm_dict
+    tenant, _ = admin
+    now = int(time.time() * 1000)
+    site = await make_site(session, tenant, cursor=now - 10_000)
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[{"id": "{dev-1}", "name": "Driveway"}]))
+    ahead = now + 86_397_000
+    events = respx.get(f"{NX}/rest/v4/events/log").mock(return_value=httpx.Response(200, json=[
+        nx_row(now - 2_000, action_id="ok"), nx_row(ahead, action_id="tomorrow"),
+    ]))
+    rt = manager._runtime(site)
+
+    created = await manager.poll_once(rt)
+
+    assert len(created) == 2
+    late = next(a for a in created if a.nx_action_id == "tomorrow")
+    assert abs(late.event_ts_ms - int(time.time() * 1000)) < 5_000               # dated on arrival
+    assert abs(alarm_dict(late)["camera_clock_off_ms"] - 86_397_000) < 5_000
+    assert alarm_dict(next(a for a in created if a.nx_action_id == "ok"))["camera_clock_off_ms"] == 0
+    await session.refresh(site)
+    assert site.event_cursor_ms <= int(time.time() * 1000)                       # never ahead of the clock
+
+    # The next poll still asks from about now, and the future row is only re-read (deduped).
+    assert await manager.poll_once(rt) == []
+    assert int(events.calls.last.request.url.params["startTimeMs"]) <= int(time.time() * 1000)
+
+
+@respx.mock
+async def test_cursor_already_in_the_future_is_pulled_back(session, admin):
+    import time
+    tenant, _ = admin
+    now = int(time.time() * 1000)
+    site = await make_site(session, tenant, cursor=now + 82_000_000)              # production, site 4
+    respx.post(f"{NX}/rest/v3/login/sessions").mock(return_value=httpx.Response(200, json={"token": "tok"}))
+    respx.get(f"{NX}/rest/v4/devices").mock(return_value=httpx.Response(200, json=[]))
+    events = respx.get(f"{NX}/rest/v4/events/log").mock(return_value=httpx.Response(200, json=[nx_row(now - 1_000, action_id="n")]))
+    created = await manager.poll_once(manager._runtime(site))
+    assert len(created) == 1 and int(events.calls.last.request.url.params["startTimeMs"]) <= now + 5_000

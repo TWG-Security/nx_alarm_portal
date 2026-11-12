@@ -58,6 +58,24 @@ def test_timed_disarm_rearms_by_itself():
     assert (after.armed, after.source) == (True, "timer")
 
 
+def test_timer_ends_in_what_the_schedule_says():
+    # Production 2026-10-25 (2 Rothmere Dr): disarmed 11:10 for 4 h, then a daily disarm 07:15 / arm 18:45 schedule
+    # saved at 12:47 (the save keeps the disarm and its timer). The timer ending at 15:10 used to re-arm the site.
+    daily = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    sched = {"entries": [{"action": "disarm", "time": "07:15", "days": daily},
+                         {"action": "arm", "time": "18:45", "days": daily}], "since_ms": ms(2026, 10, 25, 12, 47)}
+    override = {"armed": False, "at_ms": ms(2026, 10, 25, 12, 47), "until_ms": ms(2026, 10, 25, 15, 10)}
+    before = state_at(sched, override, NY, ms(2026, 10, 25, 14))
+    assert (before.armed, before.next_armed, before.next_ms, before.next_source) == (False, True, ms(2026, 10, 25, 18, 45), "schedule")
+    after = state_at(sched, override, NY, ms(2026, 10, 25, 15, 30))
+    assert (after.armed, after.source, after.next_ms) == (False, "timer", ms(2026, 10, 25, 18, 45))
+    assert state_at(sched, override, NY, ms(2026, 10, 25, 18, 45)).armed
+    # A timer that ends while the schedule says armed re-arms.
+    night = {"armed": False, "at_ms": ms(2026, 10, 25, 20), "until_ms": ms(2026, 10, 25, 22)}
+    st = state_at(sched, night, NY, ms(2026, 10, 25, 22, 30))
+    assert (st.armed, st.source) == (True, "timer")
+
+
 def test_timer_is_dropped_when_the_schedule_takes_over_first():
     # Disarmed 17:00 for 3 h; the 18:00 scheduled arm wins, and 20:00 must not re-arm a later schedule disarm.
     sched = {"entries": [{"action": "arm", "time": "18:00", "days": ["wed"]},

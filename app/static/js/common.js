@@ -132,9 +132,12 @@ export function openCounts(siteId) {
   return c;
 }
 // Open alarms of your own company: these drive the siren and chime.
+// Raised while its site or camera was muted (app/services/mute.py): listed, but no sound, pop-up or toast.
+export const silent = (a) => !!a.muted && a.priority > 1;
+
 export function mineCounts() {
   const c = { 1: 0, 2: 0, 3: 0 };
-  for (const a of openAlarms.values()) if (isMine(a)) c[a.priority]++;
+  for (const a of openAlarms.values()) if (isMine(a) && !silent(a)) c[a.priority]++;   // muted: listed, never sounded
   return c;
 }
 
@@ -206,11 +209,23 @@ function whoHtml(a) {
   const who = a.source === "manual" ? `by ${esc(a.by || "operator")}` : ARM_SOURCE[a.source] || "";
   return [who, a.note ? `“${esc(a.note)}”` : ""].filter(Boolean).join(" · ");
 }
+// NX rules tagged #arm (app/services/arm_rules.py): off in NX while disarmed. `quiet`: nothing to say when all is
+// well and the site is armed (tables).
+export function armRulesHtml(site, quiet = false) {
+  const r = site.arm_rules, n = r?.rules?.length || 0;
+  if (!r || !n) return "";
+  const what = `${n} NX rule${n > 1 ? "s" : ""} tagged #arm`;
+  const dir = r.armed ? "on" : "off";
+  if (r.state === "failed") return `<span class="text-failed" title="${esc(r.detail || "")}">Couldn't switch ${what} ${dir}: ${esc(r.detail || "")} (retrying)</span>`;
+  if (r.state === "switching") return `<span class="text-warn">Switching ${what} ${dir}…</span>`;
+  if (r.armed && quiet) return "";
+  return `<span class="muted" title="${esc(r.rules.join(", "))}">${what} ${r.armed ? "on" : "switched off in NX"}</span>`;
+}
 // One line for tables: who/why, and what happens next.
 export function armLine(site) {
   const a = site.arming;
   if (!a) return "";
-  return [a.armed ? "" : `for ${timerHtml(a.since_ms)}`, whoHtml(a), nextHtml(a)].filter(Boolean).join(" · ");
+  return [a.armed ? "" : `for ${timerHtml(a.since_ms)}`, whoHtml(a), nextHtml(a), armRulesHtml(site, true)].filter(Boolean).join(" · ");
 }
 
 const SHIELD = '<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6l-8-3z"/>';
@@ -221,7 +236,7 @@ const ICON_DISARMED = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor
 export function armCardHtml(site) {
   const a = site.arming;
   if (!a) return "";
-  const lines = [whoHtml(a), nextHtml(a)].filter(Boolean);
+  const lines = [whoHtml(a), nextHtml(a), armRulesHtml(site)].filter(Boolean);
   return `<div class="arm-card ${a.armed ? "is-armed" : "is-disarmed"}">
     <div class="arm-card-head">${a.armed ? ICON_ARMED : ICON_DISARMED}
       <span class="arm-card-state">${a.armed ? "Armed" : "Disarmed"}</span>
@@ -254,7 +269,9 @@ export async function setArmed(site, armed) {
     + (schedArm ? "" : '<option value="">Only when someone re-arms it</option>');
   sel.value = schedArm ? "" : "240";
   document.getElementById("arm-title").textContent = `Disarm ${site.name}`;
-  document.getElementById("arm-summary").textContent = site.address || "";
+  const nArm = site.arm_rules?.rules?.length || 0;
+  document.getElementById("arm-summary").textContent = [site.address || "",
+    nArm ? `Also switches off ${nArm} NX rule${nArm > 1 ? "s" : ""} tagged #arm until it re-arms: ${site.arm_rules.rules.join(", ")}` : ""].filter(Boolean).join(" · ");
   note.value = "";
   return new Promise((resolve) => {
     const onClose = async () => {
@@ -286,10 +303,23 @@ export function openAck(alarm) {
   document.getElementById("ack-summary").textContent =
     `${alarm.caption} · ${alarm.site_name}${alarm.source_name ? " · " + alarm.source_name : ""}`;
   note.value = "";
+  const muteRow = document.getElementById("ack-mute-row"), muteSel = document.getElementById("ack-mute");
+  muteRow.hidden = !canMute(alarm);
+  muteSel.value = "";
+  muteSel.querySelector('[value="camera"]').disabled = !alarm.device_id;
+  const muteMin = document.getElementById("ack-mute-min");
+  if (muteMin.options.length !== MUTE_MINUTES.length) {
+    muteMin.innerHTML = MUTE_MINUTES.map((n) => `<option value="${n}"${n === 5 ? " selected" : ""}>for ${muteLen(n)}</option>`).join("");
+  }
   return new Promise((resolve) => {
     const onClose = async () => {
       dlg.removeEventListener("close", onClose);
       if (!(dlg.returnValue in VERDICT)) return resolve(null);
+      // Mute first, so the next events from there (often seconds apart) are already silent.
+      if (!muteRow.hidden && muteSel.value) {
+        await muteSite(alarm.site_id, { minutes: Number(document.getElementById("ack-mute-min").value),
+          deviceId: muteSel.value === "camera" ? alarm.device_id : "", alarmId: alarm.id, label: alarm.source_name });
+      }
       resolve(await acknowledge(alarm.id, note.value, null, dlg.returnValue));
     };
     dlg.addEventListener("close", onClose);
@@ -423,8 +453,8 @@ function scheduleReconnect() {
   backoff = Math.min(backoff * 2, 15_000);
 }
 
-const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarm.note", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push",
-  "tracker.moved", "tracker.removed", "alarm.timeline"];
+const EVENTS = ["alarm.new", "alarm.acked", "alarm.updated", "alarm.note", "alarms.reload", "site.status", "site.updated", "site.removed", "site.push", "site.arm_rules",
+  "tracker.moved", "tracker.removed", "alarm.timeline", "camera.health"];
 function connect() {
   es = new EventSource("/api/events");
   lastBeat = Date.now();
@@ -516,3 +546,120 @@ export function markerState(site, counts) {
   if (counts[3]) return "warn";
   return "ok";
 }
+
+
+// A "Site connection lost" alarm stays open for the operator, but says whether the site is back (the user,
+// 2026-10-20: "alarm should stay open but it shows online or offline in the alarm"). site_status is the site's status
+// now; the server re-sends the alarm (alarm.updated) whenever the site goes online or offline again.
+export function siteLinkChip(a) {
+  if (a.event_type !== "portalSiteOffline") return "";
+  return a.site_status === "online"
+    ? '<span class="chip online" title="The portal reaches this site again; alarms are coming in">Site back online</span>'
+    : '<span class="chip offline" title="The portal still can\'t reach this site: its alarms are not being received">Site still offline</span>';
+}
+
+// Site search (the SOC, 2026-10-25): name, address, company and client profile words; every word must match.
+export const siteMatches = (s, q) => {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const p = s.profile || {};
+  const hay = [s.name, s.address, s.tenant_name, s.nx_site_name, p.client_name, p.phone, p.alt_contacts, p.package_label]
+    .filter(Boolean).join(" ").toLowerCase();
+  return words.every((w) => hay.includes(w));
+};
+
+// ---------------------------------------------------------------- mute a site or one camera for a while
+// (the SOC, 2026-10-25; the user chose "silent, still listed" on 2026-10-26: app/services/mute.py;
+// longer presets up to 24 h, the user 2026-11-04)
+export const MUTE_MINUTES = [5, 15, 30, 60, 240, 480, 1440];
+export const muteLen = (n) => (n < 60 ? `${n} min` : `${n / 60} h`);
+export const canMute = (a) => a.priority > 1 && a.category === "security";
+export async function muteSite(siteId, { minutes, deviceId = "", alarmId = null, label = "" }) {
+  try {
+    const s = await api(`/api/sites/${siteId}/mute`, { method: "POST", body: { minutes, device_id: deviceId, alarm_id: alarmId } });
+    toast(`${deviceId ? `Camera <b>${esc(label || "camera")}</b>` : `<b>${esc(s.name)}</b>`} muted for ${muteLen(minutes)}: its alarms are still listed, but silent`);
+    emit("site.updated", s);
+    return s;
+  } catch (e) { toast(esc(e.message), { kind: "error" }); return null; }
+}
+export async function unmuteSite(siteId, deviceId = "") {
+  try {
+    const s = await api(`/api/sites/${siteId}/mute${deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : ""}`, { method: "DELETE" });
+    toast(deviceId ? "Camera unmuted" : `<b>${esc(s.name)}</b> unmuted`);
+    emit("site.updated", s);
+    return s;
+  } catch (e) { toast(esc(e.message), { kind: "error" }); return null; }
+}
+// Active mutes of a site still running now (the server drops expired ones on the next change).
+export function siteMutes(site) {
+  const m = site?.mute || {}, now = serverNow();
+  const live = (e) => e && e.until_ms > now;
+  return { site: live(m.site) ? m.site : null,
+           cameras: Object.entries(m.cameras || {}).filter(([, e]) => live(e)).map(([id, e]) => ({ id, ...e })) };
+}
+export const muteChip = (site) => {
+  const m = siteMutes(site);
+  if (m.site) return `<span class="chip muted-chip" title="Muted by ${esc(m.site.by)}: alarms are listed but silent">Muted · ${esc(fmtUntil(m.site.until_ms))}</span>`;
+  return m.cameras.length ? `<span class="chip muted-chip" title="${esc(m.cameras.map((c) => `${c.name || c.id} until ${fmtUntil(c.until_ms)}`).join("\n"))}">${m.cameras.length} camera${m.cameras.length > 1 ? "s" : ""} muted</span>` : "";
+};
+export function fmtUntil(ms) {
+  const d = new Date(ms), days = Math.round((new Date(d).setHours(0, 0, 0, 0) - new Date().setHours(0, 0, 0, 0)) / 86_400_000);
+  const day = days === 0 ? "" : days === 1 ? "tomorrow " : d.toLocaleDateString([], { weekday: "short" }) + " ";
+  return `until ${day}${d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+}
+// NX buttons (app/routers/webhooks.py): a site's webhooks its admins marked "Button", on the map's site panel and in
+// its alarms' details. The list is cached a minute per site; every placeholder for the site fills in when it arrives.
+const nxButtons = new Map();          // site id -> {at, list}
+export function nxButtonsHtml(siteId) {
+  const c = nxButtons.get(siteId);
+  if (!c || Date.now() - c.at > 60_000) {
+    nxButtons.set(siteId, { at: Date.now(), list: c?.list || [] });
+    api(`/api/sites/${siteId}/buttons`).then((list) => {
+      nxButtons.set(siteId, { at: Date.now(), list });
+      for (const el of document.querySelectorAll(`[data-nx-buttons="${siteId}"]`)) el.outerHTML = nxButtonsHtml(siteId);
+    }).catch(() => {});
+  }
+  const list = nxButtons.get(siteId).list;
+  return `<div class="nx-buttons" data-nx-buttons="${siteId}">${list.length ? `<span class="mute-lead">NX</span>${list.map((b) =>
+    `<button type="button" class="btn btn-sm" data-nx-send="${b.id}" data-name="${esc(b.name)}" title="${esc(b.kind_label)} on this site's NX">${esc(b.name)}</button>`).join("")}` : ""}</div>`;
+}
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-nx-send]");
+  if (!b) return;
+  if (!confirm(`Send “${b.dataset.name}” to this site's NX?`)) return;
+  b.disabled = true;
+  try {
+    const r = await api(`/api/webhooks/${b.dataset.nxSend}/send`, { method: "POST", body: { fields: {} } });
+    toast(`<b>${esc(b.dataset.name)}</b> sent to NX (${r.ms} ms)`);
+  } catch (err) { toast(`${esc(b.dataset.name)}: ${esc(err.message)}`, { kind: "error" }); }
+  finally { b.disabled = false; }
+});
+// Mute controls (alarm details, map site panel): what's muted now with Unmute, and 2 / 5 / 30 min buttons.
+export function muteBoxHtml(site, { deviceId = "", deviceName = "", alarmId = null } = {}) {
+  if (!site) return "";
+  const m = siteMutes(site);
+  const btns = (dev, label) => MUTE_MINUTES.map((n) => `<button type="button" class="btn btn-sm" data-mute="${n}" data-site="${site.id}"
+    data-dev="${esc(dev)}" data-label="${esc(label)}"${alarmId ? ` data-alarm="${alarmId}"` : ""}>${muteLen(n)}</button>`).join("");
+  const unmute = (dev) => `<button type="button" class="btn btn-sm" data-unmute data-site="${site.id}" data-dev="${esc(dev)}">Unmute</button>`;
+  const on = [];
+  if (m.site) on.push(`<div class="mute-on"><span class="chip muted-chip">Site muted</span> ${esc(fmtUntil(m.site.until_ms))} <span class="muted">· ${esc(m.site.by)}</span> ${unmute("")}</div>`);
+  for (const c of m.cameras) on.push(`<div class="mute-on"><span class="chip muted-chip">Camera muted</span> ${esc(c.name || c.id)} ${esc(fmtUntil(c.until_ms))} <span class="muted">· ${esc(c.by)}</span> ${unmute(c.id)}</div>`);
+  const camMuted = deviceId && m.cameras.some((c) => c.id === deviceId);
+  return `<div class="mute-box">${on.join("")}
+    <div class="mute-row"><span class="mute-lead">Mute</span>
+      ${deviceId && !camMuted && !m.site ? `<span class="mute-grp"><span class="muted">this camera</span> ${btns(deviceId, deviceName)}</span>` : ""}
+      ${m.site ? "" : `<span class="mute-grp"><span class="muted">whole site</span> ${btns("", "")}</span>`}
+      ${m.site ? '<span class="muted">Extend:</span> ' + btns("", "") : ""}</div>
+    <p class="muted mute-help">Muted alarms stay listed and open, but don't sound, pop up, text or push. Critical alarms always sound.</p></div>`;
+}
+document.addEventListener("click", (e) => {
+  const m = e.target.closest("[data-mute]");
+  if (m) {
+    m.disabled = true;
+    muteSite(Number(m.dataset.site), { minutes: Number(m.dataset.mute), deviceId: m.dataset.dev || "",
+      alarmId: m.dataset.alarm ? Number(m.dataset.alarm) : null, label: m.dataset.label }).finally(() => { m.disabled = false; });
+    return;
+  }
+  const u = e.target.closest("[data-unmute]");
+  if (u) { u.disabled = true; unmuteSite(Number(u.dataset.site), u.dataset.dev || "").finally(() => { u.disabled = false; }); }
+});

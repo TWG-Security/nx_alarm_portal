@@ -14,6 +14,7 @@
     <button type="button" data-tab="email">Email</button>
     <button type="button" data-tab="sms">Text messages</button>
     <button type="button" data-tab="google">Google sign-in</button>
+    <button type="button" data-tab="apps">Phone apps</button>
   </div>
 
   <!-- ============================================================ sign-in protection -->
@@ -303,6 +304,39 @@
     </div>
   </section>
   <!-- ============================================================ google -->
+  <section data-panel="apps" hidden>
+    <form class="card" id="ap-form">
+      <h2>Phone apps</h2>
+      <p class="muted" style="margin-top:0">The <a href="/apps">/apps</a> page and the apps' <b>Invite</b> use these. The Android APK comes from the
+        latest GitHub release by itself.</p>
+      <div class="field" style="max-width:520px"><label for="ap-tf">TestFlight public link (iPhone)</label>
+        <input id="ap-tf" type="url" maxlength="300" class="mono" placeholder="https://testflight.apple.com/join/…">
+        <small>Leave empty until you create it: the page then says "Ask TWG for a TestFlight invite".</small></div>
+      <h3>App Store Connect (TestFlight invites by email)</h3>
+      <div class="row">
+        <div class="field"><label for="ap-issuer">Issuer ID</label><input id="ap-issuer" type="text" maxlength="64" class="mono" placeholder="69a6de7f-…"></div>
+        <div class="field"><label for="ap-app">App ID (the app's Apple ID)</label><input id="ap-app" type="text" maxlength="32" class="mono" placeholder="6739…"></div>
+        <div class="field"><label for="ap-group">Beta group</label><input id="ap-group" type="text" maxlength="100"></div>
+      </div>
+      <p id="ap-key" class="muted"></p>
+      <div id="ap-error"></div>
+      <div class="form-actions">
+        <button class="btn btn-primary manage-only" type="submit">Save</button>
+        <button class="btn manage-only" type="button" id="ap-test">Test connection</button>
+      </div>
+    </form>
+    <div class="card">
+      <h2>Setting up TestFlight invites</h2>
+      <ol class="steps">
+        <li><b>appstoreconnect.apple.com</b> → <b>Users and Access</b> → <b>Integrations</b> → <b>App Store Connect API</b> → <b>Team Keys</b> → <b>+</b>: name <b>Alarm portal invites</b>, access <b>App Manager</b> → <b>Generate</b>. Copy the <b>Issuer ID</b> (above the list) into the box above.</li>
+        <li><b>Download API Key</b> (only once: keep a copy in your password manager). Copy the <code>AuthKey_XXXXXXXXXX.p8</code> to the server's home folder, then in the server terminal run <code>~/nx_alarm_portal/tools/install_asc_key.sh ~/AuthKey_XXXXXXXXXX.p8</code> (it stores it next to .env, readable only by the portal, and redeploys).</li>
+        <li><b>Apps</b> → TWG Alarms → <b>App Information</b> → <b>Apple ID</b> (digits): that's the App ID.</li>
+        <li><b>TestFlight</b> → create the group <b>TWG Testers</b> (external testing for people outside your Apple team) and add a build to it. For the public link: in the group, <b>Public Link</b> → <b>Enable</b>, copy it above.</li>
+        <li><b>Save</b>, then <b>Test connection</b>: it finds the group.</li>
+      </ol>
+    </div>
+  </section>
+
   <section data-panel="google" hidden>
     <form class="card" id="g-form">
       <h2>Sign in with Google</h2>

@@ -22,13 +22,12 @@ from app.config import get_settings
 from app.db import sessionmaker
 from app.models import Alarm, Site, Tenant
 from app.nx.client import NXClient
-from app.security import decrypt
-from app.services import arming
+from app.services import arming, mute
 from app.services.alarm_filter import DEFAULT_POLICY, Policy, classify, rule_tag
 from app.services.bus import bus
 from app.services.nx_events import event_key, summarize
 from app.services.serialize import alarm_dict
-from app.services.sites import describe_http_error, make_client
+from app.services.sites import describe_http_error, site_client
 
 log = logging.getLogger("portal.poller")
 
@@ -58,6 +57,26 @@ class SiteRuntime:
     push_task: asyncio.Task | None = None
     push_connected: bool = False
     ingest_lock: asyncio.Lock = field(default_factory=asyncio.Lock)   # push and poll never ingest at once
+    arm_rules: dict = field(default_factory=dict)       # NX rules tagged #arm, switched with arming (app/services/arm_rules.py)
+    arm_kick: asyncio.Event = field(default_factory=asyncio.Event)
+    arm_task: asyncio.Task | None = None
+
+
+FUTURE_SKEW_MS = 60_000             # an event stamped further ahead than this is dated when it reached us
+_clock_warned: dict[tuple[int, str], float] = {}
+
+
+def _clock_off(site: Site, info: dict, now: int) -> None:
+    """A camera stamped the event in the future (its clock is wrong; NX passes camera time through for
+    camera-side analytics). Date it when it arrived: clips, arming and the queue all go by event time, and
+    a clip asked for "tomorrow" waits forever. The raw row keeps the camera's time."""
+    ahead = info["event_ts_ms"] - now
+    info["event_ts_ms"] = now
+    k = (site.id, info["device_id"])
+    if time.monotonic() - _clock_warned.get(k, -1e9) > 3600:
+        _clock_warned[k] = time.monotonic()
+        log.warning("site %s camera %s (%s) stamps events %.0f s ahead: dated on arrival; check its clock / NTP",
+                    site.id, info["source_name"], info["device_id"], ahead / 1000)
 
 
 async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: dict[str, str],
@@ -70,7 +89,10 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
     candidates: dict[str, tuple[dict, object]] = {}
     always: set[str] = set()       # event keys that some #24h rule fired on
     acks = lambda r: bool((r.get("actionData") or {}).get("acknowledge"))  # noqa: E731
+    from app.services.arm_event import is_echo
     for row in rows:
+        if is_echo(site, row):                 # the portal's own "Site armed / disarmed" message to NX, logged back
+            continue
         c = classify(row, policy, site.alarm_types, rule_levels, known_rules)
         if not c.is_alarm:
             continue
@@ -122,17 +144,21 @@ async def ingest(db: AsyncSession, site: Site, rows: list[dict], device_names: d
             if changed:
                 upgraded.append(prior)
             continue
+        if info["event_ts_ms"] > now + FUTURE_SKEW_MS:
+            _clock_off(site, info, now)
         suppressed = (c.category == "security" and key not in always
                       and not arming.armed_for_event(site, info["event_ts_ms"], now))
+        silent = (not suppressed and mute.applies(c.priority, c.category)
+                  and mute.is_muted(site.mute, info["device_id"], now))
         alarm = Alarm(tenant_id=site.tenant_id, site_id=site.id, event_key=key, state="disarmed" if suppressed else "new",
-                      category=c.category, priority=c.priority, level_source=c.source, raw=row, **info)
+                      category=c.category, priority=c.priority, level_source=c.source, raw=row, muted=silent, **info)
         alarm.site = site
         db.add(alarm)
         created.append(alarm)
     if created:
         await db.flush()
         for a in created:
-            extra = {"site_disarmed": True} if a.state == "disarmed" else {}
+            extra = {"site_disarmed": True} if a.state == "disarmed" else {"muted": True} if a.muted else {}
             audit(db, site.tenant_id, "alarm.received", site_id=site.id, alarm_id=a.id,
                   event_type=a.event_type, caption=a.caption, priority=a.priority, **extra)
     for a in promoted:
@@ -217,6 +243,7 @@ def describe_rules(rules: list[dict], policy: Policy, site_override: dict | None
                     "action_has_login": has_secrets(act),
                     "event_type": t, "event_label": EVENT_TYPES.get(t, (t,))[0], "category": category_of(t),
                     "action": act.get("type", ""), "enabled": enabled, "tag": tag, "always": arming.rule_always_armed(comment),
+                    "arm": arming.rule_follows_arming(comment),
                     "level": level, "why": why, "interval_s": interval,
                     "delayed": interval > 0 and level not in ("ignore", "off")})
     return sorted(out, key=lambda x: (_LEVEL_ORDER.get(x["level"], 9), x["category"] != "security", x["name"].lower()))
@@ -267,7 +294,7 @@ class PollerManager:
         return rt.client
 
     def _runtime(self, site: Site) -> SiteRuntime:
-        client = make_client(site.host, site.nx_user, decrypt(site.nx_pass_enc))
+        client = site_client(site)
         rt = SiteRuntime(site.id, site.tenant_id, client)
         self._rt[site.id] = rt
         return rt
@@ -292,6 +319,15 @@ class PollerManager:
         if settings.push_enabled and (rt.push_task is None or rt.push_task.done()):
             from app.services.push import run_push  # late import: push uses this module
             rt.push_task = asyncio.create_task(run_push(self, rt), name=f"push-site-{site.id}")
+        if rt.arm_task is None or rt.arm_task.done():
+            from app.services import arm_rules
+            rt.arm_task = asyncio.create_task(arm_rules.run(self, rt), name=f"arm-rules-site-{site.id}")
+
+    def kick_arm_rules(self, site_id: int) -> None:
+        """The site armed or disarmed: switch its NX rules tagged #arm now (app/services/arm_rules.py)."""
+        rt = self._rt.get(site_id)
+        if rt is not None:
+            rt.arm_kick.set()
 
     def device_names(self, site_id: int) -> dict[str, str]:
         """{device id: name} from the last device refresh (empty until the site's first poll)."""
@@ -302,10 +338,11 @@ class PollerManager:
         """For the Sites/map pages: can we read the site's NX rules, and which alarm rules delay repeats."""
         rt = self._rt.get(site_id)
         if rt is None or not rt.rules_refreshed:
-            return {"rules_readable": None, "rule_delays": [], "system_delays": {"count": 0, "max_s": 0}}
+            return {"rules_readable": None, "rule_delays": [], "system_delays": {"count": 0, "max_s": 0},
+                    "arm_rules": rt.arm_rules or None if rt else None}
         sec = [d for d in rt.rule_delays if d["category"] == "security"]
         system = [d for d in rt.rule_delays if d["category"] != "security"]
-        return {"rules_readable": not rt.rules_forbidden, "rule_delays": sec,
+        return {"rules_readable": not rt.rules_forbidden, "rule_delays": sec, "arm_rules": rt.arm_rules or None,
                 "system_delays": {"count": len(system), "max_s": max((d["interval_s"] for d in system), default=0),
                                   "worst": max(system, key=lambda d: d["interval_s"])["name"] if system else ""}}
 
@@ -344,7 +381,7 @@ class PollerManager:
         rt = self._rt.pop(site_id, None)
         if rt is None:
             return
-        for task in (rt.task, rt.push_task):
+        for task in (rt.task, rt.push_task, rt.arm_task):
             if task:
                 task.cancel()
                 try:
@@ -352,6 +389,17 @@ class PollerManager:
                 except (asyncio.CancelledError, Exception):
                     pass
         await rt.client.close()
+
+    async def reconnect_tunnel(self, tunnel_id: int) -> None:
+        """A site VPN connection (app/tunnels.py) just came up: its sites that are offline or whose live push is down
+        reconnect now (a restart polls at once), not at their next retry."""
+        async with sessionmaker()() as db:
+            sites = (await db.scalars(select(Site).where(Site.tunnel_id == tunnel_id, Site.enabled.is_(True),
+                                                         Site.archived_at.is_(None)))).all()
+        for site in sites:
+            if not self.push_state(site.id) or site.status != "online":
+                log.info("site %s: its VPN connection is up, reconnecting now", site.id)
+                await self.restart(site)
 
     async def restart(self, site: Site) -> None:
         await self.stop(site.id)
@@ -415,13 +463,18 @@ class PollerManager:
             policy = Policy.from_settings(tenant.settings if tenant else None)
             relevelled = await self._refresh_rules(rt, db, site, policy)
 
-            cursor = site.event_cursor_ms or (now_ms() - settings.initial_lookback_ms)
+            # The cursor never runs ahead of our clock. Cameras at 2 Rothmere Dr stamped some events a day ahead
+            # (2026-10-24..25) and pushed it 23 h into the future, so this backstop asked NX for "tomorrow" and
+            # would have missed every normal event until then. Rows stamped ahead are re-read (deduped) instead.
+            t_now = now_ms()
+            cursor = min(site.event_cursor_ms or (t_now - settings.initial_lookback_ms), t_now)
             rows = await rt.client.get_events(limit=500, from_ms=max(1, cursor - settings.poll_overlap_ms),
                                               descending=False) or []
             created, more = await self._ingest_rows(rt, db, site, policy, rows)
             relevelled += more
+            failed_for = time.monotonic() - rt.failing_since if rt.failing_since else None   # the outage, from its first failure
             rt.failing_since = None
-            site.event_cursor_ms = max([cursor] + [int(r.get("timestampMs") or 0) for r in rows])
+            site.event_cursor_ms = max([cursor] + [min(int(r.get("timestampMs") or 0), t_now) for r in rows])
 
             status_changed = site.status != "online"
             site.status, site.status_detail = "online", ""
@@ -431,7 +484,7 @@ class PollerManager:
             if status_changed:
                 audit(db, site.tenant_id, "site.online", site_id=site.id)
                 await db.commit()
-                await self._mark_restored(db, site)
+                await self._mark_restored(db, site, failed_for)
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": "online"})
             if relevelled:
                 bus.publish(site.tenant_id, "alarms.reload", {})
@@ -508,6 +561,13 @@ class PollerManager:
         rt.rule_delays = rule_delays(rules, policy, site.alarm_types)
         rt.rule_levels = {rid: lvl for r in rules
                           if (lvl := rule_tag(r.get("comment"))) and (rid := (r.get("id") or "").strip("{}"))}
+        from app.services import arm_rules
+        if arm_rules.tagged(rules) or rt.arm_rules:
+            want = arm_rules.wanted(site, now_ms())
+            behind = bool(arm_rules.out_of_step(rules, want))
+            arm_rules.pending(rt, [_rule_label(r) for r in arm_rules.tagged(rules)], want, behind)
+            if behind:
+                rt.arm_kick.set()
         changed_rules = {rid for rid in set(old) | set(rt.rule_levels) if old.get(rid) != rt.rule_levels.get(rid)}
         if not changed_rules:
             return 0
@@ -547,20 +607,47 @@ class PollerManager:
             await db.commit()
             if changed:
                 bus.publish(site.tenant_id, "site.status", {"site_id": site.id, "status": status, "detail": detail})
+                await self._offline_again(db, site)
             self._announce(created)
 
-    async def _mark_restored(self, db: AsyncSession, site: Site) -> None:
-        """Note the reconnect on any still-open 'connection lost' alarm (the operator still acknowledges it)."""
+    async def _mark_restored(self, db: AsyncSession, site: Site, failed_for: float | None = None) -> None:
+        """Note the reconnect on any still-open 'connection lost' alarm. It stays open for the operator (the user,
+        2026-10-20: "alarm should stay open but it shows online or offline in the alarm"): alarm_dict's site_status
+        shows "Site back online" on it, the timeline says when and after how long, and so does its description."""
+        from app import sms
         rows = (await db.scalars(select(Alarm).where(Alarm.site_id == site.id, Alarm.state == "new",
                                                      Alarm.event_type == "portalSiteOffline"))).all()
-        stamp = datetime.now(timezone.utc).astimezone().strftime("%H:%M:%S")
+        now = datetime.now(timezone.utc)
         for a in rows:
-            if "Connection restored" not in a.description:
-                a.description = f"{a.description}\nConnection restored at {stamp}."
+            received = a.received_at.replace(tzinfo=a.received_at.tzinfo or timezone.utc)
+            # How long NX was unreachable: from the first failed contact (the alarm comes offline_after_s later),
+            # or since the alarm when the outage started before a restart (the portal doesn't know then).
+            since_alarm = max(0.0, (now - received).total_seconds())
+            down_s = failed_for if failed_for is not None and failed_for >= since_alarm else since_alarm
+            a.description = f"{a.description}\nBack online at {sms._clock(a, now)} (unreachable for {_duration(down_s)})."
+            audit(db, site.tenant_id, "alarm.site_restored", site_id=site.id, alarm_id=a.id, down_s=round(down_s))
         if rows:
             await db.commit()
             for a in rows:
                 bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
+
+    async def _offline_again(self, db: AsyncSession, site: Site) -> None:
+        """The site dropped again while older 'connection lost' alarms are still open: they show it (site_status)."""
+        rows = (await db.scalars(select(Alarm).where(Alarm.site_id == site.id, Alarm.state == "new",
+                                                     Alarm.event_type == "portalSiteOffline"))).all()
+        for a in rows:
+            bus.publish(site.tenant_id, "alarm.updated", alarm_dict(a))
+
+
+
+def _duration(s: float) -> str:
+    """3 min 41 s, 1 h 5 min, 12 s."""
+    s = int(round(s))
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min {s % 60} s"
+    return f"{s // 3600} h {s % 3600 // 60} min"
 
 
 manager = PollerManager()

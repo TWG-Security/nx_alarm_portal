@@ -5,10 +5,13 @@ import { createPasskey, getPasskey, passkeyError, passkeysUsable } from "./webau
 const $ = (id) => document.getElementById(id);
 let me = null;
 
-const METHOD = { mobile: "the iPhone app", password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
+const METHOD = { mobile: "the phone app", password: "password", totp: "password + code", recovery: "recovery code", passkey: "passkey",
   sso: "Google", legacy: "before sessions were tracked" };
-function browserName(ua) {
-  if (/TWG Alarms/.test(ua)) return `iPhone app (${ua})`;
+function browserName(ua, s = {}) {
+  const ver = s.client_version ? ` ${s.client_version}` : "";
+  if (s.client === "ios") return `iPhone app${ver} (${ua})`;
+  if (s.client === "android") return `Android app${ver} (${ua})`;
+  if (/TWG Alarms/.test(ua)) return `${/Android/.test(ua) ? "Android" : "iPhone"} app (${ua})`;
   const os = /Windows/.test(ua) ? "Windows" : /Mac OS X|Macintosh/.test(ua) ? "Mac" : /Android/.test(ua) ? "Android"
     : /iPhone|iPad/.test(ua) ? "iPhone/iPad" : /Linux/.test(ua) ? "Linux" : "";
   const br = /Edg\//.test(ua) ? "Edge" : /Chrome\//.test(ua) ? "Chrome" : /Firefox\//.test(ua) ? "Firefox" : /Safari\//.test(ua) ? "Safari" : "Browser";
@@ -120,7 +123,7 @@ $("pw-form").addEventListener("submit", async (e) => {
 });
 
 function paintSessions() {
-  $("sess-rows").innerHTML = me.sessions.map((s) => `<tr><td><b>${esc(browserName(s.user_agent))}</b>${s.current ? ' <span class="chip online">this one</span>' : ""}
+  $("sess-rows").innerHTML = me.sessions.map((s) => `<tr><td><b>${esc(browserName(s.user_agent, s))}</b>${s.current ? ' <span class="chip online">this one</span>' : ""}
       <div class="muted small-print">Signed in ${esc(fmtTime(s.created_at))} with ${esc(METHOD[s.method] || s.method)}</div></td>
       <td class="mono">${esc(s.ip)}</td><td>${esc(relTime(s.last_seen_at))}</td>
       <td>${s.current ? "" : `<button class="btn btn-sm" data-end="${esc(s.id)}">Sign out</button>`}</td></tr>`).join("")
@@ -148,7 +151,7 @@ async function loadTokens() {
       <td><button class="btn btn-sm" type="button" data-revoke="${t.id}" data-name="${esc(t.name)}">Revoke</button></td></tr>`).join("")
     || '<tr><td colspan="5" class="empty">No tokens.</td></tr>';
 }
-$("tok-form").addEventListener("submit", async (e) => {
+$("tok-form")?.addEventListener("submit", async (e) => {
   e.preventDefault();
   try {
     const days = $("tok-days").value;
@@ -165,7 +168,7 @@ $("tok-form").addEventListener("submit", async (e) => {
     await loadTokens();
   } catch (err) { toast(esc(err.message), { kind: "error" }); }
 });
-$("tok-rows").addEventListener("click", async (e) => {
+$("tok-rows")?.addEventListener("click", async (e) => {
   const d = e.target.dataset;
   if (!d.revoke || !confirm(`Revoke the token "${d.name}"? Anything using it stops working right away.`)) return;
   try { await api(`/api/account/tokens/${d.revoke}`, { method: "DELETE" }); toast("Token revoked"); $("tok-new").innerHTML = ""; await loadTokens(); }
@@ -207,7 +210,7 @@ $("pu-devices").addEventListener("click", async (e) => {
 
 async function load() {
   loadPush().catch((err) => toast(esc(err.message), { kind: "error" }));
-  loadTokens().catch((err) => toast(esc(err.message), { kind: "error" }));
+  if ($("tok-card")) loadTokens().catch((err) => toast(esc(err.message), { kind: "error" }));
   me = await api("/api/account");
   $("acct-who").innerHTML = `${esc(me.display_name || me.email)} · ${esc(me.email)} · ${esc(me.company)} (${me.role === "admin" ? "admin" : "operator"})`;
   $("pw-hint").textContent = me.password_hint;

@@ -211,15 +211,18 @@ async def test_platform_credentials_move_to_twg(session):
     row.peplink_enabled, row.peplink_client_id, row.peplink_secret_enc, row.peplink_poll_s = True, "cid", encrypt("sec"), 45
     await session.execute(text("drop table tracker_sources"))
     await session.commit()
-    spec = importlib.util.spec_from_file_location("m0020", "migrations/versions/0020_tracker_sources.py")
-    mig = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mig)
+    migs = []
+    for name in ("0020_tracker_sources", "0036_tracker_source_options"):     # 0036: columns added since, so the model loads
+        spec = importlib.util.spec_from_file_location(name, f"migrations/versions/{name}.py")
+        migs.append(importlib.util.module_from_spec(spec))
+        spec.loader.exec_module(migs[-1])
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
 
     def run(conn):
         with Operations.context(MigrationContext.configure(conn)):
-            mig.upgrade()
+            for mig in migs:
+                mig.upgrade()
     async with db_module.engine().begin() as conn:
         await conn.run_sync(run)
     from app.models import TrackerSource

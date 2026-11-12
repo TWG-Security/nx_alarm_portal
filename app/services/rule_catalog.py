@@ -26,8 +26,7 @@ from sqlalchemy import func, select
 
 from app.db import sessionmaker
 from app.models import Alarm, Site
-from app.security import decrypt
-from app.services.sites import make_client
+from app.services.sites import site_client
 
 log = logging.getLogger("portal.rules")
 
@@ -315,7 +314,7 @@ def _from_log(rows: list, an: _Analytics) -> None:
 
 async def build(site: Site, rules: list[dict] | None = None) -> dict:
     t0 = time.monotonic()
-    client = make_client(site.host, site.nx_user, decrypt(site.nx_pass_enc))
+    client = site_client(site)
     sources: dict[str, dict] = {}
     an = _Analytics()
     try:

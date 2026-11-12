@@ -1,4 +1,4 @@
-import { api, esc, fmtTime, relTime, timerHtml, on, openAck, toast, PRIORITY, VERDICT, verdictChip, can, inView, tenantTag } from "./common.js";
+import { api, esc, siteLinkChip, fmtTime, relTime, timerHtml, on, openAck, toast, PRIORITY, VERDICT, verdictChip, can, inView, tenantTag, silent } from "./common.js";
 import { openDrawer } from "./drawer.js";
 
 const params = new URLSearchParams(location.search);
@@ -60,8 +60,8 @@ function rowHtml(a) {
         ${acked ? `<span>Acknowledged by ${esc(a.acked_by || "—")} · ${relTime(a.acked_at)}</span>` : ""}
       </div>
     </div>
-    <div class="right">
-      ${verdictChip(a)}<span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>
+    <div class="right">${siteLinkChip(a)}
+      ${verdictChip(a)}<span class="chip p${a.priority}">${PRIORITY[a.priority]}</span>${silent(a) ? '<span class="chip muted-chip" title="Its site or camera was muted when it came in: listed, not sounded">Muted</span>' : ""}
       ${acked ? '<span class="chip acked">Acknowledged</span>' : `${timerHtml(a.event_ts_ms)}<button class="btn btn-sm btn-primary" data-ack="${a.id}">Acknowledge</button>`}
     </div>
   </li>`;

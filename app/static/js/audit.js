@@ -4,6 +4,7 @@ const params = new URLSearchParams(location.search);
 const tbody = document.getElementById("audit-rows");
 const actionSel = document.getElementById("f-action");
 const siteSel = document.getElementById("f-site");
+const clientSel = document.getElementById("f-client");
 const PAGE = 100;
 let rows = [], oldestId = null;
 const alarmId = params.get("alarm_id");
@@ -13,8 +14,9 @@ const LABELS = {
   "site.created": "Site added", "site.updated": "Site edited", "site.enabled": "Site enabled", "site.disabled": "Site disabled",
   "support.viewed": "TWG support opened this company", "tenant.created": "Company created", "tenant.updated": "Company edited", "tenant.logo": "Logo changed",
   "group.created": "Group created", "group.updated": "Group edited", "group.deleted": "Group deleted",
-  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "location.test": "Location test (phone)", "tracker.location_requested": "Location requested", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
-  login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited", "user.deleted": "User deleted",
+  "site.archived": "Site archived", "site.armed": "Site armed", "site.disarmed": "Site disarmed", "site.arm_rules": "#arm NX rules switched", "webhook.created": "Webhook added", "webhook.updated": "Webhook changed", "webhook.rotated": "Webhook address changed", "webhook.deleted": "Webhook removed", "webhook.sent": "Sent to NX", "site.arm_event": "Arm/disarm sent to NX", "nx.event_sent": "Sent to NX", "alarm.raised": "Alarm raised (#24h)", "alarm.exported": "Alarm exported", "alarm.note": "Note added", "location.test": "Location test (phone)", "tracker.location_requested": "Location requested", "alarm.verdict": "Verdict changed", "site.online": "Site online", "site.offline": "Site offline", "site.auth_error": "Site login failed",
+  "mfa.exempted": "Two-step turned off for a user", "mfa.required_again": "Two-step required again for a user",
+  "app.downloaded": "App downloaded", "app.invited": "Invited to the app", login: "Signed in", logout: "Signed out", "login.failed": "Failed sign-in", "user.created": "User created", "user.updated": "User edited", "user.deleted": "User deleted",
 };
 
 function details(r) {
@@ -32,21 +34,46 @@ function details(r) {
       return `<a href="/alarms?state=all&open=${r.alarm_id}">#${r.alarm_id}</a> ${esc((d.format || "").toUpperCase())}${d.note ? ` · “${esc(d.note)}”` : ""}`
         + (d.clip_sha256 ? `<div class="muted mono">clip sha256 ${esc(d.clip_sha256.slice(0, 16))}…</div>` : "");
     case "site.updated": return `Changed: ${esc((d.fields || []).join(", ") || "nothing")}`;
+    case "webhook.created": case "webhook.updated": case "webhook.rotated": case "webhook.deleted":
+      return `<b>${esc(d.name || "")}</b>${d.kind ? ` <span class="muted">${esc(d.kind)}</span>` : ""}${d.enabled != null ? ` · ${d.enabled ? "on" : "off"}` : ""}${d.button != null ? ` · button ${d.button ? "on" : "off"}` : ""}`;
+    case "site.arm_event":
+      return `“${esc(d.caption || "")}” · ${d.ok ? `sent in ${esc(String(d.ms))} ms` : `<span class="text-failed">not sent: ${esc(d.detail || "")}</span>`}${d.tries > 1 ? ` (${d.tries} tries)` : ""}`;
+    case "webhook.sent":
+      return `<b>${esc(d.name || "")}</b> · ${d.ok ? `sent in ${esc(String(d.ms))} ms` : `<span class="text-failed">failed: ${esc(d.detail || "")}</span>`}`;
+    case "site.arm_rules":
+      return esc([(d.switched || []).length ? `${d.armed ? "On" : "Off"}: ${d.switched.join(", ")}` : "",
+                  (d.failed || []).length ? `Couldn't switch ${d.armed ? "on" : "off"}: ${d.failed.map((f) => [f.rule, f.error].filter(Boolean).join(": ")).join("; ")}` : "",
+                  d.took_ms != null ? `${d.took_ms} ms` : ""].filter(Boolean).join(" · "));
     case "site.armed": case "site.disarmed":
       return esc([d.source === "manual" ? "by hand" : d.source === "timer" ? "disarm timer ran out" : `by ${d.source}`,
-                  d.until_ms ? `re-arms ${fmtTime(d.until_ms)}` : "", d.note ? `“${d.note}”` : ""].filter(Boolean).join(" · "))
+                  d.until_ms ? `timer ends ${fmtTime(d.until_ms)}` : "", d.note ? `“${d.note}”` : ""].filter(Boolean).join(" · "))
         + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
+    case "app.downloaded": return `${esc(d.platform === "android" ? "Android" : d.platform || "")} ${esc(d.version || "")} <span class="muted">${esc(d.via || "")}</span>`
+        + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
+    case "mfa.exempted": case "mfa.required_again": case "mfa.reset": return esc(d.target || "") + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
+    case "app.invited": return `${esc(d.target || "")} · ${esc({ ios: "iPhone", android: "Android", both: "iPhone and Android" }[d.platform] || d.platform || "")}`
+        + ` <span class="muted">${esc(Object.entries(d.outcome || {}).map(([k, v]) => `${k}: ${v}`).join(" · "))}</span>`;
     case "user.deleted": return esc([d.name !== d.target ? d.name : "", d.target].filter(Boolean).join(" · "));
     case "user.created": case "user.updated": return esc([d.email || d.target, d.role, (d.fields || []).join(", ")].filter(Boolean).join(" · "));
     default: return esc(d.detail_text || d.name || "") + (r.ip ? ` <span class="muted">${esc(r.ip)}</span>` : "");
   }
 }
 
+// Where it was done (AuditLog.client): shown next to the person. "" = the system, or a row from before 2026-10-26.
+const CLIENT = { ios: "iPhone", android: "Android", app: "App", web: "Web", api: "API" };
+function clientChip(r) {
+  const label = CLIENT[r.client];
+  if (!label) return "";
+  const title = { ios: "iPhone app", android: "Android app", app: "Phone app (a build from before the app said which)",
+    web: "Website", api: "API token / Claude" }[r.client] + (r.client_version ? ` ${r.client_version}` : "");
+  return ` <span class="chip client-chip" title="${esc(title)}">${esc(label)}${r.client_version ? ` ${esc(r.client_version.split(" ")[0])}` : ""}</span>`;
+}
+
 function render() {
   tbody.innerHTML = rows.length ? rows.map((r) => `<tr>
       <td style="white-space:nowrap">${fmtTime(r.ts)}</td>
       <td>${esc(LABELS[r.action] || r.action)}</td>
-      <td>${esc(r.user)}${r.support ? ' <span class="chip support-chip" title="Done by TWG Security staff supporting this company">TWG support</span>' : ""}</td>
+      <td>${esc(r.user)}${clientChip(r)}${r.support ? ' <span class="chip support-chip" title="Done by TWG Security staff supporting this company">TWG support</span>' : ""}</td>
       <td>${esc(r.site_name || "")}</td>
       <td>${details(r)}</td></tr>`).join("")
     : '<tr><td colspan="5" class="empty">No audit entries match.</td></tr>';
@@ -56,6 +83,7 @@ async function load(append = false) {
   const p = new URLSearchParams({ limit: PAGE });
   if (actionSel.value) p.set("action", actionSel.value);
   if (siteSel.value) p.set("site_id", siteSel.value);
+  if (clientSel.value) p.set("client", clientSel.value);
   if (alarmId) p.set("alarm_id", alarmId);
   if (append && oldestId) p.set("before_id", oldestId);
   const data = await api(`/api/audit?${p}`);
@@ -67,6 +95,7 @@ async function load(append = false) {
 
 actionSel.addEventListener("change", () => load());
 siteSel.addEventListener("change", () => load());
+clientSel.addEventListener("change", () => load());
 document.getElementById("load-more").addEventListener("click", () => load(true));
 if (alarmId) document.querySelector(".page-head h1").textContent = `Audit log · alarm #${alarmId}`;
 api("/api/sites").then((sites) => {

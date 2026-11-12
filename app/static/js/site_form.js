@@ -20,12 +20,33 @@ if (site && !(site.address || "").trim()) {
   $("address").closest(".field").appendChild(warn);
 }
 
+// ---------------------------------------------------------------- the company's VPN connections (app/tunnels.py)
+const STATE = { connected: "connected", connecting: "connecting", failed: "not working", off: "switched off", starting: "starting" };
+async function loadTunnels() {
+  let list = [];
+  try { list = await api("/api/tunnels"); } catch { return; }
+  const own = site ? list.filter((t) => t.tenant_id === site.tenant_id) : list;
+  $("tunnel").innerHTML = '<option value="">Internet / Nx Cloud (no VPN)</option>' + own.map((t) =>
+    `<option value="${t.id}">${esc(t.name)} (${esc(t.kind_label)}, ${esc(STATE[t.status.state] || t.status.state)})</option>`).join("");
+  $("tunnel").value = site?.tunnel?.id ?? "";
+  tunnelHint();
+}
+function tunnelHint() {
+  const vpn = $("tunnel").value !== "";
+  $("tunnel-hint").innerHTML = vpn
+    ? "Through the VPN: enter the NX server's address <b>on the site's network</b> below, e.g. <span class=\"mono\">https://192.168.1.20:7001</span> (or its Tailscale name)."
+    : 'Add a company VPN connection (WireGuard from a UniFi or other router, or Tailscale) on the <a href="/sites#vpn">Sites page</a>, then pick it here.';
+  $("host").placeholder = vpn ? "https://192.168.1.20:7001" : "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+}
+$("tunnel").addEventListener("change", tunnelHint);
+loadTunnels();
+
 function payload(connect = true) {
   const num = (v) => (v === "" ? null : Number(v));
-  return {
+  return { tunnel_id: $("tunnel").value ? Number($("tunnel").value) : null,
     name: $("name").value, host: $("host").value, nx_user: $("nx_user").value, nx_pass: $("nx_pass").value,
     address: $("address").value, lat: num($("lat").value), lng: num($("lng").value), notes: $("notes").value, connect,
-    timezone: $("timezone").value, arm_schedule: schedule(),
+    timezone: $("timezone").value, arm_schedule: schedule(), arm_event: armEvent(),
   };
 }
 
@@ -124,7 +145,18 @@ function problems(entries) {
 }
 
 let savedKey = "";
-const currentKey = () => JSON.stringify({ tz: $("timezone").value, s: schedule() });
+const currentKey = () => JSON.stringify({ tz: $("timezone").value, s: schedule(), e: armEvent() });
+// "Tell NX when this site arms or disarms" (app/services/arm_event.py): saved with the schedule.
+const AE_DEFAULT = { rules: true, enabled: false, source: "TWG Alarm Portal", armed: "Site armed", disarmed: "Site disarmed" };
+function armEvent() {
+  return { rules: $("ae-rules").checked, enabled: $("ae-on").checked, source: $("ae-source").value.trim(), armed: $("ae-armed").value.trim(), disarmed: $("ae-disarmed").value.trim() };
+}
+function loadArmEvent(s) {
+  const e = { ...AE_DEFAULT, ...(s?.arm_event || {}) };
+  $("ae-rules").checked = e.rules; $("ae-on").checked = e.enabled; $("ae-source").value = e.source; $("ae-armed").value = e.armed; $("ae-disarmed").value = e.disarmed;
+  $("ae-fields").hidden = !e.enabled;
+}
+$("arm-event").addEventListener("input", () => { $("ae-fields").hidden = !$("ae-on").checked; changed(); });
 function changed() {
   const entries = schedule(), bad = problems(entries);
   rowsEl.querySelector(".empty")?.remove();
@@ -159,6 +191,7 @@ $("sched-preset").addEventListener("click", () => {
 });
 
 function loadSchedule(s) {
+  loadArmEvent(s);
   rowsEl.innerHTML = "";
   (s?.arm_schedule || []).forEach((e) => addEntry(e, { quiet: true }));
   savedKey = currentKey();
@@ -170,7 +203,7 @@ $("sched-save").addEventListener("click", async () => {
   btn.disabled = true;
   $("sched-state").textContent = "Saving…";
   try {
-    const data = await api(`/api/sites/${site.id}/arm-schedule`, { method: "PUT", body: { timezone: $("timezone").value, arm_schedule: schedule() } });
+    const data = await api(`/api/sites/${site.id}/arm-schedule`, { method: "PUT", body: { timezone: $("timezone").value, arm_schedule: schedule(), arm_event: armEvent() } });
     Object.assign(site, data);
     loadSchedule(site);
     $("arm-now").innerHTML = `Now: ${armChip(site)} ${armLine(site)}`;
@@ -203,7 +236,7 @@ $("test-btn").addEventListener("click", async () => {
   btn.disabled = true; showResult("warn", "Connecting…");
   try {
     const p = payload();
-    const info = await api("/api/sites/test", { method: "POST", body: { host: p.host, nx_user: p.nx_user, nx_pass: p.nx_pass, site_id: site?.id } });
+    const info = await api("/api/sites/test", { method: "POST", body: { host: p.host, nx_user: p.nx_user, nx_pass: p.nx_pass, site_id: site?.id, tunnel_id: p.tunnel_id } });
     showResult("ok", okHtml(info));
     if (!$("name").value && info.nx_site_name) $("name").value = info.nx_site_name;
   } catch (e) {

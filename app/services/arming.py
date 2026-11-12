@@ -40,11 +40,18 @@ MAX_ENTRIES = 50
 MAX_DISARM_MINUTES = 7 * 24 * 60
 
 RULE_24H = re.compile(r"(?<![\w#])#24h\b", re.I)
+RULE_ARM = re.compile(r"(?<![\w#])#arm\b", re.I)
 
 
 def rule_always_armed(comment: str | None) -> bool:
     """NX rule Title/Comment contains #24h: raise its alarms even while the site is disarmed."""
     return bool(RULE_24H.search(comment or ""))
+
+
+def rule_follows_arming(comment: str | None) -> bool:
+    """NX rule Title/Comment contains #arm (and not #24h, which wins): the portal switches the rule off in NX while
+    the site is disarmed and back on when it arms (app/services/arm_rules.py)."""
+    return bool(RULE_ARM.search(comment or "")) and not rule_always_armed(comment)
 
 
 def zone(name: str | None) -> ZoneInfo:
@@ -131,6 +138,15 @@ def _occurrences(schedule: dict | None, tz: ZoneInfo, lo_ms: int, hi_ms: int) ->
     return sorted(set(out))
 
 
+def _schedule_says(schedule: dict | None, tz: ZoneInfo, t_ms: int) -> bool:
+    """The state the weekly schedule itself gives at t_ms, counting entries from before the last edit too
+    (since_ms only stops an edit from flipping the state on the spot). No entries -> armed."""
+    if not schedule or not schedule.get("entries"):
+        return True
+    past = _occurrences({**schedule, "since_ms": 0}, tz, t_ms - WINDOW_DAYS * 86_400_000, t_ms)
+    return past[-1][1] if past else True
+
+
 def state_at(schedule: dict | None, override: dict | None, tz_name: str | None, t_ms: int) -> ArmState:
     tz = zone(tz_name)
     span = WINDOW_DAYS * 86_400_000
@@ -140,9 +156,11 @@ def state_at(schedule: dict | None, override: dict | None, tz_name: str | None, 
     if override and override.get("at_ms") is not None:
         at, until = int(override["at_ms"]), override.get("until_ms")
         events.append((at, 1, bool(override.get("armed")), "manual", override))
-        # A timed disarm re-arms at until_ms, unless the schedule has already taken over by then.
+        # A timed disarm ends at until_ms, unless the schedule has already taken over by then. It ends in
+        # whatever the schedule says at that moment (the user, 2026-10-26: a 4 h disarm ending at 15:10 re-armed
+        # a site the schedule keeps disarmed until 18:45); with no schedule it re-arms.
         if until and not override.get("armed") and not any(at < ts < int(until) for ts, _ in sched):
-            events.append((int(until), 1, True, "timer", {}))
+            events.append((int(until), 1, _schedule_says(schedule, tz, int(until)), "timer", {}))
     events.sort(key=lambda e: (e[0], e[1]))
 
     past = [e for e in events if e[0] <= t_ms]
@@ -190,7 +208,12 @@ async def check_all(now_ms: int) -> int:
                 flips.append(s)
         if flips:
             await db.commit()
+            from app.services import arm_event
+            from app.services.poller import manager
             for s in flips:
+                st = site_state(s, now_ms)
+                # NX rules tagged #arm follow, and NX hears about it if the site is set up for that
+                arm_event.changed(manager, s, s.armed, st.source, until_ms=st.until_ms)
                 log.info("site %s %s by %s", s.id, "armed" if s.armed else "disarmed", site_state(s, now_ms).source)
                 bus.publish(s.tenant_id, "site.updated", site_dict(s))
             changed = len(flips)

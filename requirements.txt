@@ -1,6 +1,8 @@
 fastapi>=0.115
 uvicorn[standard]>=0.30
 httpx>=0.27
+socksio>=1.0            # httpx through a site's VPN connection (SOCKS5; app/tunnels.py)
+python-socks[asyncio]>=2.5   # the NX push websocket through it
 h2>=4.1                 # HTTP/2 for Apple's push service (APNs only speaks HTTP/2; app/apns.py)
 websockets>=13
 sqlalchemy[asyncio]>=2.0.30

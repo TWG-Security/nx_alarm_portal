@@ -65,8 +65,14 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
     from app.models import Tracker
     bt = Tracker(tenant_id=world["b"].id, name="Bravo guard", source="phone", user_id=world["b_op"].id, lat=40, lng=-75)
     session.add(bt)
+    from app.models import CameraHealth, CameraHealthImage
+    session.add(CameraHealth(tenant_id=world["b"].id, site_id=sb.id, device_id="cam-b", name="Bravo cam", status="warning",
+                             issues=[], state={}, metrics={}, settings={}, mode="day"))
+    session.add(CameraHealthImage(site_id=sb.id, device_id="cam-b", kind="last", jpeg=b"\xff\xd8bravo"))
     await session.commit()
     await _as(client, world["a_admin"].email)
+    assert (await client.get("/api/camera-health")).json()["cameras"] == []
+    assert (await client.get("/api/camera-health/summary")).json() == {"total": {}, "sites": {}}
 
     assert [s["id"] for s in (await client.get("/api/sites")).json()] == [sa.id]
     for q in ("state=all", "state=open", "state=open&alerting=1", f"state=all&tenant_id={world['b'].id}"):
@@ -87,7 +93,7 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("PUT", f"/api/users/{world['b_op'].id}", {"is_active": False}),
         ("GET", f"/api/users/{world['b_op'].id}/security", None),
         ("POST", f"/api/users/{world['b_op'].id}/invite", None),
-        ("POST", f"/api/users/{world['b_op'].id}/reset-2fa", {}),
+        ("POST", f"/api/users/{world['b_op'].id}/reset-2fa", {}), ("PUT", f"/api/users/{world['b_op'].id}/mfa-exempt", {"exempt": True}),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions", None),
         ("DELETE", f"/api/users/{world['b_op'].id}/sessions/x", None),
         ("POST", f"/api/users/{world['b_op'].id}/test-text", None),
@@ -98,7 +104,9 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("GET", f"/api/alarms/{ab.id}/objects", None), ("GET", f"/api/alarms/{ab.id}/export", None),
         ("GET", f"/media/clips/a{ab.id}_10_20_sd.mp4", None), ("GET", f"/sites/{sb.id}/edit", None),
         ("GET", f"/branding/{world['b'].id}/logo", None), ("PUT", f"/api/tenants/{world['b'].id}", {"display_name": "x"}),
-        ("GET", f"/api/sites/{sb.id}/cameras", None),
+        ("GET", f"/api/sites/{sb.id}/cameras", None), ("GET", f"/api/sites/{sb.id}", None),
+        ("POST", f"/api/sites/{sb.id}/mute", {"minutes": 5}), ("DELETE", f"/api/sites/{sb.id}/mute", None),
+        ("PUT", f"/api/sites/{sb.id}/profile", {"client_name": "x"}), ("POST", f"/api/alarms/{ab.id}/called", {"to": "police"}),
         ("PUT", f"/api/sites/{sb.id}/cameras/cam-b", {"lat": 40, "lng": -75, "heading": 90}),
         ("DELETE", f"/api/sites/{sb.id}/cameras/cam-b", None),
         ("GET", f"/media/sites/{sb.id}/cameras/cam-b/live.jpg", None),
@@ -115,6 +123,11 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
         ("DELETE", f"/api/sites/{sb.id}/rules/4c1d77c5-5f11-4567-8cfa-6db360231186", None),
         ("PUT", f"/api/tracking/trackers/{bt.id}", {"name": "x"}), ("DELETE", f"/api/tracking/trackers/{bt.id}", None),
         ("POST", f"/api/tracking/trackers/{bt.id}/share", {"renew": True}),
+        ("GET", f"/api/camera-health/{sb.id}/cam-b", None), ("GET", f"/media/camera-health/{sb.id}/cam-b/last.jpg", None),
+        ("POST", f"/api/camera-health/{sb.id}/cam-b/check", None), ("POST", f"/api/camera-health/{sb.id}/cam-b/accept", None),
+        ("POST", f"/api/camera-health/{sb.id}/cam-b/mute", {"hours": 24}),
+        ("POST", f"/api/camera-health/{sb.id}/cam-b/reference", {"mode": "day", "action": "relearn"}),
+        ("PUT", f"/api/camera-health/{sb.id}/cam-b/settings", {"skip": True}),
     ]:
         r = await client.request(method, path, json=body)
         assert r.status_code == 404, (method, path, r.status_code, r.text[:200])
@@ -138,9 +151,16 @@ async def test_customers_never_see_or_touch_each_other(client, session, world):
                          ("POST", "/api/platform/allowlist"), ("DELETE", "/api/platform/allowlist/1"),
                          ("POST", "/api/platform/locks/clear"), ("PUT", "/api/platform/settings/two-factor"),
                          ("PUT", "/api/platform/settings/sessions"), ("PUT", "/api/platform/settings/passwords"),
-                         ("PUT", "/api/platform/settings/email"), ("POST", "/api/platform/email/test")):
+                         ("PUT", "/api/platform/settings/email"), ("POST", "/api/platform/email/test"),
+                         ("PUT", "/api/platform/settings/apps"), ("POST", "/api/platform/apps/test")):
         assert (await client.request(method, path, json={})).status_code in (403, 422), path
     assert (await client.post("/api/scope", json={"scope": "all"})).status_code == 403
+    # Phone apps: any company's users see the app info; their admins may invite (logged in their own company only).
+    assert set((await client.get("/api/apps")).json()) == {"ios", "android", "can_invite"}
+    r = await client.post("/api/apps/invite", json={"email": "new@acme.test", "platform": "android"})
+    assert r.status_code == 200 and r.json()["url"].endswith("/apps")
+    row = await session.scalar(select(AuditLog).where(AuditLog.action == "app.invited"))
+    assert row.tenant_id == world["a"].id
 
 
 async def test_customer_admins_cannot_hold_or_grant_platform_permissions(client, session, world):
@@ -273,8 +293,8 @@ async def test_create_company_branding_and_logo_rules(client, session, world):
 
 
 async def test_iphone_app_tokens_see_only_their_own_company(client, session, world):
-    """The iPhone app (Bearer device tokens, app/routers/mobile.py): always the user's own company, no switcher,
-    and every way into another company's things answers 404 as on the website."""
+    """The iPhone app (Bearer device tokens, app/routers/mobile.py): the user's own company unless TWG staff send
+    X-TWG-Company (next test), and every way into another company's things answers 404 as on the website."""
     sb, ab, aa = world["sites"]["Bravo Guards"], world["alarms"]["Bravo Guards"], world["alarms"]["Acme Security"]
     twg_alarm = world["alarms"]["TWG Security"]
     a_email, viewer_email, a_id = world["a_admin"].email, world["twg_viewer"].email, world["a"].id
@@ -304,12 +324,76 @@ async def test_iphone_app_tokens_see_only_their_own_company(client, session, wor
         r = await client.request(method, path, json=body, headers=h)
         assert r.status_code == 404, (method, path, r.status_code, r.text[:200])
 
-    # TWG's view-everything operator: the app shows TWG's own company only, even after asking for "all".
+    # TWG's view-everything operator: the website's switcher (a cookie session) doesn't move the app; only its header does.
     h = await token(viewer_email)
     await client.post("/api/scope", json={"scope": "all"}, headers=h)
     ids = [x["id"] for x in (await client.get("/api/alarms?state=all", headers=h)).json()]
     assert ids == [twg_alarm.id]
     assert (await client.get(f"/api/alarms/{aa.id}", headers=h)).status_code == 404
+
+
+async def test_twg_staff_switch_company_in_the_phone_apps(client, session, world, monkeypatch):
+    """The phone apps' company switcher (the Mac session, 2026-10-28): X-TWG-Company: own | all | <id> on every
+    request, for platform.view only; the stream follows it and keeps the user's own company; support.viewed once per
+    app sign-in per company; writes into the customer need platform.support, as on the website."""
+    from app.routers import stream
+    aa, sa, own = world["alarms"]["Acme Security"], world["sites"]["Acme Security"], world["alarms"]["TWG Security"]
+    a_id, b_id, twg_id = world["a"].id, world["b"].id, world["twg"].id
+
+    async def token(email):
+        client.cookies.clear()
+        client.headers.pop("X-CSRF-Token", None)
+        r = await client.post("/api/mobile/login", json={"email": email, "password": PASSWORD, "device_name": "t"})
+        return {"Authorization": f"Bearer {r.json()['token']}", "X-TWG-Client": "ios/1.7 (60)"}
+
+    async def sites(h, company):
+        return sorted(s["tenant_name"] for s in (await client.get("/api/sites", headers={**h, "X-TWG-Company": company})).json())
+
+    viewer = await token(world["twg_viewer"].email)
+    assert (await client.get("/api/tenants", headers=viewer)).status_code == 200          # the app's picker
+    assert await sites(viewer, "own") == ["TWG Security"]
+    assert await sites(viewer, str(a_id)) == ["Acme Security"]
+    assert await sites(viewer, "all") == ["Acme Security", "Bravo Guards", "TWG Security"]
+    for bad in ("99999", "abc", "", str(twg_id)):                                          # unknown / own id: own company
+        assert await sites(viewer, bad) == ["TWG Security"], bad
+    va = {**viewer, "X-TWG-Company": str(a_id)}
+    assert [x["id"] for x in (await client.get("/api/alarms?state=open", headers=va)).json()] == [aa.id]
+    assert {x["id"] for x in (await client.get("/api/alarms?state=open&alerting=1", headers=va)).json()} == {aa.id, own.id}
+    assert (await client.get(f"/api/alarms/{aa.id}", headers=va)).status_code == 200
+    r = await client.post(f"/api/alarms/{aa.id}/ack", json={"verdict": "real"}, headers=va)
+    assert r.status_code == 403 and "TWG support access" in r.json()["detail"]
+    assert (await client.post(f"/api/sites/{sa.id}/disarm", json={}, headers=va)).status_code == 403
+
+    # The stream: the company in view plus the user's own; every event says whose it is.
+    subscribed = []
+
+    def spy(ids):
+        subscribed.append(ids)
+        raise RuntimeError("stop")
+    monkeypatch.setattr(stream.bus, "subscribe", spy)
+    for h, want in ((va, {a_id, twg_id}), (viewer, {twg_id}), ({**viewer, "X-TWG-Company": "all"}, None)):
+        with pytest.raises(RuntimeError):
+            await client.get("/api/events", headers=h)
+        assert subscribed[-1] == want
+    monkeypatch.undo()
+    from app.services.bus import bus
+    sub = bus.subscribe({a_id, twg_id})
+    bus.publish(a_id, "alarm.acked", {"alarm_id": aa.id})
+    assert sub.queue.get_nowait() == ("alarm.acked", {"alarm_id": aa.id, "tenant_id": a_id})
+    bus.unsubscribe(sub)
+
+    # Acme's log shows TWG looked from the iPhone app, once for this sign-in.
+    seen = (await session.scalars(select(AuditLog).where(AuditLog.tenant_id == a_id, AuditLog.action == "support.viewed"))).all()
+    assert [(r.user_id, r.client, r.client_version) for r in seen] == [(world["twg_viewer"].id, "ios", "1.7 (60)")]
+    assert not (await session.scalars(select(AuditLog).where(AuditLog.tenant_id == b_id, AuditLog.action == "support.viewed"))).all()
+
+    # TWG support may write into Acme from the app; customers' headers are ignored.
+    boss = await token(world["twg_admin"].email)
+    r = await client.post(f"/api/alarms/{aa.id}/ack", json={"verdict": "false"}, headers={**boss, "X-TWG-Company": str(a_id)})
+    assert r.status_code == 200, r.text
+    acme = await token(world["a_admin"].email)
+    assert await sites(acme, str(b_id)) == ["Acme Security"] and await sites(acme, "all") == ["Acme Security"]
+    assert (await client.get("/api/tenants", headers=acme)).status_code == 403
 
 
 async def test_guard_dispatch_endpoints_stay_inside_their_company(client, session, world):

@@ -38,6 +38,8 @@ EVENT_TYPES: dict[str, tuple[str, str, str]] = {
     "analyticsObject": ("Analytics object detected", "security", "alarm"),
     "motion": ("Motion on camera", "security", "ignore"),
     "portalSiteOffline": ("Site connection lost (the portal can't reach NX, so the site isn't monitored)", "system", "alarm"),
+    "portalArmRulesOn": ("NX rules tagged #arm didn't switch back on when the site armed", "system", "alarm"),
+    "portalArmRulesOff": ("NX rules tagged #arm didn't switch off when the site disarmed", "system", "warning"),
     "serverFailure": ("Server failure", "system", "alarm"),
     "storageIssue": ("Storage issue (recording may be failing)", "system", "alarm"),
     "deviceDisconnected": ("Camera disconnected", "system", "warning"),

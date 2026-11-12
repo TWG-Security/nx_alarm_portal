@@ -156,7 +156,7 @@ async def google_callback(request: Request, code: str = "", state: str = "", err
         await db.commit()
         return _error(request, "disabled")
     has_second = user.totp_enabled or (mfa.passkeys_enabled() and await mfa.passkey_count(db, user.id) > 0)
-    if mfa.required_for(tenant) and not has_second:
+    if mfa.required_for(tenant, user) and not has_second:
         _set_pending(request, user, "enroll", ENROLL_TTL_S)
         await guard.record(db, ip, "sso", "success", email=email, user=user, reason="Google ok, must set up 2FA")
         await db.commit()
