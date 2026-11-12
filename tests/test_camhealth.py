@@ -605,3 +605,138 @@ def test_black_at_night_like_its_night_reference_is_fine():
     assert A.analyze(black2, black, now=night, **at).issues == []                      # the learning check agrees
     assert A.analyze(black2, black, **{}).issues == []                                 # ... also without the location
     assert kinds(A.analyze(black2, frame("night", 75), library=[A.LibFrame(frame("night", 76))], now=night, **at)) == ["dark"]
+
+
+# ---- load balancing (2026-11-12: "better balance the load on the GPU as more cameras come online") -------------------
+class Counting(SegOnly):
+    """Counts the model calls (SegOnly's answers: nothing changed by DINOv2, nothing is a car)."""
+
+    def __init__(self):
+        super().__init__((0, 0, 0, 0))
+        self.calls = {"dino": 0, "segment": 0}
+
+    def patch_features(self, bgr):
+        self.calls["dino"] += 1
+        return super().patch_features(bgr)
+
+    def segment(self, bgr):
+        self.calls["segment"] += 1
+        return super().segment(bgr).astype("uint8")
+
+
+def test_library_frames_run_the_models_once_then_from_disk(tmp_path, monkeypatch):
+    """Every check used to rerun both models on all its library frames (6.4 s a check on the T1000, 2026-11-12): now
+    once per frame, saved beside it; a fresh Library (restart, or the memory cache overflowing) loads them."""
+    from app.camhealth import library as L
+    t = datetime(2026, 11, 12, 15, 5)
+    lib = L.Library(tmp_path)
+    for d in range(3):
+        lib.add(1, "cam", t.replace(day=1 + d), frame("normal", 120 + d), [])
+    ai = Counting()
+    reference = frame("normal", 1)                  # its own copy: the shared ref() must not keep these results
+
+    def one_check(library):
+        frames = library.frames(1, "cam", t, mono=False)
+        res = A.analyze(frame("change", 130), reference, library=frames, ai=ai)
+        library.keep(frames)
+        return frames, res
+
+    frames, res = one_check(lib)
+    assert res.metrics["library"] == 3 and "ai_error" not in res.metrics
+    # this frame, its 3 library frames and the reference (lined up to the pixel: the same frame)
+    assert ai.calls == {"dino": 5, "segment": 5}
+    assert all(f.saved for f in frames) and len(list(tmp_path.rglob("*.gpu.npz"))) == 3
+
+    ai.calls = {"dino": 0, "segment": 0}
+    _, res2 = one_check(L.Library(tmp_path))                     # nothing in memory: from disk
+    assert ai.calls == {"dino": 1, "segment": 1}                  # this frame only (the worker keeps the reference too)
+    assert kinds(res2) == kinds(res)
+
+    # Other models / input sizes: the saved results don't count.
+    monkeypatch.setattr(L, "GPU_TAG", "other")
+    ai.calls = {"dino": 0, "segment": 0}
+    one_check(L.Library(tmp_path))
+    assert ai.calls == {"dino": 4, "segment": 4}
+
+
+def test_saved_model_results_stay_under_their_cap(tmp_path, monkeypatch):
+    import os
+    import time as _t
+
+    from app.camhealth import library as L
+    lib = L.Library(tmp_path)
+    t = datetime(2026, 11, 12, 15, 5)
+    f = frame("normal", 140)
+    f.feat, f.seg = A._feat(Counting(), f), A._seg(Counting(), f)
+    lib.add(1, "cam", t, f, [])
+    one = lib.gpu_bytes
+    assert one and one > 0
+    monkeypatch.setattr(L, "GPU_CACHE_MB", one * 2.5 / 1048576)   # room for two
+    for d in range(1, 4):
+        g = frame("normal", 140 + d)
+        g.feat, g.seg = f.feat, f.seg
+        _t.sleep(0.01)
+        lib.add(1, "cam", t.replace(day=12 + d), g, [])
+    files = sorted(tmp_path.rglob("*.gpu.npz"))
+    assert len(files) == 2 and lib.gpu_bytes <= one * 2.5
+    assert {p.name[:8] for p in files} == {"20261114", "20261115"}            # the oldest went first
+    assert all(os.path.exists(str(p).replace(".gpu.npz", ".jpg")) for p in files)  # the frames themselves stay
+
+
+def test_gpu_time_per_check_after_the_timings_list_is_full():
+    """The panel's GPU column read "—" once the timings deque was full (it sliced by length)."""
+    from collections import deque
+
+    from app.camhealth import ai as M
+    ai = object.__new__(M.AI)
+    ai.timings = deque([("dino", 1.0, 0.0)] * 3, maxlen=3)        # full
+    per = {}
+    token = M.CHECK_MS.set(per)
+    try:
+        ai._timed("dino", lambda: None)
+        ai._timed("segment", lambda: None)
+        ai._timed("dino", lambda: None)
+    finally:
+        M.CHECK_MS.reset(token)
+    assert set(per) == {"dino", "segment"}
+    ai._timed("dino", lambda: None)                               # outside a check: not counted anywhere
+    assert set(per) == {"dino", "segment"}
+
+
+async def test_checks_are_spread_evenly_and_the_panel_says_when_behind(session, tmp_path):
+    tenant, _ = await make_tenant_user(session)
+    site = await make_site(session, tenant)
+    w, nx = await _worker(session, site, tmp_path)
+    started = []
+
+    def start(cam):                                                # as _start: busy, not due again in this test
+        started.append(cam.device_id)
+        cam.busy, cam.next_at = True, 1e9
+
+    def done():
+        for c in w.cams.values():
+            c.busy = False
+    w._start = start
+    live, rec, off = (w.cams[(site.id, d)] for d in ("cam-live", "cam-rec", "cam-off"))
+    gap = w.spacing()
+    assert gap == pytest.approx(0.8 * w.cfg.camhealth_interval_s / 2)   # two cameras NX shows online
+    live.next_at, rec.next_at, off.next_at = 100.0, 90.0, 100.0
+    w.start_due(1000.0)
+    assert started == ["cam-rec", "cam-off"]                       # the most overdue + the offline one (no wait)
+    done()
+    w.start_due(1000.0 + gap / 2)
+    assert started == ["cam-rec", "cam-off"]                       # not before the spacing
+    w.start_due(1000.0 + gap)
+    assert started[-1] == "cam-live"
+    # "Check now" never waits for the spacing.
+    done()
+    rec.next_at = 0.0
+    w.start_due(1000.0 + gap + 1)
+    assert started[-1] == "cam-rec"
+    # A camera waiting long past its time: "behind".
+    done()
+    rec.next_at, live.next_at = 1000.0, 1000.0
+    cap = w.capacity(1000.0 + max(60, 2 * gap) + 30)
+    assert cap["behind_s"] >= 60 and cap["spacing_s"] == round(gap, 1)
+    w.work = [(1000.0, 4000.0)]
+    assert w.capacity(1001.0)["fits"] == int(w.cfg.camhealth_interval_s * 0.8 / 4)

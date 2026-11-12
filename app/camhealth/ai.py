@@ -19,6 +19,7 @@ baked in and the worker never downloads anything (HF_HUB_OFFLINE=1).
 
 from __future__ import annotations
 
+import contextvars
 import os
 import sys
 import threading
@@ -33,6 +34,9 @@ SEG = "openmmlab/upernet-convnext-base"
 SEG_W = 768                        # input width (multiple of 32)
 PERSON_VEHICLE = {1: "person", 2: "bicycle", 3: "car", 4: "motorcycle", 6: "bus", 8: "truck"}   # COCO ids
 OBJECT_MIN_SCORE = 0.5
+# The worker's check sets a dict here; every model call in it (asyncio.to_thread carries the context along) adds its ms.
+# (It used to slice `timings` by length, which stopped working once the deque was full: the panel showed "—".)
+CHECK_MS: contextvars.ContextVar[dict | None] = contextvars.ContextVar("camhealth_check_ms", default=None)
 
 
 def available() -> bool:
@@ -111,7 +115,11 @@ class AI:
         try:
             return fn(*args)
         finally:
-            self.timings.append((name, (time.perf_counter() - t) * 1000, time.time()))
+            ms = (time.perf_counter() - t) * 1000
+            self.timings.append((name, ms, time.time()))
+            per = CHECK_MS.get()
+            if per is not None:
+                per[name] = per.get(name, 0) + ms
 
     def patch_features(self, bgr: np.ndarray) -> np.ndarray:
         return self._timed("dino", self._patch_features, bgr)

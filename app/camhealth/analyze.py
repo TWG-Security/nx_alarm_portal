@@ -76,6 +76,7 @@ VIEW_CHANGED = 0.55        # this much of the view changed = the whole view
 MOVE_SHIFT = 0.03          # of the width
 MOVE_ROT = 1.5             # degrees
 MOVE_SCALE = 0.05
+SAME_SHIFT_PX = 2.0        # reference shifted at most this (of W): reuse its GPU results instead of rerunning them
 MIN_INLIERS = 15
 # "Moved" also needs the measured shift to explain the picture: the reference shifted that way must match the frame
 # clearly better than unshifted (Trash Cans at night, 2026-10-27: "Camera moved" on an unmoved camera; ORB on IR
@@ -104,6 +105,10 @@ class Frame:
     chroma: float
     small: np.ndarray          # 160 px wide grey, for the frozen check
     mono: bool = False         # black-and-white (infrared)
+    # GPU results, computed once per frame (_feat / _seg) and kept with it: library frames load them from disk
+    # (library.py), the day / night reference keeps them in the worker's cache.
+    feat: np.ndarray | None = field(default=None, repr=False, compare=False)     # DINOv2 patches, float16
+    seg: np.ndarray | None = field(default=None, repr=False, compare=False)      # ADE20K class per pixel
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -142,7 +147,33 @@ class LibFrame:
     """A clean frame from the library (worker.py): the frame and the people / vehicles the detector saw in it."""
     frame: Frame
     objects: list = field(default_factory=list)
-    seg: np.ndarray | None = None          # GPU: ADE20K classes, computed once and kept with the cached frame
+    path: str = ""                         # where it is on disk (library.py saves its GPU results beside it)
+    gpu: Frame | None = None               # the frame the models look at, when not `frame` (the unwarped reference)
+    saved: bool = False                    # its GPU results are on disk
+
+
+def _feat(ai, f: Frame) -> np.ndarray:
+    """DINOv2 patch features of f: computed once per frame (2026-11-12: 130 ms each on the T1000, and every check
+    recomputed them for all its library frames)."""
+    if f.feat is None:
+        f.feat = np.asarray(ai.patch_features(f.bgr)).astype(np.float16)
+    return f.feat.astype(np.float32)
+
+
+def _seg(ai, f: Frame) -> np.ndarray:
+    """ADE20K classes of f: computed once per frame (400 ms each on the T1000)."""
+    if f.seg is None:
+        f.seg = ai.segment(f.bgr)
+    return f.seg
+
+
+def _gpu(x: LibFrame) -> Frame:
+    return x.gpu if x.gpu is not None else x.frame
+
+
+def _nearly_still(a: Alignment) -> bool:
+    """The reference lines up within about a pixel: the models' answers on it hold for the shifted copy too."""
+    return a.ok and a.shift_px <= SAME_SHIFT_PX and abs(a.rotation) <= 0.15 and abs(a.scale - 1) <= 0.002
 
 
 def grid(shape: tuple[int, int]) -> tuple[int, int]:
@@ -490,7 +521,9 @@ def analyze(f: Frame, ref: Frame | None, *, library: list[LibFrame] | None = Non
         if lib:
             # ... and the reference too: a smudge or a new object differs from it as well, dusk haze on day one doesn't
             # (2026-10-20: "Out of focus" areas at 5 pm against only that afternoon's library frames).
-            _areas(res, f, cs, lib + [LibFrame(Frame(ref_bgr, ref_gray, ref.mode, 0, ref.small, ref.mono))], ai, g, inside)
+            shifted = Frame(ref_bgr, ref_gray, ref.mode, 0, ref.small, ref.mono)
+            same = ref if not a.ok or _nearly_still(a) else None      # not a.ok: ref_bgr is ref.bgr itself
+            _areas(res, f, cs, lib + [LibFrame(shifted, gpu=same)], ai, g, inside)
         else:
             res.metrics["area_learning"] = True
     res.issues += [i for i in alone if i["kind"] == "ir_day"]
@@ -523,20 +556,19 @@ def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[i
         if ai is not None and (changed.any() or q.flat.any()):
             try:
                 if feat is None:
-                    feat = ai.patch_features(f.bgr)
+                    feat = _feat(ai, f)
                     if hasattr(ai, "segment"):
-                        seg = ai.segment(f.bgr)
+                        seg = _seg(ai, f)
                         movable = np.isin(seg, [i for i, n in enumerate(ai.seg_labels) if n in MOVABLE])
-                sim = cv2.resize((feat * ai.patch_features(x.frame.bgr)).sum(-1).astype(np.float32), (g[1], g[0]),
+                sim = cv2.resize((feat * _feat(ai, _gpu(x))).sum(-1).astype(np.float32), (g[1], g[0]),
                                  interpolation=cv2.INTER_AREA)
                 sims.append(sim)
                 changed &= sim < DINO_CHANGE
                 if seg is not None:
-                    if x.seg is None:
-                        x.seg = ai.segment(x.frame.bgr)
-                    if x.seg.shape == seg.shape:
-                        moved_thing = movable | np.isin(x.seg, [i for i, n in enumerate(ai.seg_labels) if n in MOVABLE])
-                        sem = _cells(((seg != x.seg) & ~moved_thing).astype(np.float32), g)
+                    xseg = _seg(ai, _gpu(x))
+                    if xseg.shape == seg.shape:
+                        moved_thing = movable | np.isin(xseg, [i for i, n in enumerate(ai.seg_labels) if n in MOVABLE])
+                        sem = _cells(((seg != xseg) & ~moved_thing).astype(np.float32), g)
                         sems.append(sem)
                         changed &= sem > SEM_CHANGE
             except Exception as exc:  # noqa: BLE001 - the CPU result stands
@@ -549,7 +581,7 @@ def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[i
     if ai is not None and hasattr(ai, "segment") and any(hit[k].any() for k in ("glare", "dark", "blur")):
         try:
             if seg is None:
-                seg = ai.segment(f.bgr)
+                seg = _seg(ai, f)
                 movable = np.isin(seg, [i for i, n in enumerate(ai.seg_labels) if n in MOVABLE])
             vehicle = _cells(movable.astype(np.float32), g) > MOVABLE_SHARE
             for k in ("glare", "dark", "blur"):
@@ -577,7 +609,7 @@ def _areas(res: Result, f: Frame, cs: Stats, lib: list[LibFrame], ai, g: tuple[i
         # Most cells changed: a lost view only if the whole picture also no longer looks like the place (GPU); else
         # it's light (a hazy low sun against a thin first-day library read as "View changed", 2026-10-20).
         if feat is not None:
-            best = max(float((feat * ai.patch_features(x.frame.bgr)).sum(-1).mean()) for x in lib)
+            best = max(float((feat * _feat(ai, _gpu(x))).sum(-1).mean()) for x in lib)
             res.metrics["view_sim"] = round(best, 3)
             if best >= VIEW_LOST_DINO:
                 return
@@ -625,7 +657,7 @@ def _view_lost(res: Result, f: Frame, ref: Frame, a: Alignment, ai) -> bool:
     """Does the whole picture still look like the reference's place? (GPU: DINOv2; CPU: thumbnail correlation)"""
     if ai is not None:
         try:
-            sim = float((ai.patch_features(f.bgr) * ai.patch_features(ref.bgr)).sum(-1).mean())
+            sim = float((_feat(ai, f) * _feat(ai, ref)).sum(-1).mean())
             res.metrics["view_sim"] = round(sim, 3)
             return sim < VIEW_LOST_DINO
         except Exception as exc:  # noqa: BLE001 - fall back to the CPU measure

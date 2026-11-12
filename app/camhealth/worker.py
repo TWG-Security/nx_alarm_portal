@@ -5,7 +5,11 @@ the alarm pipeline: it has its own NX logins, its own small database pool, and o
 the camera_health tables. The web app picks the changes up from the database (app/routers/camhealth.py).
 
 Every CAMHEALTH_INTERVAL_S each camera's live frame (CAMHEALTH_FRAME_WIDTH wide) goes through analyze.py, then
-state.py decides what is shown. One frame at a time per site, CAMHEALTH_PARALLEL over all sites.
+state.py decides what is shown. One frame at a time per site, CAMHEALTH_PARALLEL over all sites. Scheduled checks are
+spread evenly over the interval (at most one every PACE_SLACK x interval / cameras), so the GPU load is even instead of
+bunched (2026-11-12, the user: "better balance the load on the GPU as more cameras come online"); "Check now" and
+offline cameras skip the spacing. The processing panel shows the share of the interval the checks use and when the
+queue falls behind.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from datetime import datetime, timedelta, timezone
 import httpx
 from sqlalchemy import delete, select
 
+from app.camhealth import ai as ai_mod
 from app.camhealth import analyze as A
 from app.camhealth import state as S
 from app.camhealth.library import Library
@@ -40,6 +45,8 @@ EVENTS_KEEP_DAYS = 90
 STATUS_EVERY_S = 30          # TWG's processing panel (vision_status)
 GPU_HISTORY = 240            # samples kept for the panel's charts (2 h)
 VIDEO_TYPES = {"camera", "multisensorcamera", "encoder"}
+PACE_SLACK = 0.8             # spacing = 0.8 x interval / cameras: even load, and 25 % room to catch up after a delay
+BEHIND_S = 60                # the oldest waiting camera this late (and later than two spacings): "behind" on the panel
 OFFLINE = {"Offline", "Unauthorized", "NotDefined"}
 
 
@@ -105,9 +112,12 @@ class Worker:
         self.tasks: set[asyncio.Task] = set()
         self.pass_stats = {"n": 0, "ms": 0.0, "since": time.monotonic()}
         self.started = utcnow()
+        self.started_mono = time.monotonic()
         self.recent: list[dict] = []          # the last checks, newest first (processing panel)
         self.gpu_history: list[dict] = []
         self.status_dirty = False              # a check finished: republish the queue soon (not only every 30 s)
+        self.last_paced = 0.0                  # when the last scheduled check started (monotonic)
+        self.work: list[tuple[float, float]] = []    # (finished at, ms) of the checks in the last interval
 
     # ---- sites and cameras -------------------------------------------------------------------------------------
     async def refresh_sites(self) -> None:
@@ -220,31 +230,36 @@ class Worker:
         if conn is None:
             return
         async with self.sem, conn.lock:
-            t0 = time.monotonic()
-            jpeg, frame, error = b"", None, ""
+            per_model: dict = {}
+            token = ai_mod.CHECK_MS.set(per_model)      # the model calls in this check add their ms here
             try:
-                jpeg = await self.fetch(conn, cam)
-                if jpeg[:2] != b"\xff\xd8":
-                    error = "NX answered without a picture"
-                else:
-                    frame = await asyncio.to_thread(A.load, jpeg)
-            except Exception as exc:  # noqa: BLE001
-                error = str(describe_http_error(exc))
-            fetch_ms = (time.monotonic() - t0) * 1000
-            n_ai = len(self.ai.timings) if self.ai is not None else 0
-            summary = await self._record(conn.site, cam, jpeg, frame, error, fetch_ms) or {}
-            total = (time.monotonic() - t0) * 1000
-            self.pass_stats["n"] += 1
-            self.pass_stats["ms"] += total
-            gpu = {}
-            if self.ai is not None:
-                for name, ms, _ in list(self.ai.timings)[n_ai:]:
-                    gpu[name] = round(gpu.get(name, 0) + ms)
-            self.recent.insert(0, {"at": int(time.time() * 1000), "site_id": cam.site_id, "camera": cam.name,
-                                   "fetch_ms": round(fetch_ms), "total_ms": round(total), "gpu_ms": gpu,
-                                   "how": "live stream" if cam.nx_status != "Recording" else "image", **summary})
-            del self.recent[50:]
-            self.status_dirty = True
+                await self._check(conn, cam, per_model)
+            finally:
+                ai_mod.CHECK_MS.reset(token)
+
+    async def _check(self, conn: SiteConn, cam: Cam, per_model: dict) -> None:
+        t0 = time.monotonic()
+        jpeg, frame, error = b"", None, ""
+        try:
+            jpeg = await self.fetch(conn, cam)
+            if jpeg[:2] != b"\xff\xd8":
+                error = "NX answered without a picture"
+            else:
+                frame = await asyncio.to_thread(A.load, jpeg)
+        except Exception as exc:  # noqa: BLE001
+            error = str(describe_http_error(exc))
+        fetch_ms = (time.monotonic() - t0) * 1000
+        summary = await self._record(conn.site, cam, jpeg, frame, error, fetch_ms) or {}
+        total = (time.monotonic() - t0) * 1000
+        self.pass_stats["n"] += 1
+        self.pass_stats["ms"] += total
+        gpu = {name: round(ms) for name, ms in per_model.items()}
+        self.work.append((time.monotonic(), total))
+        self.recent.insert(0, {"at": int(time.time() * 1000), "site_id": cam.site_id, "camera": cam.name,
+                               "fetch_ms": round(fetch_ms), "total_ms": round(total), "gpu_ms": gpu,
+                               "how": "live stream" if cam.nx_status != "Recording" else "image", **summary})
+        del self.recent[50:]
+        self.status_dirty = True
 
     async def _record(self, site: Site, cam: Cam, jpeg: bytes, frame: A.Frame | None, error: str, fetch_ms: float) -> None:
         now = utcnow()
@@ -276,6 +291,8 @@ class Worker:
                 metrics.update(res.metrics, analyze_ms=round((time.monotonic() - t) * 1000),
                                library_slots=self.library.slots_learned(cam.site_id, cam.device_id))
                 found = res.issues
+                if self.ai is not None:
+                    await asyncio.to_thread(self.library.keep, library)     # their GPU results, for the next check
                 if A.frozen(frame, cam.previous_small):
                     found.append(A.issue("frozen", detail="The same picture as the last check, to the pixel"))
                 cam.previous_small = frame.small
@@ -359,6 +376,40 @@ class Worker:
                 cam.request_seen = asked
                 cam.next_at = 0.0               # (cached references follow their taken_at; a learning candidate stays)
 
+    def spacing(self) -> float:
+        """Seconds between scheduled checks so every camera is checked once per interval, evenly spread."""
+        n = sum(1 for c in self.cams.values() if c.nx_status not in OFFLINE)
+        return PACE_SLACK * self.cfg.camhealth_interval_s / max(1, n)
+
+    def start_due(self, now: float) -> None:
+        """Start what's due: "Check now" and offline cameras (nothing to fetch) at once, the rest the most overdue first,
+        one per spacing and no more than CAMHEALTH_PARALLEL at a time (the others wait in the queue, shown there)."""
+        due = sorted((c for c in self.cams.values() if not c.busy and c.next_at <= now), key=lambda c: c.next_at)
+        running = sum(1 for c in self.cams.values() if c.busy)
+        gap = self.spacing()
+        for cam in due:
+            if cam.next_at == 0.0 or cam.nx_status in OFFLINE:
+                self._start(cam)
+            elif running < self.cfg.camhealth_parallel and now - self.last_paced >= gap:
+                self._start(cam)
+                self.last_paced = now
+                running += 1
+
+    def capacity(self, now: float) -> dict:
+        """How much of the interval the checks use, how many cameras would fit at this speed, how far behind it is."""
+        interval = self.cfg.camhealth_interval_s
+        self.work = [(t, ms) for t, ms in self.work if now - t <= interval]
+        checked = [c for c in self.cams.values() if c.nx_status not in OFFLINE]
+        waiting = [now - c.next_at for c in checked if not c.busy and 0 < c.next_at <= now]
+        late = max(waiting, default=0.0)
+        avg = sum(ms for _, ms in self.work) / len(self.work) if self.work else None
+        par = max(1, self.cfg.camhealth_parallel)
+        # A full interval of history: its real total; earlier: the average check x every camera.
+        used = sum(ms for _, ms in self.work) / 1000 if now - self.started_mono >= interval else (avg or 0) / 1000 * len(checked)
+        return {"spacing_s": round(self.spacing(), 1), "load_pct": round(used / (interval * par) * 100),
+                "fits": int(interval * par * PACE_SLACK / (avg / 1000)) if avg else None,
+                "behind_s": round(late) if late > max(BEHIND_S, 2 * self.spacing()) else 0}
+
     def _start(self, cam: Cam) -> None:
         cam.busy = True
         cam.next_at = time.monotonic() + self.cfg.camhealth_interval_s
@@ -378,7 +429,6 @@ class Worker:
 
     async def write_status(self) -> None:
         """TWG's processing panel: the card, the models' timings, the queue, the recent checks."""
-        from app.camhealth import ai as ai_mod
         gpu = await asyncio.to_thread(ai_mod.gpu_stats) if self.ai is not None else {}
         if gpu and "util" in gpu:
             self.gpu_history.append({"t": int(time.time() * 1000), "util": gpu["util"], "mem": gpu["mem_used_mb"],
@@ -425,6 +475,7 @@ class Worker:
             "avg_check_ms": round(sum(r["total_ms"] for r in self.recent) / len(self.recent)) if self.recent else None,
             "errors_recent": sum(1 for r in self.recent if r.get("error")), "recent": self.recent[:25], "queue": queue,
             "process": {"rss_mb": rss, "cpu_s": round(sum(os.times()[:2]))},
+            "capacity": self.capacity(now), "library": self.library.stats(),
         }
         async with sessionmaker()() as db:
             row = await db.get(VisionStatus, 1)
@@ -464,9 +515,7 @@ class Worker:
                     await self.prune()
             except Exception:  # noqa: BLE001 - the database or NX hiccuped: try again next tick
                 log.exception("camera health worker: housekeeping failed")
-            for cam in list(self.cams.values()):
-                if not cam.busy and cam.next_at <= time.monotonic():
-                    self._start(cam)
+            self.start_due(time.monotonic())
             st = self.pass_stats
             if time.monotonic() - st["since"] > self.cfg.camhealth_interval_s and st["n"]:
                 log.info("checked %d frames in the last %d s, %.0f ms each on average", st["n"],

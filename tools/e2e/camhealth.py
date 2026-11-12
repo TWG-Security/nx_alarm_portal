@@ -48,8 +48,13 @@ with sync_playwright() as p:
 
     # The dock needs a normal picture for this time of day first (a camera's library fills over days; placed before
     # that, the pallet is learned as normal and isn't a change).
-    pg.wait_for_function(f"""() => fetch('/api/camera-health').then(r => r.json()).then(l => l.cameras
-        .some(c => c.device_id === '{DOCK}' && (c.metrics.library || 0) >= 1))""", timeout=60000, polling=2000)
+    # (Polled from here: wait_for_function took the fetch's promise as "true" at once, so the pallet went in before the
+    # library had a frame and was learned as normal: the test failed at "Scene changed", 2026-11-12.)
+    end = time.time() + 60
+    while not pg.evaluate(f"""() => fetch('/api/camera-health').then(r => r.json()).then(l => l.cameras
+            .some(c => c.device_id === '{DOCK}' && (c.metrics.library || 0) >= 1))"""):
+        assert time.time() < end, "the dock's library never got a frame"
+        time.sleep(1)
     # A pallet appears in front of the dock camera (an Online camera: frames come off the live MJPEG stream).
     scene(DOCK, "change")
     t0 = time.time()

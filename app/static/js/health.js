@@ -289,7 +289,8 @@ async function loadProcessing() {
     : r.age_s > 120 ? `· last report ${Math.round(r.age_s / 60)} min ago: is the vision container running?` : `· updated ${r.age_s} s ago`;
   if (!d) return;
   const g = d.gpu || {};
-  const tile = (label, value, sub = "", pct = null) => `<div class="hp-tile"><div class="muted">${esc(label)}</div><div class="hp-val">${esc(value)}</div>`
+  const cap = d.capacity || {}, lib = d.library || {};
+  const tile = (label, value, sub = "", pct = null, cls = "") => `<div class="hp-tile"><div class="muted">${esc(label)}</div><div class="hp-val ${cls}">${esc(value)}</div>`
     + (pct != null ? `<div class="hp-bar" role="img" aria-label="${Math.round(pct)}%"><i style="width:${Math.min(100, pct)}%"></i></div>` : "")
     + `${sub ? `<div class="muted hp-sub">${esc(sub)}</div>` : ""}</div>`;
   document.getElementById("hp-tiles").innerHTML = [
@@ -297,7 +298,11 @@ async function loadProcessing() {
     tile("GPU busy", g.util != null ? `${g.util}%` : "—", g.clock_mhz ? `${g.clock_mhz} MHz` : "", g.util),
     tile("GPU memory", g.mem_used_mb != null ? `${(g.mem_used_mb / 1024).toFixed(1)} of ${(g.mem_total_mb / 1024).toFixed(1)} GB` : "—", "", g.mem_total_mb ? g.mem_used_mb / g.mem_total_mb * 100 : null),
     tile("Temperature", g.temp_c != null ? `${g.temp_c} °C` : "—", [g.power_w != null ? `${g.power_w} W of ${g.power_limit_w ?? "?"} W` : "", g.fan != null ? `fan ${g.fan}%` : ""].filter(Boolean).join(" · ")),
-    tile("Schedule", `every ${Math.round(d.interval_s / 60)} min`, `${d.parallel} camera at a time · ${d.checked_cameras} of ${d.cameras} cameras checked`),
+    tile("Schedule", `every ${Math.round(d.interval_s / 60)} min`, `${d.parallel} camera at a time${cap.spacing_s ? ` · one every ${cap.spacing_s} s` : ""} · ${d.checked_cameras} of ${d.cameras} cameras checked`),
+    tile("Capacity", cap.behind_s ? `Behind by ${cap.behind_s < 120 ? `${cap.behind_s} s` : `${Math.round(cap.behind_s / 60)} min`}` : cap.load_pct != null ? `${cap.load_pct}% used` : "—",
+      [cap.fits ? `room for about ${cap.fits} cameras at this speed` : "",
+       lib.gpu_cache_cap_mb ? `saved model results ${(lib.gpu_cache_mb / 1024).toFixed(1)} of ${(lib.gpu_cache_cap_mb / 1024).toFixed(0)} GB` : ""].filter(Boolean).join(" · "),
+      cap.load_pct, cap.behind_s ? "hc-t--problem" : ""),
     tile("Now", d.busy?.length ? `checking ${d.busy.join(", ")}` : d.next_in_s == null ? "nothing queued" : `next in ${d.next_in_s} s`,
       `${d.due_now} waiting · avg check ${ms(d.avg_check_ms)}${d.scoped ? " (all companies)" : ""}`),
     tile("Worker", `${d.process?.rss_mb ?? "?"} MB`, `CPU ${d.process?.cpu_s ?? "?"} s since ${fmtTime(d.started_at)}${d.errors_recent ? ` · ${d.errors_recent} recent errors` : ""}`),
