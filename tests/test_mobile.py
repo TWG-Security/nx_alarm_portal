@@ -461,6 +461,7 @@ async def test_a_new_alarm_pushes_the_exact_payload_signed_es256(client, session
     assert body["aps"]["alert"]["subtitle"] == "Front Door Cam" and body["aps"]["alert"]["body"].startswith("Panic button · ")
     assert body["aps"]["sound"] == "twg-critical.wav" and body["aps"]["interruption-level"] == "time-sensitive"
     assert body["aps"]["thread-id"] == f"alarm-{alarm.id}"
+    assert body["aps"]["mutable-content"] == 1 and body["aps"]["category"] == "ALARM"     # the app's extension + buttons
     assert {k: body[k] for k in ("type", "alarm_id", "level", "site_id")} == {"type": "alarm", "alarm_id": alarm.id, "level": "critical", "site_id": site.id}
     assert headers["apns-push-type"] == "alert" and headers["apns-priority"] == "10"
     assert headers["apns-collapse-id"] == f"alarm-{alarm.id}" and headers["apns-topic"] == "com.twgsecurity.alarms"
@@ -587,6 +588,8 @@ async def test_confirmed_closed_dispatch_and_call_ended_pushes(client, session, 
     d = next(b for b in by_token("c" * 64) if b["type"] == "dispatch")
     assert d["aps"]["alert"]["title"] == "DISPATCH · TWG Security Office" and d["alarm_id"] == alarm.id
     assert d["aps"]["sound"] == "twg-critical.wav"                       # dispatch: always the critical sound
+    assert d["aps"]["mutable-content"] == 1 and d["aps"]["category"] == "DISPATCH"
+    assert "category" not in closed[0][1]["aps"]                           # CLOSED: no buttons
     assert [b["aps"]["sound"] for b in by_token("b" * 64) if b["type"] == "alarm"] == ["twg-alarm.wav"]
     assert "sound" not in closed[0][1]["aps"]                             # CLOSED stays silent
     link = (await client.get("/api/mobile/dispatches", headers=hg)).json()

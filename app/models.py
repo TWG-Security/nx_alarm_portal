@@ -56,6 +56,9 @@ class User(Base):
     # Two-factor (app/mfa.py) and sessions (app/sessions.py)
     totp_secret_enc: Mapped[str] = mapped_column(Text, default="")              # Fernet; kept while enrolling
     totp_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # An admin turned two-step sign-in off for this one person (Users → Sign-in security): the company / platform
+    # requirement doesn't apply to them; a factor they set up themselves is still asked for (app/mfa.py required_for).
+    mfa_exempt: Mapped[bool] = mapped_column(Boolean, default=False)
     last_totp_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)  # a code's step can't be reused
     password_changed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     token_version: Mapped[int] = mapped_column(Integer, default=0)              # bump = sign out everywhere
@@ -282,6 +285,8 @@ class UserSession(Base):
     last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     ip: Mapped[str] = mapped_column(String(64), default="")
     user_agent: Mapped[str] = mapped_column(String(300), default="")
+    client: Mapped[str] = mapped_column(String(16), default="")             # web | ios | android | app (AuditLog.client)
+    client_version: Mapped[str] = mapped_column(String(40), default="")     # the app's version as it last reported it
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     revoked_reason: Mapped[str] = mapped_column(String(100), default="")
 
@@ -331,6 +336,12 @@ class Site(Base):
     arm_schedule: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # {"entries": [...], "since_ms": ...}
     arm_override: Mapped[dict | None] = mapped_column(JSONType, nullable=True)     # last manual arm/disarm
     armed: Mapped[bool] = mapped_column(Boolean, default=True)
+    arm_event: Mapped[dict | None] = mapped_column(JSONType, nullable=True)       # tell NX on arm/disarm (services/arm_event.py)
+    # Site / camera mutes for a few minutes (app/services/mute.py, migration 0034)
+    mute: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # Client profile (app/services/profile.py, migration 0035): who to call, package (ground response or
+    # monitoring only), the local police dispatch number, passcode, access notes, Ajax link.
+    profile: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
 
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -346,11 +357,14 @@ class Site(Base):
     camera_places: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     # 3D model shown in the 3D view (app/routers/site_models.py): {ready, job, next_version}
     model: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    # The company's VPN connection NX is reached through (app/tunnels.py, migration 0038); None = the internet
+    tunnel_id: Mapped[int | None] = mapped_column(ForeignKey("tunnels.id"), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
     tenant: Mapped[Tenant] = relationship(lazy="joined")
+    tunnel: Mapped["Tunnel | None"] = relationship(lazy="joined")
 
 
 class Alarm(Base):
@@ -411,6 +425,9 @@ class Alarm(Base):
     # services/calls.py join_active_call): this is the call's alarm id.
     call_id: Mapped[int | None] = mapped_column(ForeignKey("alarms.id", ondelete="SET NULL"), nullable=True, index=True)
     call_ended_by: Mapped[User | None] = relationship(foreign_keys=[call_ended_by_id], lazy="joined")
+    # Raised while its site or camera was muted (app/services/mute.py): listed and open, but no sound, pop-up,
+    # texts or phone push (migration 0034).
+    muted: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class AlarmNote(Base):
@@ -443,6 +460,10 @@ class AuditLog(Base):
     action: Mapped[str] = mapped_column(String(64), index=True)
     detail: Mapped[dict] = mapped_column(JSONType, default=dict)
     ip: Mapped[str] = mapped_column(String(64), default="")
+    # Where the request came from (app/audit.py client_of): ios | android | app (an app build older than 1.6 /
+    # Android 0.1 (1)) | api (API token, MCP) | web | "" (the system, or a row from before 2026-10-26).
+    client: Mapped[str] = mapped_column(String(16), default="")
+    client_version: Mapped[str] = mapped_column(String(40), default="")     # the app's, e.g. "1.6 (55)"
     ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User | None] = relationship(lazy="joined")
@@ -505,6 +526,12 @@ class PlatformSettings(Base):
     google_client_id: Mapped[str] = mapped_column(String(300), default="")
     google_client_secret_enc: Mapped[str] = mapped_column(Text, default="")
     google_domains: Mapped[str] = mapped_column(String(500), default="")       # "" = any domain
+    # Phone apps (app/routers/apps.py): TestFlight public link and App Store Connect for TestFlight invites (the API key
+    # itself is a .p8 file in secrets/, ASC_KEY_PATH / ASC_KEY_ID, tools/install_asc_key.sh)
+    testflight_url: Mapped[str] = mapped_column(String(300), default="")
+    asc_issuer_id: Mapped[str] = mapped_column(String(64), default="")
+    asc_app_id: Mapped[str] = mapped_column(String(32), default="")
+    asc_beta_group: Mapped[str] = mapped_column(String(100), default="TWG Testers")
     # Text messages through Twilio (app/sms.py)
     sms_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     twilio_sid: Mapped[str] = mapped_column(String(64), default="")
@@ -578,9 +605,52 @@ class IpAllow(Base):
     created_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id"), nullable=True)
 
 
+class Tunnel(Base):
+    """A company's VPN connection to one of its sites' networks (app/tunnels.py): kind "wireguard" (secret = the
+    router's client file) or "tailscale" (secret = an auth key). info = what the Sites page may show (no keys)."""
+
+    __tablename__ = "tunnels"
+    __table_args__ = (UniqueConstraint("tenant_id", "name", name="uq_tunnels_tenant_name"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    kind: Mapped[str] = mapped_column(String(20))
+    name: Mapped[str] = mapped_column(String(200))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    secret_enc: Mapped[str] = mapped_column(Text)
+    info: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class Webhook(Base):
+    """A company's webhook into one of its sites' NX (app/webhooks.py): calling /hook/<token> sends a generic event or
+    fires a soft trigger there. config: generic {source, caption, description (templates), state} | trigger {trigger_id,
+    trigger_name, device_id, state}. Only the token's SHA-256 is stored; `button` also puts it on the site panel for
+    operators. recent = the last calls (time, ok, ms, from, detail)."""
+
+    __tablename__ = "webhooks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(200))
+    kind: Mapped[str] = mapped_column(String(10))                 # generic | trigger
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    button: Mapped[bool] = mapped_column(Boolean, default=False)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True)
+    hint: Mapped[str] = mapped_column(String(16), default="")
+    config: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
+    uses: Mapped[int] = mapped_column(Integer, default=0)
+    recent: Mapped[list | None] = mapped_column(JSONType, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
 class TrackerSource(Base):
     """A company's GPS account (its admins enter it on the Sites page), one per kind: "peplink" = an InControl2 API
-    client (client_id + secret), "fleetio" = a Fleetio account (client_id = Account Token, secret = API key)."""
+    client (client_id + secret), "fleetio" = a Fleetio account (client_id = Account Token, secret = API key),
+    "geotab" = a MyGeotab database (client_id = user name, secret = password, options = {database, server})."""
 
     __tablename__ = "tracker_sources"
     __table_args__ = (UniqueConstraint("tenant_id", "kind", name="uq_tracker_sources_tenant_kind"),)
@@ -592,6 +662,7 @@ class TrackerSource(Base):
     client_id: Mapped[str] = mapped_column(String(200), default="")
     secret_enc: Mapped[str] = mapped_column(Text, default="")
     poll_s: Mapped[int] = mapped_column(Integer, default=30)
+    options: Mapped[dict | None] = mapped_column(JSONType, nullable=True)
     last_ok_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_error: Mapped[str] = mapped_column(Text, default="")
     last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -614,7 +685,7 @@ class Tracker(Base):
     ic2_group: Mapped[int] = mapped_column(Integer, default=0)
     ic2_device: Mapped[int] = mapped_column(Integer, default=0)
     serial: Mapped[str] = mapped_column(String(40), default="")
-    ext_id: Mapped[str] = mapped_column(String(64), default="")               # source "fleetio": the Fleetio vehicle id
+    ext_id: Mapped[str] = mapped_column(String(64), default="")               # source "fleetio" / "geotab": the vehicle / device id there
     device_name: Mapped[str] = mapped_column(String(200), default="")         # the router's name in InControl2 (Fleetio: year make model)
     tz: Mapped[str] = mapped_column(String(64), default="")                   # the IC2 group's time zone (its timestamps are local)
     lat: Mapped[float | None] = mapped_column(Float, nullable=True)
@@ -650,3 +721,74 @@ class TrackerPoint(Base):
     lat: Mapped[float] = mapped_column(Float)
     lng: Mapped[float] = mapped_column(Float)
     speed: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class CameraHealth(Base):
+    """Camera image health (app/camhealth): one row per camera, written by the vision worker every check."""
+
+    __tablename__ = "camera_health"
+    __table_args__ = (UniqueConstraint("site_id", "device_id", name="uq_camera_health_cam"),
+                      Index("ix_camera_health_changed", "changed_at"))
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(300), default="")
+    nx_status: Mapped[str] = mapped_column(String(20), default="")      # NX: Online | Recording | Offline | Unauthorized
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | ok | warning | problem | offline
+    issues: Mapped[list] = mapped_column(JSONType, default=list)        # shown: [{kind, severity, title, detail, boxes, ...}]
+    state: Mapped[dict] = mapped_column(JSONType, default=dict)         # app/camhealth/state.py (streaks, tracks)
+    metrics: Mapped[dict] = mapped_column(JSONType, default=dict)       # last check's numbers (for tuning)
+    mode: Mapped[str] = mapped_column(String(10), default="")           # day | night (the last frame)
+    ai: Mapped[bool] = mapped_column(Boolean, default=False)            # the GPU checks ran on the last frame
+    learning: Mapped[bool] = mapped_column(Boolean, default=True)       # no reference for this mode yet
+    settings: Mapped[dict] = mapped_column(JSONType, default=dict)      # {skip: bool, view_checks: bool}
+    error: Mapped[str] = mapped_column(Text, default="")
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    changed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)   # status/issues changed
+    muted_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    check_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CameraHealthImage(Base):
+    """The last checked frame and the reference pictures (kept in the database so the references are backed up)."""
+
+    __tablename__ = "camera_health_images"
+    __table_args__ = (UniqueConstraint("site_id", "device_id", "kind", name="uq_camera_health_image"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))                        # last | ref_day | ref_night
+    jpeg: Mapped[bytes] = mapped_column(LargeBinary)
+    taken_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    source: Mapped[str] = mapped_column(String(20), default="auto")     # auto | user
+    by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+
+
+class CameraHealthEvent(Base):
+    """History: an issue raised or cleared, a reference accepted, a mute."""
+
+    __tablename__ = "camera_health_events"
+    __table_args__ = (Index("ix_camera_health_events_cam", "site_id", "device_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    site_id: Mapped[int] = mapped_column(ForeignKey("sites.id", ondelete="CASCADE"))
+    device_id: Mapped[str] = mapped_column(String(64))
+    at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    kind: Mapped[str] = mapped_column(String(30))
+    change: Mapped[str] = mapped_column(String(20))                      # raised | cleared | reference | muted | unmuted
+    detail: Mapped[dict] = mapped_column(JSONType, default=dict)
+
+
+class VisionStatus(Base):
+    """The camera health worker's processing numbers (GPU, model timings, recent checks): one row, written every 30 s
+    by the vision container; shown to TWG staff only (platform.view)."""
+
+    __tablename__ = "vision_status"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    data: Mapped[dict] = mapped_column(JSONType, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

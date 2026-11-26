@@ -1,6 +1,6 @@
 """Editing a site's NX rules from the portal (map → site → View NX rules → Edit; administrators only).
 
-What can change: the rule's level tag (#critical / #alarm / #warning / #ignore / none) and #24h in its Title/Comment,
+What can change: the rule's level tag (#critical / #alarm / #warning / #ignore / none), #24h and #arm in its Title/Comment,
 the comment text, on / off, and NX's "Interval of action". Every write is a partial update (PATCH) of just those
 fields, then the rule is read back and checked: the event, schedule and anything not edited must be unchanged and
 the edited fields must read back as sent; otherwise the previous values are written back and the edit is reported
@@ -31,16 +31,20 @@ def has_secrets(action: dict | None) -> bool:
                for k, v in (action or {}).items())
 
 
-def with_tags(comment: str, level=UNCHANGED, always: bool | None = None) -> str:
-    """The comment with its level tag set to `level` (None: no level tag) and #24h set to `always`; the rest of the
-    text kept. Tags go at the end, the way the NX rules list reads best."""
+def with_tags(comment: str, level=UNCHANGED, always: bool | None = None, arm: bool | None = None) -> str:
+    """The comment with its level tag set to `level` (None: no level tag), #24h set to `always` and #arm to `arm`; the
+    rest of the text kept. Tags go at the end, the way the NX rules list reads best."""
     text = comment or ""
     if level is not UNCHANGED:
         text = RULE_TAG.sub("", text)
     if always is not None:
         text = arming.RULE_24H.sub("", text)
+    if arm is not None:
+        text = arming.RULE_ARM.sub("", text)
     text = re.sub(r"\s{2,}", " ", text).strip()
     tags = []
+    if arm:
+        tags.append("#arm")
     if always:
         tags.append("#24h")
     if level is not UNCHANGED and level:
@@ -49,7 +53,7 @@ def with_tags(comment: str, level=UNCHANGED, always: bool | None = None) -> str:
 
 
 async def edit(client, rule_id: str, *, comment: str | None = None, level=UNCHANGED, always: bool | None = None,
-               enabled: bool | None = None, interval_s: int | None = None) -> tuple[dict, dict, dict]:
+               enabled: bool | None = None, interval_s: int | None = None, arm: bool | None = None) -> tuple[dict, dict, dict]:
     """Apply the edit on the NX server. Returns (rule before, changes sent, rule after). Raises RuleEditError."""
     before = await client.get_rule(rule_id)
     if not isinstance(before, dict) or "event" not in before:
@@ -58,8 +62,8 @@ async def edit(client, rule_id: str, *, comment: str | None = None, level=UNCHAN
     text = before.get("comment") or ""
     if comment is not None:
         text = comment.strip()
-    if level is not UNCHANGED or always is not None:
-        text = with_tags(text, level, always)
+    if level is not UNCHANGED or always is not None or arm is not None:
+        text = with_tags(text, level, always, arm)
     if text != (before.get("comment") or ""):
         changes["comment"] = text
     if enabled is not None and enabled != (before.get("enabled") is not False):
@@ -275,7 +279,7 @@ async def _check(client, rule_id: str, sent: dict, before: dict | None) -> tuple
 
 async def save(client, rule_id: str, catalog: dict, *, event: dict | None = None, action: dict | None = None,
                comment: str | None = None, level=UNCHANGED, always: bool | None = None,
-               enabled: bool | None = None) -> tuple[dict, dict, dict]:
+               enabled: bool | None = None, arm: bool | None = None) -> tuple[dict, dict, dict]:
     """Full edit of an existing rule. Returns (before, changes sent, after). Raises RuleEditError (put back first)."""
     client = _Retrying(client)
     before = await client.get_rule(rule_id)
@@ -303,8 +307,8 @@ async def save(client, rule_id: str, catalog: dict, *, event: dict | None = None
     text = before.get("comment") or ""
     if comment is not None:
         text = comment.strip()
-    if level is not UNCHANGED or always is not None:
-        text = with_tags(text, level, always)
+    if level is not UNCHANGED or always is not None or arm is not None:
+        text = with_tags(text, level, always, arm)
     if text != (before.get("comment") or ""):
         changes["comment"] = text
     if enabled is not None and enabled != (before.get("enabled") is not False):
@@ -339,12 +343,12 @@ async def _put_back(client, rule_id: str, before: dict, keys: set[str]) -> None:
 
 
 async def create(client, catalog: dict, *, event: dict, action: dict, comment: str = "", level=None,
-                 always: bool = False, enabled: bool = True) -> dict:
+                 always: bool = False, enabled: bool = True, arm: bool = False) -> dict:
     """A new rule on the site's NX server, read back and checked (deleted again if NX stored something else)."""
     client = _Retrying(client)
     rule = {"event": build_part("event", event, None, catalog["events"]),
             "action": build_part("action", action, None, catalog["actions"]),
-            "comment": with_tags((comment or "").strip(), level, always), "enabled": bool(enabled), "schedule": []}
+            "comment": with_tags((comment or "").strip(), level, always, arm), "enabled": bool(enabled), "schedule": []}
     made = await client.create_rule(rule)
     rid = ((made or {}).get("id") or "").strip("{}") if isinstance(made, dict) else ""
     if not rid:

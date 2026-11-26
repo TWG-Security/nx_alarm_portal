@@ -6,7 +6,8 @@ from datetime import timezone
 from sqlalchemy import inspect
 
 from app.models import Alarm, AlarmNote, AuditLog, Site
-from app.services import arming
+from app.services import arm_event, arming, mute
+from app.services import profile as client_profile
 from app.services.alarm_filter import LEVEL_NAMES
 
 
@@ -25,6 +26,15 @@ def _tenant_label(site) -> str:
     return site.tenant.label
 
 
+def _clock_off_ms(a: Alarm) -> int:
+    """How far ahead the camera stamped this event when ingest dated it on arrival instead (0 = it didn't)."""
+    try:
+        raw = int((a.raw or {}).get("timestampMs") or 0)
+    except (TypeError, ValueError, AttributeError):
+        return 0
+    return raw - a.event_ts_ms if raw - (a.event_ts_ms or 0) > 60_000 else 0
+
+
 def alarm_dict(a: Alarm) -> dict:
     return {
         "id": a.id,
@@ -33,6 +43,8 @@ def alarm_dict(a: Alarm) -> dict:
         "site_id": a.site_id,
         "site_name": a.site.name if a.site else "",
         "site_address": a.site.address if a.site else "",
+        "site_status": a.site.status if a.site else "",            # now: online / offline / auth_error / …
+        "site_package": ((a.site.profile or {}).get("package", "") if a.site else ""),   # ground_response / monitoring_only
         "level": LEVEL_NAMES.get(a.priority, "warning"),
         "level_source": a.level_source,
         "event_type": a.event_type,
@@ -45,7 +57,9 @@ def alarm_dict(a: Alarm) -> dict:
         "device_id": a.device_id,
         "has_snapshot": bool(a.device_id),
         "event_ts_ms": a.event_ts_ms,
+        "camera_clock_off_ms": _clock_off_ms(a),
         "state": a.state,
+        "muted": bool(a.muted) and a.priority > 1,
         "nx_ack_required": a.nx_ack_required,
         "received_at": _iso(a.received_at),
         "acked_at": _iso(a.acked_at),
@@ -99,6 +113,7 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "nx_site_name": s.nx_site_name,
         "nx_version": s.nx_version,
         "camera_count": s.camera_count,
+        "tunnel": {"id": s.tunnel.id, "name": s.tunnel.name, "kind": s.tunnel.kind} if s.tunnel_id and s.tunnel else None,
         "camera_places": s.camera_places or {},
         "model": _model(s),
         "open_critical": critical,
@@ -109,6 +124,9 @@ def site_dict(s: Site, open_counts: dict | None = None) -> dict:
         "timezone_effective": arming.zone(s.timezone).key,
         "arm_schedule": (s.arm_schedule or {}).get("entries", []),
         "arming": arming.site_state(s, int(time.time() * 1000)).as_dict(),
+        "arm_event": arm_event.config(s),
+        "mute": mute.active(s.mute, int(time.time() * 1000)),
+        "profile": client_profile.public(s.profile),
     }
 
 
@@ -130,5 +148,7 @@ def audit_dict(r: AuditLog) -> dict:
         "site_id": r.site_id,
         "alarm_id": r.alarm_id,
         "ip": r.ip,
+        "client": r.client or "",                   # ios | android | app | api | web | "" (models.AuditLog.client)
+        "client_version": r.client_version or "",
         "detail": r.detail,
     }

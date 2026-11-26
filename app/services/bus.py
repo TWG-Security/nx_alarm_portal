@@ -32,6 +32,9 @@ class Bus:
         self._subs.discard(sub)
 
     def publish(self, tenant_id: int, event: str, data: dict) -> None:
+        if isinstance(data, dict) and "tenant_id" not in data:
+            # Every event says whose it is: a phone app viewing a customer also gets its own company's alarms.
+            data = {**data, "tenant_id": tenant_id}
         for sub in list(self._subs):
             if not sub.wants(tenant_id):
                 continue

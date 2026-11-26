@@ -45,6 +45,11 @@ async def site_edit(site_id: int, request: Request, user: User = Depends(require
     return render(request, "site_form.html", user, scope=scope, page="sites", site=site_dict(site))
 
 
+@router.get("/health")
+async def health_page(request: Request, user: User = Depends(current_user), scope: Scope = Depends(get_scope)):
+    return render(request, "health.html", user, scope=scope, page="health")
+
+
 @router.get("/audit")
 async def audit_page(request: Request, user: User = Depends(current_user), scope: Scope = Depends(get_scope)):
     return render(request, "audit.html", user, scope=scope, page="audit")

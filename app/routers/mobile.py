@@ -36,7 +36,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import apns, mfa, passwords, sessions
 from app import security_guard as guard
-from app.audit import audit
+from app.audit import CLIENT_NAMES, audit
 from app.db import get_db
 from app.deps import client_ip, current_user
 from app.models import Tenant, Tracker, User, UserSession
@@ -85,7 +85,8 @@ async def _signed_in(request: Request, db: AsyncSession, user: User, tenant: Ten
         await db.commit()
         raise HTTPException(400, "Your password has expired. Change it on the website (sign in there), then sign in here.")
     row, token = await sessions.start_mobile(request, db, user, device)
-    await guard.record(db, ip, kind, "success", email=user.email, user=user, reason=f"signed in to the iPhone app ({method})")
+    await guard.record(db, ip, kind, "success", email=user.email, user=user,
+                       reason=f"signed in to the {CLIENT_NAMES.get(row.client, 'phone app')} ({method})")
     audit(db, user.tenant_id, "login", user_id=user.id, ip=ip, method=f"app ({method})", device=row.user_agent)
     await db.commit()
     from app.permissions import load_permissions
@@ -125,7 +126,7 @@ async def mobile_login(body: LoginIn, request: Request, db: AsyncSession = Depen
         audit(db, user.tenant_id, "login.failed", user_id=user.id, ip=ip, reason="company disabled", app=True)
         await db.commit()
         raise HTTPException(403, "Your company's portal access is disabled. Contact TWG Security.")
-    required = mfa.required_for(tenant)
+    required = mfa.required_for(tenant, user)
     has_passkeys = mfa.passkeys_enabled() and await mfa.passkey_count(db, user.id) > 0
     if user.totp_enabled or (required and has_passkeys):
         # Second factor next: the authenticator code (/login/totp) and/or a passkey (/passkey/options + verify).

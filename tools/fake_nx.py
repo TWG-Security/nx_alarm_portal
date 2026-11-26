@@ -19,6 +19,8 @@ POST /_twilio/mode/{ok|fail|hang|mediafail} makes it accept, reject (400, code 3
 an MMS and then report it failed (63019, picture not downloadable) on GET .../Messages/{sid}.json.
 POST /_frames/{normal|late|none} makes recorded frames (timestampMs != -1) answer 200 with 0 bytes, like NX for a
 motion-recording camera that isn't recording yet: "late" for 1.5 s after each injected event, "none" always.
+Camera health: POST /_health/{device id|all}/{mode} switches live frames (and /media/<id>.mpjpeg) to a synthetic scene
+with that defect (tools/health_scene.py); /_health/{dev}/off goes back to the test pattern.
 """
 import json, os, subprocess, tempfile, time, uuid
 import asyncio
@@ -32,10 +34,12 @@ AXIS_ENGINE, CVEDIA_ENGINE = "{cb4a4ec3-31e4-7fe7-ba2a-e3464b407edc}", "{09d04f5
 AXIS_SCENARIO = "nx.axis.{c95466c7-a66e-d03d-7e39-13f1a05704cb}"
 # Like NX 6.1: analytics plugins enabled per camera, I/O ports in options.ioSettings.
 DEV = [{"id": "{11111111-1111-1111-1111-111111111111}", "name": "Front Gate PTZ", "deviceType": "Camera", "model": "AXISQ1798LE",
+        "status": "Recording", "mediaStreams": [{"resolution": "1920x1080"}],
         "userEnabledAnalyticsEngineIds": [AXIS_ENGINE],
         "options": {"ioSettings": [{"id": "I0", "portType": "input", "inputName": "Gate contact"},
                                    {"id": "I1", "portType": "output", "outputName": "Strobe"}]}},
        {"id": "{22222222-2222-2222-2222-222222222222}", "name": "Loading Dock", "deviceType": "Camera",
+        "status": "Online", "mediaStreams": [{"resolution": "1280x720"}],
         "userEnabledAnalyticsEngineIds": [CVEDIA_ENGINE]}]
 # 1x1 grey JPEG
 JPG = bytes.fromhex("ffd8ffe000104a46494600010100000100010000ffdb004300080606070605080707070909080a0c140d0c0b0b0c1912130f141d1a1f1e1d1a1c1c20242e2720222c231c1c2837292c30313434341f27393d38323c2e333432ffc0000b080001000101011100ffc4001f0000010501010101010100000000000000000102030405060708090a0bffc400b5100002010303020403050504040000017d01020300041105122131410613516107227114328191a1082342b1c11552d1f02433627282090a161718191a25262728292a3435363738393a434445464748494a535455565758595a636465666768696a737475767778797a838485868788898a92939495969798999aa2a3a4a5a6a7a8a9aab2b3b4b5b6b7b8b9bac2c3c4c5c6c7c8c9cad2d3d4d5d6d7d8d9dae1e2e3e4e5e6e7e8e9eaf1f2f3f4f5f6f7f8f9faffda0008010100003f00fbfcffd9")
@@ -169,6 +173,8 @@ async def rule_patch(rid: str, req: Request):
         return JSONResponse({"error": "not found"}, status_code=404)
     body = await req.json()
     RULE_PATCHES.append({"id": rid, **body})
+    if "enabled" in body:
+        NX_ORDER.append(("rule", r.get("comment", ""), body["enabled"]))
     for k, v in body.items():
         if RULE_MODE["patch"] == "merge" and isinstance(v, dict) and isinstance(r.get(k), dict):
             r[k] = {**r[k], **v}
@@ -190,8 +196,43 @@ FRAMES = {"mode": "normal", "last_inject": 0.0}
 async def frames_mode(mode: str):
     FRAMES["mode"] = mode
     return FRAMES
+HEALTH: dict = {}     # camera health scenes: device id (no braces) or "all" -> tools/health_scene.py mode
+@app.post("/_health/{dev}/{mode}")
+async def health_mode(dev: str, mode: str):
+    """Live frames become tools/health_scene.py's synthetic scene in `mode` (normal, blur, covered, dark, glare,
+    moved, change, blocked, frozen, dusk, night; "none" = 200 with no picture, "error" = 503) for one camera or "all"."""
+    if mode == "off":
+        HEALTH.pop(dev.strip("{}"), None)
+    else:
+        HEALTH[dev.strip("{}")] = mode
+    return HEALTH
+def _health_frame(d: str):
+    mode = HEALTH.get(d.strip("{}")) or HEALTH.get("all")
+    if mode is None:
+        return None
+    if mode == "none":
+        return Response(b"", media_type="image/jpeg")
+    if mode == "error":
+        return Response("relay busy", status_code=503)
+    from tools.health_scene import scene
+    return Response(scene(mode), media_type="image/jpeg")
+@app.get("/media/{d}.mpjpeg")
+async def mpjpeg(d: str):
+    """NX's live MJPEG stream: a few frames of the health scene (or the test pattern), multipart."""
+    from fastapi.responses import StreamingResponse
+    frame = _health_frame(d)
+    if frame is not None and frame.status_code != 200:
+        return frame
+    async def gen():
+        for _ in range(3):
+            body = frame.body if frame is not None else (await image(d)).body
+            yield b"--frame\r\nContent-Type: image/jpeg\r\nContent-Length: " + str(len(body)).encode() + b"\r\n\r\n" + body + b"\r\n"
+            await asyncio.sleep(0.04)
+    return StreamingResponse(gen(), media_type="multipart/x-mixed-replace; boundary=frame")
 @app.get("/rest/v4/devices/{d}/image")
 async def image(d: str, timestampMs: int = -1):
+    if timestampMs == -1 and (frame := _health_frame(d)) is not None:
+        return frame
     if timestampMs != -1 and (FRAMES["mode"] == "none" or
                               (FRAMES["mode"] == "late" and time.time() - FRAMES["last_inject"] < 1.5)):
         return Response(b"", media_type="image/jpeg")       # NX: no recording at or after that moment (yet)
@@ -284,6 +325,74 @@ async def inject(kind: str, rule_id: str = ""):
         try: await ws.send_json({"jsonrpc": "2.0", "method": "rest.v4.events.log.update", "params": EVENTS[-1]})
         except Exception: SUBSCRIBERS.discard(ws)
     return {"ok": True}
+
+
+# ---------------------------------------------------------------- soft triggers and generic events from the portal
+# (app/webhooks.py). Request formats as NX 6.1.2's /static/openapi_v4.json. Each one is logged and pushed like NX does
+# when a rule covers it, so the portal raises it. POST /_nx_events_mode/refuse|allow: 403 like an account without rights.
+TRIGGERS = [{"triggerId": "256dacab-d698-4a32-b9ec-135ba73ba127", "prolonged": False, "name": "Strobe speaker armed",
+             "icon": "", "devices": {"ids": ["11111111-1111-1111-1111-111111111111"], "all": False}, "schedule": []},
+            {"triggerId": "ae447eb3-a40e-445a-8d11-4c8f01c2021e", "prolonged": True, "name": "Siren (hold)",
+             "icon": "_bell_off", "devices": {"ids": [], "all": True}, "schedule": []}]
+NX_SENT: list = []
+NX_ORDER: list = []         # ("rule", comment, enabled) / ("generic", caption) in the order NX got them
+NX_EVENTS_MODE = {"mode": "ok"}
+
+@app.post("/_nx_events_mode/{mode}")
+async def nx_events_mode(mode: str):
+    NX_EVENTS_MODE["mode"] = "refuse" if mode == "refuse" else "ok"
+    return NX_EVENTS_MODE
+
+@app.get("/_nx_sent")
+async def nx_sent(): return NX_SENT
+
+@app.get("/_nx_order")
+async def nx_order(): return NX_ORDER
+
+@app.get("/rest/v4/events/triggers")
+async def triggers(): return TRIGGERS
+
+async def _log(ev: dict) -> None:
+    us = max(time.time_ns() // 1000, FRAMES.get("last_us", 0) + 1); FRAMES["last_us"] = us
+    dev = (ev.get("deviceId") or (ev.get("deviceIds") or [""])[0] or "")
+    row = {"timestampMs": us // 1000, "ruleId": "", "flags": "noFlags", "aggregatedInfo": {"total": 1},
+           "eventData": {**ev, "timestamp": str(us)},
+           "actionData": {"id": str(uuid.uuid4()), "type": "writeToLog", "serverId": "{srv-1}", "deviceIds": [dev] if dev else []}}
+    EVENTS.append(row)
+    for ws in list(SUBSCRIBERS):
+        try: await ws.send_json({"jsonrpc": "2.0", "method": "rest.v4.events.log.update", "params": row})
+        except Exception: SUBSCRIBERS.discard(ws)
+
+@app.post("/rest/v4/events/triggers")
+async def fire_trigger(req: Request):
+    body = await req.json()
+    if NX_EVENTS_MODE["mode"] == "refuse":
+        return JSONResponse({"error": "4", "errorString": "Forbidden"}, status_code=403)
+    t = next((t for t in TRIGGERS if t["triggerId"] == str(body.get("triggerId", "")).strip("{}")), None)
+    if t is None or not body.get("deviceId"):
+        return JSONResponse({"error": "2", "errorString": "Invalid parameter 'triggerId' / 'deviceId'"}, status_code=400)
+    if not t["devices"]["all"] and body["deviceId"].strip("{}") not in t["devices"]["ids"]:
+        return JSONResponse({"error": "2", "errorString": "The software trigger isn't assigned to this device"}, status_code=400)
+    if body.get("state") not in (None, "started", "stopped", "instant"):
+        return JSONResponse({"error": "2", "errorString": "Invalid parameter 'state'"}, status_code=400)
+    NX_SENT.append({"kind": "trigger", "at": time.time(), **body})
+    await _log({"type": "softTrigger", "state": body.get("state") or "instant", "deviceId": "{%s}" % body["deviceId"].strip("{}"),
+                "triggerId": t["triggerId"], "triggerName": t["name"], "userId": "{u-1}"})
+    return {}
+
+@app.post("/rest/v4/events/generic")
+async def generic_event(req: Request):
+    body = await req.json()
+    if NX_EVENTS_MODE["mode"] == "refuse":
+        return JSONResponse({"error": "4", "errorString": "Forbidden"}, status_code=403)
+    if body.get("state") not in (None, "started", "stopped", "instant") or "metadata" in body:
+        return JSONResponse({"error": "2", "errorString": "Invalid parameter"}, status_code=400)
+    NX_SENT.append({"kind": "generic", "at": time.time(), **body})
+    NX_ORDER.append(("generic", body.get("caption", "")))
+    await _log({"type": "generic", "state": body.get("state") or "instant", "source": body.get("source", ""),
+                "caption": body.get("caption", ""), "description": body.get("description", ""),
+                "deviceIds": ["{%s}" % d.strip("{}") for d in body.get("deviceIds") or []]})
+    return {}
 
 
 # ---------------------------------------------------------------- fake Twilio (alarm texts)
@@ -555,6 +664,90 @@ async def fleet_mode(mode: str):
 async def fleet_archive(vid: int):
     FLEET["archived"].add(vid)
     return {"ok": True}
+
+# ---------------------------------------------------------------- fake Geotab / MyGeotab (app/geotab.py)
+# dev_up.sh points GEOTAB_API_BASE at /_geotab (calls go to /_geotab/apiv1). Database "dev", user "dev-user", password
+# "dev-pass". JSON-RPC like Geotab's API reference (errors as {"error": {"message", "data": {"type"}, "errors": [{"name"}]}}).
+# Patrol 1 drives (moves every DeviceStatusInfo read), Patrol 2 parked 3 h ago, Spare has no position (0, 0), Old Car is
+# retired (activeTo in the past). POST /_geotab/mode/{ok|unauthorized|expire|overlimit|fail|moved}: expire = the next Get
+# says the session is invalid once; moved = Authenticate sends the client to another server (served at /apiv1 here).
+GEO = {"mode": "ok", "auth": 0, "reads": 0, "calls": [], "sessions": set()}
+
+def _geo_iso(ts: float) -> str:
+    return _dt.fromtimestamp(ts, _tz.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+def _geo_error(name: str, message: str) -> dict:
+    return {"jsonrpc": "2.0", "error": {"code": -32000, "message": message, "name": "JSONRPCError",
+                                       "data": {"id": "x", "type": name, "requestIndex": 0},
+                                       "errors": [{"name": name, "message": message}]}}
+
+_GEO_DEVICES = [
+    {"id": "b1", "name": "Patrol 1", "serialNumber": "G9A1B2C3D4E5", "licensePlate": "CVTZ 101", "activeTo": "2050-01-01T00:00:00.000Z"},
+    {"id": "b2", "name": "Patrol 2", "serialNumber": "G9A1B2C3D4E6", "licensePlate": "CVTZ 102", "activeTo": "2050-01-01T00:00:00.000Z"},
+    {"id": "b3", "name": "Spare", "serialNumber": "G9A1B2C3D4E7", "licensePlate": "", "activeTo": "2050-01-01T00:00:00.000Z"},
+    {"id": "b9", "name": "Old Car", "serialNumber": "G8OLD", "licensePlate": "", "activeTo": "2024-01-01T00:00:00.000Z"},
+]
+
+def _geo_status(dev_id: str, step: int) -> dict:
+    now = time.time()
+    lat, lng, ts, speed = {"b1": (40.2650 + step * 0.0005, -76.8850 + step * 0.0004, now - 20, 46.0),
+                           "b2": (40.2610, -76.8990, now - 3 * 3600, 0.0),
+                           "b3": (0, 0, now - 86400, float("nan"))}.get(dev_id, (0, 0, now, 0.0))
+    return {"device": {"id": dev_id}, "latitude": lat, "longitude": lng, "dateTime": _geo_iso(ts), "bearing": 37,
+            "speed": None if speed != speed else speed, "isDeviceCommunicating": dev_id != "b3", "isDriving": dev_id == "b1"}
+
+@app.post("/_geotab/apiv1")
+@app.post("/apiv1")
+async def geo_rpc(request: Request):
+    body = await request.json()
+    method, params = body.get("method"), body.get("params") or {}
+    GEO["calls"].append((request.url.path, method, params.get("typeName")))
+    if GEO["mode"] == "fail":
+        return JSONResponse({"error": "boom"}, status_code=500)
+    if method == "Authenticate":
+        GEO["auth"] += 1
+        if GEO["mode"] == "unauthorized" or (params.get("database"), params.get("userName"), params.get("password")) != ("dev", "dev-user", "dev-pass"):
+            return _geo_error("InvalidUserException", "Incorrect login credentials")
+        sid = f"sess-{GEO['auth']}"
+        GEO["sessions"].add(sid)
+        path = "my99.geotab.test" if GEO["mode"] == "moved" and request.url.path.startswith("/_geotab") else "ThisServer"
+        return {"jsonrpc": "2.0", "result": {"credentials": {"database": "dev", "userName": "dev-user", "sessionId": sid}, "path": path}}
+    if method != "Get":
+        return _geo_error("MissingMethodException", f"The method '{method}' could not be found")
+    creds = params.get("credentials") or {}
+    if GEO["mode"] == "expire":
+        GEO["mode"] = "ok"
+        GEO["sessions"].discard(creds.get("sessionId"))
+    if creds.get("sessionId") not in GEO["sessions"]:
+        return _geo_error("InvalidUserException", "Incorrect login credentials @ 'dev'")
+    if GEO["mode"] == "overlimit":
+        return _geo_error("OverLimitException", "API calls quota exceeded. Maximum admitted 900 per 1m.")
+    tn, search = params.get("typeName"), params.get("search") or {}
+    if tn == "Device":
+        rows = [d for d in _GEO_DEVICES if not search.get("id") or d["id"] == search["id"]]
+        return {"jsonrpc": "2.0", "result": rows}
+    if tn == "DeviceStatusInfo":
+        GEO["reads"] += 1
+        want = (search.get("deviceSearch") or {}).get("id")
+        return {"jsonrpc": "2.0", "result": [_geo_status(d["id"], GEO["reads"]) for d in _GEO_DEVICES[:3] if not want or d["id"] == want]}
+    if tn == "LogRecord":
+        dev = (search.get("deviceSearch") or {}).get("id")
+        since = _dt.fromisoformat(search["fromDate"].replace("Z", "+00:00")).timestamp() if search.get("fromDate") else 0
+        rows = []
+        if dev == "b1":
+            now, step = time.time(), GEO["reads"]
+            for k in range(1, 6):
+                ts = now - 20 - 15 * k
+                if ts > since:
+                    rows.append({"device": {"id": "b1"}, "dateTime": _geo_iso(ts), "speed": 40,
+                                 "latitude": 40.2650 + step * 0.0005 - k * 0.0002, "longitude": -76.8850 + step * 0.0004 - k * 0.00015})
+        return {"jsonrpc": "2.0", "result": rows}
+    return _geo_error("ArgumentException", f"Unknown type {tn}")
+
+@app.post("/_geotab/mode/{mode}")
+async def geo_mode(mode: str):
+    GEO["mode"] = mode
+    return {"mode": mode}
 
 # ---------------------------------------------------------------- fake APNs (app/apns.py)
 # dev_up.sh points APNS_API_BASE at /_apns (HTTP/1.1 here; Apple's is HTTP/2). Records every push with its arrival

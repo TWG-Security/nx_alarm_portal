@@ -193,12 +193,14 @@ async def _live_webm(site: Site, device_id: str) -> StreamingResponse:
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
-# ------------------------------------------------------------------ cameras placed on a site's 3D view
+# ------------------------------------------------------------------ any camera of a site (3D view, alarm details)
 
 async def _placed_camera(db: AsyncSession, scope: Scope, site_id: int, device_id: str) -> Site:
-    """The site, if this camera is placed on its 3D view (only placed cameras are viewable this way)."""
+    """The site, if this camera is placed on its 3D view or NX lists it for the site (the alarm details' "Site
+    cameras": the SOC, 2026-10-25, "check the unrelated cameras from that same site")."""
     site = await db.scalar(select(Site).where(Site.id == site_id, scope.where(Site.tenant_id)))
-    if site is None or device_id.strip("{}") not in (site.camera_places or {}):
+    dev = device_id.strip("{}")
+    if site is None or (dev not in (site.camera_places or {}) and dev not in manager.device_names(site.id)):
         raise HTTPException(404)
     return site
 

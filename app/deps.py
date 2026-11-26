@@ -69,8 +69,8 @@ async def current_user(request: Request, db: AsyncSession = Depends(get_db)) -> 
         return user
     token = bearer_device_token(request)
     if token:
-        # The iPhone app (app/routers/mobile.py): the token is the sign-in; cookies are ignored. Always the user's
-        # own company (no company switcher); request.scope["twg_mobile"] tells the stream which device this is.
+        # The iPhone app (app/routers/mobile.py): the token is the sign-in; cookies are ignored. TWG staff pick
+        # the company with X-TWG-Company (app/scope.py); request.scope["twg_mobile"] tells the stream which device this is.
         found = await sessions.check_mobile(request, db, token)
         if found is None:
             raise NotAuthenticated()

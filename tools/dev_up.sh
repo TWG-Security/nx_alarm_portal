@@ -3,11 +3,13 @@
 # Dev login: admin@twgsecurity.com / Smoke-test-password-123!  (dev DB only)
 # Needs .env.dev (SECRET_KEY, FERNET_KEY, DATABASE_URL=sqlite+aiosqlite:///./dev.db, COOKIE_SECURE=false).
 # Env overrides: POLL_INTERVAL_S (default 5; set 60 to prove push), CLIP_PRE_S / CLIP_POST_S (default 5 / 6).
+# VPN connections use the stand-ins in tools/fake_vpn unless WIREPROXY_PATH / TAILSCALED_PATH / TAILSCALE_PATH point at real ones.
+# CAMHEALTH=1 also starts the camera health worker (CPU checks; CAMHEALTH_INTERVAL_S default 20 here).
 set -e
 cd "$(dirname "$0")/.."
 ./tools/dev_down.sh >/dev/null 2>&1 || true
 set -a; . ./.env.dev; set +a
-rm -rf dev.db media-cache tile-cache
+rm -rf dev.db media-cache tile-cache camhealth-data tunnels-data   # camhealth-data: the dev frame library (production: a volume)
 .venv/bin/alembic upgrade head >/dev/null
 echo 'Smoke-test-password-123!' | .venv/bin/python -m app.cli create-admin --email admin@twgsecurity.com --name "Dev Admin" --password-stdin >/dev/null
 mkdir -p .dev-logs
@@ -15,7 +17,12 @@ mkdir -p .dev-logs
 [ -f .dev-apns.p8 ] || .venv/bin/python -c "from cryptography.hazmat.primitives.asymmetric import ec; from cryptography.hazmat.primitives import serialization as s; open('.dev-apns.p8','wb').write(ec.generate_private_key(ec.SECP256R1()).private_bytes(s.Encoding.PEM, s.PrivateFormat.PKCS8, s.NoEncryption()))"
 nohup .venv/bin/uvicorn tools.fake_nx:app --port 8199 > .dev-logs/fake_nx.log 2>&1 &
 POLL_INTERVAL_S=${POLL_INTERVAL_S:-5} CLIP_PRE_S=${CLIP_PRE_S:-5} CLIP_POST_S=${CLIP_POST_S:-6} \
-  WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=http://localhost:8099 TWILIO_API_BASE=http://127.0.0.1:8199 APNS_API_BASE=http://127.0.0.1:8199/_apns APNS_KEY_PATH=.dev-apns.p8 APNS_KEY_ID=DEVKEY0001 APNS_TEAM_ID=NY8H9358QD APNS_TOPIC=com.twgsecurity.alarms PEPLINK_API_BASE=http://127.0.0.1:8199/_ic2 FLEETIO_API_BASE=http://127.0.0.1:8199/_fleetio \
-  nohup .venv/bin/uvicorn app.main:app --port 8099 > .dev-logs/portal.log 2>&1 &
+  WEBAUTHN_RP_ID=localhost WEBAUTHN_ORIGINS=http://localhost:8099 TWILIO_API_BASE=http://127.0.0.1:8199 APNS_API_BASE=http://127.0.0.1:8199/_apns APNS_KEY_PATH=.dev-apns.p8 APNS_KEY_ID=DEVKEY0001 APNS_TEAM_ID=NY8H9358QD APNS_TOPIC=com.twgsecurity.alarms PEPLINK_API_BASE=http://127.0.0.1:8199/_ic2 FLEETIO_API_BASE=http://127.0.0.1:8199/_fleetio GEOTAB_API_BASE=http://127.0.0.1:8199/_geotab \
+  WIREPROXY_PATH=${WIREPROXY_PATH:-$PWD/tools/fake_vpn/wireproxy} TAILSCALED_PATH=${TAILSCALED_PATH:-$PWD/tools/fake_vpn/tailscaled} TAILSCALE_PATH=${TAILSCALE_PATH:-$PWD/tools/fake_vpn/tailscale} \
+  CAMHEALTH_WATCH_S=${CAMHEALTH_WATCH_S:-2} nohup .venv/bin/uvicorn app.main:app --port 8099 > .dev-logs/portal.log 2>&1 &
+if [ "${CAMHEALTH:-0}" = "1" ]; then
+  CAMHEALTH_INTERVAL_S=${CAMHEALTH_INTERVAL_S:-20} CAMHEALTH_WATCH_S=1 CAMHEALTH_AI=off \
+    CAMHEALTH_SITES_EVERY_S=5 nohup .venv/bin/python -m app.camhealth.worker > .dev-logs/vision.log 2>&1 &
+fi
 for i in $(seq 1 30); do curl -sf localhost:8099/healthz >/dev/null && curl -sf localhost:8199/rest/v4/site/info >/dev/null && break; sleep 0.5; done
 echo "dev stack up: portal http://localhost:8099  fake NX http://localhost:8199  (logs in .dev-logs/)"

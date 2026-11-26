@@ -15,13 +15,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.audit import audit
 from app.db import get_db
 from app.deps import client_ip, csrf_protect, current_user, require_admin
-from app.models import Alarm, AlarmNote, AuditLog, Site, Tenant, User, UserGroup, UserGroupMember
+from app.models import Alarm, AlarmNote, AuditLog, Site, Tenant, Tunnel, User, UserGroup, UserGroupMember
 from app.permissions import applicable, require
 from app.scope import Scope, get_scope
 from app.services.alarm_filter import CHOICES, EVENT_TYPES, LEVELS, Policy
 from app.security import decrypt, encrypt, hash_password
 from app.services import ack as ack_service
-from app.services import arming
+from app.services import arm_event, arming, mute
+from app.services import profile as client_profile
 from app.services.bus import bus
 from app.services.poller import manager, now_ms
 from app.services.serialize import alarm_dict, audit_dict, note_dict, site_dict
@@ -44,7 +45,9 @@ class SiteIn(BaseModel):
     notes: str = Field(default="", max_length=5000)
     timezone: str = Field(default="", max_length=64)         # IANA name for the arming schedule; "" = default
     arm_schedule: list[dict] | None = None                   # [{action, time "HH:MM", days [...]}]; None = keep
+    arm_event: dict | None = None                            # tell NX on arm/disarm (services/arm_event.py); None = keep
     connect: bool = True                                     # False = save without testing
+    tunnel_id: int | None = None                             # the company's VPN connection (app/tunnels.py); None = internet
 
     @field_validator("name", "host", "nx_user", "address")
     @classmethod
@@ -60,6 +63,7 @@ class ConnTest(BaseModel):
     nx_user: str
     nx_pass: str = ""
     site_id: int | None = None
+    tunnel_id: int | None = None
 
 
 async def _open_counts(db: AsyncSession, scope: Scope) -> dict[int, dict[int, int]]:
@@ -113,8 +117,18 @@ def _apply_arming_settings(site: Site, body: SiteIn, user: User) -> list[str]:
     return changed
 
 
-async def _probe(host: str, nx_user: str, nx_pass: str) -> dict:
-    client = make_client(host, nx_user, nx_pass)
+async def _tunnel(db: AsyncSession, tunnel_id: int | None, tenant_id: int) -> Tunnel | None:
+    """A VPN connection a site of this company may use: only its own company's (app/tunnels.py)."""
+    if not tunnel_id:
+        return None
+    t = await db.get(Tunnel, tunnel_id)
+    if t is None or t.tenant_id != tenant_id:
+        raise HTTPException(400, {"message": "That VPN connection doesn't belong to this site's company"})
+    return t
+
+
+async def _probe(host: str, nx_user: str, nx_pass: str, tunnel_id: int | None = None) -> dict:
+    client = make_client(host, nx_user, nx_pass, tunnel_id)
     try:
         return await probe(client)
     except ConnectError as exc:
@@ -139,10 +153,12 @@ async def test_connection(body: ConnTest, user: User = Depends(require_admin), s
         host, _ = resolve_host(body.host)
     except ValueError as exc:
         raise HTTPException(400, {"message": str(exc)}) from exc
-    password = body.nx_pass
-    if not password and body.site_id:
-        password = decrypt((await _get_site(db, scope, body.site_id, write=True)).nx_pass_enc)
-    info = await _probe(host, body.nx_user, password)
+    password, tenant_id = body.nx_pass, None
+    if body.site_id:
+        site = await _get_site(db, scope, body.site_id, write=True)
+        password, tenant_id = password or decrypt(site.nx_pass_enc), site.tenant_id
+    tunnel = await _tunnel(db, body.tunnel_id, tenant_id or (scope.write_tenant() if body.tunnel_id else 0))
+    info = await _probe(host, body.nx_user, password, tunnel.id if tunnel else None)
     info.pop("devices", None)
     return {"host": host, **info}
 
@@ -159,12 +175,14 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
         raise HTTPException(400, {"message": "NX password is required"})
     if not body.address:
         raise HTTPException(400, {"message": ADDRESS_REQUIRED})
+    tunnel = await _tunnel(db, body.tunnel_id, tenant_id)
     site = Site(tenant_id=tenant_id, name=body.name, host=host, cloud_id=cloud_id, nx_user=body.nx_user,
                 nx_pass_enc=encrypt(body.nx_pass), address=body.address, lat=body.lat, lng=body.lng,
-                notes=body.notes)
+                notes=body.notes, tunnel_id=tunnel.id if tunnel else None)
     _apply_arming_settings(site, body, user)
+    _apply_arm_event(site, body.arm_event)
     if body.connect:
-        info = await _probe(host, body.nx_user, body.nx_pass)
+        info = await _probe(host, body.nx_user, body.nx_pass, site.tunnel_id)
         site.nx_site_name, site.nx_version = info["nx_site_name"], info["nx_version"]
         site.camera_count, site.cloud_id = info["camera_count"], info["cloud_id"] or cloud_id
         site.status = "online"
@@ -178,7 +196,7 @@ async def create_site(body: SiteIn, request: Request, user: User = Depends(requi
         await db.rollback()
         raise HTTPException(409, {"message": f"A site named '{body.name}' already exists"}) from exc
     audit(db, tenant_id, "site.created", user_id=user.id, site_id=site.id, ip=client_ip(request),
-          name=site.name, host=host, connected=body.connect)
+          name=site.name, host=host, connected=body.connect, tunnel=tunnel.name if tunnel else "")
     await db.commit()
     await db.refresh(site)
     manager.start(site)
@@ -198,9 +216,12 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
     except ValueError as exc:
         raise HTTPException(400, {"message": str(exc)}) from exc
     password = body.nx_pass or decrypt(site.nx_pass_enc)
-    creds_changed = host != site.host or body.nx_user != site.nx_user or bool(body.nx_pass)
+    tunnel = await _tunnel(db, body.tunnel_id, site.tenant_id)
+    tunnel_id = tunnel.id if tunnel else None
+    creds_changed = (host != site.host or body.nx_user != site.nx_user or bool(body.nx_pass)
+                     or tunnel_id != site.tunnel_id)
     if creds_changed and body.connect:
-        info = await _probe(host, body.nx_user, password)
+        info = await _probe(host, body.nx_user, password, tunnel_id)
         site.nx_site_name, site.nx_version, site.camera_count = info["nx_site_name"], info["nx_version"], info["camera_count"]
         cloud_id = info["cloud_id"] or cloud_id
     changed = sorted(k for k, v in {"name": body.name, "host": host, "nx_user": body.nx_user, "address": body.address,
@@ -208,7 +229,10 @@ async def update_site(site_id: int, body: SiteIn, request: Request, user: User =
                      if getattr(site, k) != v)
     if body.nx_pass:
         changed.append("nx_pass")
-    changed += _apply_arming_settings(site, body, user)
+    if tunnel_id != site.tunnel_id:
+        changed.append("tunnel")
+        site.tunnel_id, site.tunnel = tunnel_id, tunnel
+    changed += _apply_arming_settings(site, body, user) + _apply_arm_event(site, body.arm_event)
     site.name, site.host, site.cloud_id, site.nx_user = body.name, host, cloud_id, body.nx_user
     site.nx_pass_enc = encrypt(password)
     site.address, site.lat, site.lng, site.notes = body.address, body.lat, body.lng, body.notes
@@ -248,8 +272,80 @@ async def arm_site(site_id: int, body: ArmIn, request: Request, scope: Scope = D
     audit(db, site.tenant_id, "site.armed" if armed else "site.disarmed", user_id=user.id, site_id=site.id,
           ip=client_ip(request), source="manual", note=body.note.strip(), until_ms=until)
     await db.commit()
+    # NX rules tagged #arm follow (services/arm_rules.py); NX gets a Generic Event if set up (services/arm_event.py)
+    arm_event.changed(manager, site, armed, "manual", by=user.label, note=body.note.strip(), until_ms=until)
     data = _site_out(site, await _open_counts(db, scope))
     bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
+class MuteIn(BaseModel):
+    minutes: int = Field(ge=1, le=mute.MINUTES_MAX)
+    device_id: str = Field(default="", max_length=64)       # "" = the whole site
+    alarm_id: int | None = None                              # the alarm it was muted from (timeline + audit)
+
+
+@router.post("/sites/{site_id}/mute")
+async def mute_site(site_id: int, body: MuteIn, request: Request, scope: Scope = Depends(get_scope),
+                    db: AsyncSession = Depends(get_db)):
+    """Operators mute a site or one camera for a few minutes (app/services/mute.py): its new non-critical security
+    alarms are still listed but don't sound, pop up, text or push."""
+    user = scope.user
+    site = await _get_site(db, scope, site_id, write=True)
+    if site.archived_at is not None:
+        raise HTTPException(400, "Site is archived")
+    dev = body.device_id.strip("{}")
+    name = ""
+    if dev:
+        name = manager.device_names(site.id).get(dev) or (site.camera_places or {}).get(dev, {}).get("name") or ""
+        if not name:
+            raise HTTPException(404, "Unknown camera")
+    t = now_ms()
+    until = t + body.minutes * 60_000
+    site.mute = mute.set_mute(site.mute, dev or None, {"until_ms": until, "at_ms": t, "by": user.label,
+                                                       "user_id": user.id, "name": name}, t)
+    alarm_id = None
+    if body.alarm_id is not None:
+        alarm_id = await db.scalar(select(Alarm.id).where(Alarm.id == body.alarm_id, Alarm.site_id == site.id))
+    audit(db, site.tenant_id, "site.muted", user_id=user.id, site_id=site.id, alarm_id=alarm_id, ip=client_ip(request),
+          minutes=body.minutes, until_ms=until, device_id=dev, camera=name)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
+@router.delete("/sites/{site_id}/mute")
+async def unmute_site(site_id: int, request: Request, device_id: str = "", scope: Scope = Depends(get_scope),
+                      db: AsyncSession = Depends(get_db)):
+    """End a mute early: the site's (device_id empty) or one camera's."""
+    user = scope.user
+    site = await _get_site(db, scope, site_id, write=True)
+    dev = device_id.strip("{}")
+    site.mute = mute.clear(site.mute, dev or None, now_ms())
+    audit(db, site.tenant_id, "site.unmuted", user_id=user.id, site_id=site.id, ip=client_ip(request), device_id=dev)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    bus.publish(site.tenant_id, "site.updated", data)
+    return data
+
+
+@router.put("/sites/{site_id}/profile")
+async def put_site_profile(site_id: int, body: client_profile.ProfileIn, request: Request,
+                           user: User = Depends(require_admin), scope: Scope = Depends(get_scope),
+                           db: AsyncSession = Depends(get_db)):
+    """The client profile (app/services/profile.py): contacts, package, police number, notes. Admins."""
+    site = await _get_site(db, scope, site_id, write=True)
+    before = site.profile or {}
+    site.profile = client_profile.clean(body)
+    after = site.profile or {}
+    changed = sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+    if changed:       # field names only: the passcode never goes into the audit log
+        audit(db, site.tenant_id, "site.profile_updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
+    await db.commit()
+    data = _site_out(site, await _open_counts(db, scope))
+    if changed:
+        bus.publish(site.tenant_id, "site.updated", data)
     return data
 
 
@@ -278,6 +374,12 @@ async def _site_cameras(site: Site) -> dict[str, str]:
         return manager.device_names(site.id)
 
 
+@router.get("/sites/{site_id}")
+async def get_site(site_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
+    site = await _get_site(db, scope, site_id)
+    return _site_out(site, await _open_counts(db, scope))
+
+
 @router.get("/sites/{site_id}/cameras")
 async def list_site_cameras(site_id: int, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     site = await _get_site(db, scope, site_id)
@@ -291,6 +393,20 @@ async def list_site_cameras(site_id: int, scope: Scope = Depends(get_scope), db:
 class ArmScheduleIn(BaseModel):
     timezone: str = Field(default="", max_length=64)
     arm_schedule: list[dict] = Field(default_factory=list, max_length=200)
+    arm_event: dict | None = None                            # None = keep
+
+
+def _apply_arm_event(site: Site, cfg: dict | None) -> list[str]:
+    if cfg is None:
+        return []
+    try:
+        new = arm_event.clean(cfg)
+    except ValueError as exc:
+        raise HTTPException(400, {"message": str(exc)}) from exc
+    if new == arm_event.config(site):
+        return []
+    site.arm_event = new
+    return ["arm_event"]
 
 
 @router.put("/sites/{site_id}/arm-schedule")
@@ -299,7 +415,7 @@ async def put_arm_schedule(site_id: int, body: ArmScheduleIn, request: Request, 
     """Save only the arming schedule and its time zone (the schedule card's own Save button): the NX
     connection is never touched, so nothing reconnects."""
     site = await _get_site(db, scope, site_id, write=True)
-    changed = _apply_arming_settings(site, body, user)
+    changed = _apply_arming_settings(site, body, user) + _apply_arm_event(site, body.arm_event)
     if changed:
         audit(db, site.tenant_id, "site.updated", user_id=user.id, site_id=site.id, ip=client_ip(request), fields=changed)
     await db.commit()
@@ -325,6 +441,7 @@ class RuleEditIn(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
     level: str | None = Field(default=None, pattern="^(critical|alarm|warning|ignore|none)$")   # None = keep
     always: bool | None = None              # #24h
+    arm: bool | None = None                 # #arm: off in NX while the site is disarmed
     enabled: bool | None = None
     interval_s: int | None = Field(default=None, ge=0, le=86400)
 
@@ -343,7 +460,8 @@ async def edit_site_rule(site_id: int, rule_id: str, body: RuleEditIn, request: 
     level = rule_edit.UNCHANGED if body.level is None else (None if body.level == "none" else body.level)
     try:
         before, changes, after = await rule_edit.edit(manager.client_for(site), rule_id, comment=body.comment, level=level,
-                                                      always=body.always, enabled=body.enabled, interval_s=body.interval_s)
+                                                      always=body.always, enabled=body.enabled, interval_s=body.interval_s,
+                                                      arm=body.arm)
     except rule_edit.RuleEditError as e:
         audit(db, site.tenant_id, "nx.rule_edit_failed", user_id=user.id, site_id=site.id, ip=client_ip(request),
               rule_id=rule_id, error=str(e))
@@ -463,6 +581,7 @@ class RuleFullIn(BaseModel):
     comment: str | None = Field(default=None, max_length=500)
     level: str | None = Field(default=None, pattern="^(critical|alarm|warning|ignore|none)$")
     always: bool | None = None
+    arm: bool | None = None
     enabled: bool | None = None
 
 
@@ -494,7 +613,7 @@ async def save_site_rule(site_id: int, rule_id: str, body: RuleFullIn, request: 
     before, changes, _ = await _rule_call(db, site, user, request, rule_id, rule_edit.save(
         manager.client_for(site), rule_id, catalog,
         event=body.event.model_dump() if body.event else None, action=body.action.model_dump() if body.action else None,
-        comment=body.comment, level=_level(body.level), always=body.always, enabled=body.enabled))
+        comment=body.comment, level=_level(body.level), always=body.always, enabled=body.enabled, arm=body.arm))
     if changes:
         detail = {}
         for k, v in changes.items():
@@ -513,6 +632,7 @@ class RuleNewIn(BaseModel):
     comment: str = Field(default="", max_length=500)
     level: str = Field(default="none", pattern="^(critical|alarm|warning|ignore|none)$")
     always: bool = False
+    arm: bool = False
     enabled: bool = True
 
 
@@ -527,7 +647,7 @@ async def create_site_rule(site_id: int, body: RuleNewIn, request: Request, user
     level = None if body.level == "none" else body.level
     made = await _rule_call(db, site, user, request, "", rule_edit.create(
         manager.client_for(site), catalog, event=body.event.model_dump(), action=body.action.model_dump(),
-        comment=body.comment, level=level, always=body.always, enabled=body.enabled))
+        comment=body.comment, level=level, always=body.always, enabled=body.enabled, arm=body.arm))
     rid = (made.get("id") or "").strip("{}")
     audit(db, site.tenant_id, "nx.rule_created", user_id=user.id, site_id=site.id, ip=client_ip(request), rule_id=rid,
           rule=rule_edit.redact(made))
@@ -856,6 +976,25 @@ async def add_note(alarm_id: int, body: NoteIn, request: Request, scope: Scope =
 VIEW_AGAIN_S = 300      # the same person re-opening the same alarm within 5 min isn't logged again
 
 
+class CalledIn(BaseModel):
+    to: str = Field(pattern="^(police|client|contact)$")
+    name: str = Field(default="", max_length=120)
+    number: str = Field(default="", max_length=40)
+
+
+@router.post("/alarms/{alarm_id}/called")
+async def alarm_called(alarm_id: int, body: CalledIn, request: Request, scope: Scope = Depends(get_scope),
+                       db: AsyncSession = Depends(get_db)):
+    """An operator pressed a Call button in the alarm details (the softphone dials the tel: link): on the timeline
+    and in the incident report. Read access is enough, like viewing it."""
+    user = scope.user
+    alarm = await _get_alarm(db, scope, alarm_id)
+    audit(db, alarm.tenant_id, "alarm.called", user_id=user.id, site_id=alarm.site_id, alarm_id=alarm.id,
+          ip=client_ip(request), to=body.to, name=body.name.strip(), number=body.number.strip())
+    await db.commit()
+    return {"logged": True}
+
+
 @router.post("/alarms/{alarm_id}/viewed")
 async def alarm_viewed(alarm_id: int, request: Request, scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db)):
     """The alarm details were opened: on the timeline and in the incident report (the user, 2026-10-14: "add when
@@ -887,10 +1026,17 @@ async def summary(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(
 async def list_audit(scope: Scope = Depends(get_scope), db: AsyncSession = Depends(get_db),
                      action: str | None = Query(None, max_length=64), site_id: int | None = None,
                      alarm_id: int | None = None, before_id: int | None = None,
+                     client: str | None = Query(None, pattern="^(web|ios|android|app|apps|api|system)$"),
                      limit: int = Query(100, ge=1, le=500)):
     stmt = select(AuditLog).where(scope.where(AuditLog.tenant_id))
     if action:
         stmt = stmt.where(AuditLog.action.startswith(action))
+    if client == "apps":                                         # any phone app, old builds included
+        stmt = stmt.where(AuditLog.client.in_(("ios", "android", "app")))
+    elif client == "system":
+        stmt = stmt.where(AuditLog.client == "", AuditLog.user_id.is_(None))
+    elif client:
+        stmt = stmt.where(AuditLog.client == client)
     if site_id:
         stmt = stmt.where(AuditLog.site_id == site_id)
     if alarm_id:
@@ -1040,7 +1186,7 @@ def _user_dict(u: User, passkeys: int = 0, signed_in: int = 0, invite: dict | No
             "sms_consent_at": u.sms_consent_at.isoformat() if u.sms_consent_at else None,
             "sms_optin_sent_at": u.sms_optin_sent_at.isoformat() if u.sms_optin_sent_at else None,
             "is_active": u.is_active, "last_login_at": u.last_login_at.isoformat() if u.last_login_at else None,
-            "totp_enabled": u.totp_enabled, "passkeys": passkeys, "sessions": signed_in,
+            "totp_enabled": u.totp_enabled, "mfa_exempt": u.mfa_exempt, "passkeys": passkeys, "sessions": signed_in,
             "invited": u.is_invited, "invited_at": u.invited_at.isoformat() if u.invited_at else None,
             "invite_email": invite, "push_level": u.push_level or "alarm", "push_when": u.push_when or "raised",
             "push_devices": getattr(u, "_push_devices", 0)}
@@ -1356,6 +1502,24 @@ _geocode_lock = asyncio.Lock()
 _last_geocode = 0.0
 
 
+_UNIT_RE = re.compile(r"(?:\b(?:unit|suite|ste|apt|apartment|floor|fl|room|rm|bldg|building)\b\.?\s*[\w-]+|#\s*[\w-]+)", re.I)
+_UNIT_DASH_RE = re.compile(r"^\s*\d+[a-z]?\s*-\s*(?=\d)", re.I)           # Canadian "5-123 Main St" = unit 5
+_POSTAL_RE = re.compile(r"\b[A-Z]\d[A-Z]\s?\d[A-Z]\d\b|\b\d{5}(?:-\d{4})?\b", re.I)   # Canada A1A 1A1, US 12345(-6789)
+
+
+def address_variants(q: str) -> list[str]:
+    """What to ask Nominatim, in order, until something is found: as typed; without the unit / suite part (OSM has
+    buildings, not units: "100 King St W #5600" finds nothing, 2026-10-23); then also without the postal code."""
+    tidy = lambda t: re.sub(r"(\s*,)+\s*", ", ", re.sub(r"\s+", " ", t)).strip(" ,")  # noqa: E731
+    no_unit = tidy(_UNIT_DASH_RE.sub("", _UNIT_RE.sub(",", q)))
+    no_postal = tidy(_POSTAL_RE.sub(",", no_unit))
+    out = []
+    for v in (q.strip(), no_unit, no_postal):
+        if v and v not in out:
+            out.append(v)
+    return out
+
+
 @router.get("/geocode")
 async def geocode(q: str = Query(min_length=3, max_length=300), user: User = Depends(current_user)):
     """Address -> coordinates via Nominatim, proxied so we can honour its usage policy
@@ -1365,21 +1529,26 @@ async def geocode(q: str = Query(min_length=3, max_length=300), user: User = Dep
     if key in _GEOCODE_CACHE:
         return _GEOCODE_CACHE[key]
     settings = get_settings()
-    async with _geocode_lock:
-        wait = 1.0 - (time.monotonic() - _last_geocode)
-        if wait > 0:
-            await asyncio.sleep(wait)
-        try:
-            async with httpx.AsyncClient(timeout=10, headers={"User-Agent": settings.geocoder_user_agent}) as c:
-                r = await c.get(settings.geocoder_url, params={"q": q, "format": "jsonv2", "limit": 5, "addressdetails": 0})
-            r.raise_for_status()
-        except httpx.HTTPError as exc:
-            raise HTTPException(502, "Address lookup service unavailable") from exc
-        finally:
-            _last_geocode = time.monotonic()
-    results = [{"label": x.get("display_name", ""), "lat": float(x["lat"]), "lng": float(x["lon"])}
-               for x in r.json() if "lat" in x and "lon" in x]
-    if len(_GEOCODE_CACHE) > 500:
-        _GEOCODE_CACHE.clear()
-    _GEOCODE_CACHE[key] = results
+    results = []
+    for variant in address_variants(q):
+        async with _geocode_lock:
+            wait = 1.0 - (time.monotonic() - _last_geocode)     # Nominatim's policy: at most one request a second
+            if wait > 0:
+                await asyncio.sleep(wait)
+            try:
+                async with httpx.AsyncClient(timeout=10, headers={"User-Agent": settings.geocoder_user_agent}) as c:
+                    r = await c.get(settings.geocoder_url, params={"q": variant, "format": "jsonv2", "limit": 5, "addressdetails": 0})
+                r.raise_for_status()
+            except httpx.HTTPError as exc:
+                raise HTTPException(502, "Address lookup service unavailable") from exc
+            finally:
+                _last_geocode = time.monotonic()
+        results = [{"label": x.get("display_name", ""), "lat": float(x["lat"]), "lng": float(x["lon"])}
+                   for x in r.json() if "lat" in x and "lon" in x]
+        if results:
+            break
+    if results:                     # never remember "not found": the next Find asks again
+        if len(_GEOCODE_CACHE) > 500:
+            _GEOCODE_CACHE.clear()
+        _GEOCODE_CACHE[key] = results
     return results

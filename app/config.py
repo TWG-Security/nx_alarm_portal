@@ -64,11 +64,23 @@ class Settings(BaseSettings):
     peplink_api_base: str = "https://api.ic.peplink.com"
     # Fleet vehicles from Fleetio (app/fleetio.py; dev points it at tools/fake_nx.py's fake Fleetio)
     fleetio_api_base: str = "https://secure.fleetio.com/api"
+    # Fleet vehicles from Geotab / MyGeotab (ZenduONE, GoFleet; app/geotab.py): the server when the company leaves it blank
+    geotab_api_base: str = "https://my.geotab.com"
     # Site 3D models (app/routers/site_models.py): uploads and their converted 3D Tiles
     model_dir: str = "./site-models"
     model_max_mb: int = 3072             # largest upload
     model_build_max_s: int = 1800        # a conversion is stopped after this long
     model_build_mem_mb: int = 2048       # memory cap for the converter process (the server has 4 GB)
+    # Site VPN connections (app/tunnels.py): one wireproxy / tailscaled per connection, each a SOCKS5 proxy on
+    # tunnel_port_base + 2 * id. The app binds them on tunnel_bind (0.0.0.0 in docker, so the camera-health container
+    # reaches them as tunnel_proxy_host "app"; the port is never published outside the docker network).
+    tunnels_dir: str = "./tunnels-data"
+    wireproxy_path: str = "wireproxy"
+    tailscaled_path: str = "tailscaled"
+    tailscale_path: str = "tailscale"
+    tunnel_port_base: int = 40000
+    tunnel_bind: str = "127.0.0.1"
+    tunnel_proxy_host: str = "127.0.0.1"
     ffmpeg_path: str = "ffmpeg"
     ffprobe_path: str = "ffprobe"
     prefetch_clips: bool = True          # build clips for critical/alarm events as soon as footage exists
@@ -98,6 +110,21 @@ class Settings(BaseSettings):
     cookie_secure: bool = True           # set False only for plain-http local dev
     twilio_api_base: str = "https://api.twilio.com"   # text messages (app/sms.py); tests and dev point it at a fake
     start_pollers: bool = True           # tests turn this off
+    # Camera image health (app/camhealth/worker.py, the `vision` container)
+    camhealth_interval_s: int = 900      # one frame per camera this often (the user, 2026-10-20: 15 min is fine)
+    camhealth_parallel: int = 1          # cameras checked at once over all sites (one at a time: the GPU has 4 GB)
+    camhealth_frame_width: int = 1280    # px asked from NX
+    # Phone apps (/apps): the Android APK from the latest GitHub release (app/app_releases.py). The token stays on the
+    # server (env GITHUB_RELEASES_TOKEN); best a fine-grained read-only token for this one repository.
+    github_releases_token: str = ""
+    asc_key_path: str = ""               # App Store Connect API key (.p8) for TestFlight invites (tools/install_asc_key.sh)
+    asc_key_id: str = ""
+    asc_api_base: str = "https://api.appstoreconnect.apple.com"   # tests point it at a fake
+    github_api_base: str = "https://api.github.com"
+    android_repo: str = "TWG-Security/twg-alarm-android"
+    camhealth_dir: str = "camhealth-data"   # the per-time-of-day frame library (vision container volume)
+    camhealth_ai: str = "auto"           # auto (GPU if there is one) | off
+    camhealth_watch_s: float = 10.0      # the web app looks for changed cameras this often (-> camera.health events)
 
 
 @lru_cache

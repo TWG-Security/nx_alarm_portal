@@ -12,10 +12,11 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
 from app import mcp_server, platform_settings, security_guard
+from app.audit import CLIENT, client_of
 from app.config import get_settings
 from app.deps import NotAuthenticated, render
 from app.net import client_ip
-from app.routers import account, api, auth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles
+from app.routers import account, api, apps, auth, camhealth, guards, links, mobile, pages, platform, share, site_models, sso, stream, tenants, tiles, tunnels, webhooks
 from app.services import arming
 from app.static_version import VersionedStatic
 from app.services.poller import manager
@@ -28,7 +29,8 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # Sign-in pages a banned IP may not use. Signed-in sessions are never cut off by a ban.
-BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/", "/g/")   # /a/, /g/: texted links
+BAN_GUARDED = ("/login", "/setup", "/forgot", "/reset", "/auth/", "/a/", "/media/a/", "/g/",   # /a/, /g/: texted links
+               "/hook/")                                                                         # webhooks into NX
 
 
 class BanGate:
@@ -51,11 +53,33 @@ class BanGate:
         await self.app(scope, receive, send)
 
 
+class ClientMark:
+    """Notes which client sent each request (iPhone app, Android app, website: app.audit.client_of) for the audit
+    rows it writes. Pure ASGI; the mark is emptied when the request ends, so a task it started keeps no label."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        mark = list(client_of(scope))
+        token = CLIENT.set(mark)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            mark[:] = ["", ""]
+            CLIENT.reset(token)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     tasks = []
     await platform_settings.refresh()
     if get_settings().start_pollers:
+        from app import tunnels as vpn
+        vpn.supervisor.on_up = manager.reconnect_tunnel
+        await vpn.supervisor.start_all()          # first: a site behind a VPN connects through it
         await manager.start_all()
         tasks.append(asyncio.create_task(arming.run_scheduler(), name="arming-scheduler"))
         tasks.append(asyncio.create_task(security_guard.run_sweeper(), name="security-sweeper"))
@@ -66,6 +90,7 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(trackers.run(), name="guard-trackers"))
         from app.services import clock
         tasks.append(asyncio.create_task(clock.run(), name="clock-check"))
+        tasks.append(asyncio.create_task(camhealth.watch(), name="camera-health-watch"))
     yield
     await site_models.shutdown()
     for t in tasks:
@@ -75,11 +100,14 @@ async def lifespan(app: FastAPI):
     from app import apns
     await apns.close()
     await manager.shutdown()
+    from app import tunnels as vpn
+    await vpn.supervisor.shutdown()
 
 
 def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="TWG Alarm Portal", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.add_middleware(ClientMark)
     app.add_middleware(BanGate)             # added first = runs inside SessionMiddleware
     app.add_middleware(SessionMiddleware, secret_key=settings.secret_key, session_cookie="twg_portal",
                        max_age=settings.session_max_age_s, same_site="lax", https_only=settings.cookie_secure)
@@ -108,7 +136,8 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(NotAuthenticated)
     async def _not_authenticated(request: Request, exc: NotAuthenticated):
-        if request.url.path.startswith(API_PREFIXES):
+        # An app (Bearer token) gets a 401 it can act on, never the sign-in page; so do API paths.
+        if request.url.path.startswith(API_PREFIXES) or request.headers.get("authorization"):
             return JSONResponse({"detail": "Not authenticated"}, status_code=401)
         target = request.url.path + (f"?{request.url.query}" if request.url.query else "")
         return RedirectResponse("/login" if target == "/" else f"/login?next={quote(target)}", 303)
@@ -154,6 +183,11 @@ def create_app() -> FastAPI:
     app.include_router(share.router)
     app.include_router(mcp_server.router)
     app.include_router(mobile.router)
+    app.include_router(camhealth.router)
+    app.include_router(apps.router)
+    app.include_router(tunnels.router)
+    app.include_router(webhooks.router)
+    app.include_router(webhooks.public)
     return app
 
 

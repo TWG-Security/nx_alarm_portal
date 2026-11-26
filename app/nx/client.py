@@ -5,6 +5,8 @@ Copied from TWG-Security/nx-witness-mcp (nx_client.py, v3.0.0). Local changes:
 - acknowledge_event() accepts description/tags
 - get_thumbnail() for event-time snapshots
 - get_events() always sends order (asc was previously left to the server default)
+- grab_live_jpeg(): one frame from the live MJPEG stream (camera health: /image serves a cached frame for cameras
+  NX isn't recording)
 Keep other edits minimal so upstream fixes can be merged back in.
 """
 
@@ -16,14 +18,33 @@ import httpx
 _RELAY_HOST = re.compile(r"^https?://([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.relay[\w-]*\.vmsproxy\.com", re.I)
 
 
+class _VpnTransport(httpx.AsyncBaseTransport):
+    """Through a site's VPN connection (app/tunnels.py): not reaching the local proxy at all means the VPN itself is
+    down, so it's reported as a proxy problem (describe_http_error words it) rather than as NX not answering."""
+
+    def __init__(self, inner: httpx.AsyncHTTPTransport):
+        self.inner = inner
+
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        try:
+            return await self.inner.handle_async_request(request)
+        except httpx.ConnectError as exc:
+            raise httpx.ProxyError(f"The site's VPN connection isn't running ({exc})", request=request) from exc
+
+    async def aclose(self) -> None:
+        await self.inner.aclose()
+
+
 class NXClient:
-    def __init__(self, host: str, username: str, password: str, timeout: float = 15.0):
+    def __init__(self, host: str, username: str, password: str, timeout: float = 15.0, proxy: str | None = None):
         self.base_url = host.rstrip("/")
         self.username = username
         self.password = password
+        self.proxy = proxy                  # socks5://… = the site's VPN connection (app/tunnels.py)
         self._token: str | None = None
         self._site_info: dict | None = None
-        self._client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=timeout)
+        transport = _VpnTransport(httpx.AsyncHTTPTransport(verify=False, proxy=proxy)) if proxy else None
+        self._client = httpx.AsyncClient(verify=False, follow_redirects=True, timeout=timeout, transport=transport)
 
     async def _login(self) -> None:
         login_path = "/rest/v3/login/sessions"
@@ -137,6 +158,34 @@ class NXClient:
         params = {"timestampMs": timestamp_ms, "size": f"{width}x0", "format": "jpg", "roundMethod": "after"}
         return await self._get_bytes(f"/rest/v4/devices/{device_id}/image", params=params)
 
+    async def grab_live_jpeg(self, device_id: str, resolution: str, max_bytes: int = 4_000_000,
+                             timeout: float = 15.0) -> bytes:
+        """One live frame: open /media/<id>.mpjpeg, read the first whole JPEG, close. `/image?timestampMs=-1` answers
+        a cached frame for cameras NX isn't recording (measured 2026-10-20: the same bytes for 20+ minutes); the
+        stream is always live (first frame in 0.3-2.3 s through the relay). NX transcodes, so `resolution` should
+        keep the camera's own aspect ratio ("1280x720")."""
+        if not self._token:
+            await self._login()
+        url = f"{self.base_url}/media/{device_id}.mpjpeg"
+        for attempt in range(2):
+            buf = b""
+            async with self._client.stream("GET", url, headers=self._headers(), params={"resolution": resolution},
+                                           timeout=timeout) as r:
+                if r.status_code == 401 and attempt == 0:
+                    await self._login()
+                    continue
+                r.raise_for_status()
+                async for chunk in r.aiter_bytes():
+                    buf += chunk
+                    start = buf.find(b"\xff\xd8")
+                    end = buf.find(b"\xff\xd9", start + 2) if start >= 0 else -1
+                    if end > 0:
+                        return buf[start:end + 2]
+                    if len(buf) > max_bytes:
+                        break
+            return b""
+        return b""
+
     async def get_camera_stream_url(self, device_id: str) -> str:
         ticket_resp = await self._post("/rest/v4/login/tickets")
         ticket = ticket_resp.get("token") or ticket_resp.get("ticket") or ""
@@ -232,16 +281,18 @@ class NXClient:
         source: str,
         caption: str | None = None,
         description: str | None = None,
-        metadata: dict | None = None,
+        device_ids: list[str] | None = None,
         state: str = "instant",
     ) -> Any:
+        """POST /rest/v4/events/generic (NX 6.1 openapi_v4: source, caption, description, deviceIds = cameras to link,
+        state started / stopped / instant; needs the "Generate events" permission)."""
         body: dict[str, Any] = {"source": source, "state": state}
         if caption:
             body["caption"] = caption
         if description:
             body["description"] = description
-        if metadata:
-            body["metadata"] = metadata
+        if device_ids:
+            body["deviceIds"] = device_ids
         return await self._post("/rest/v4/events/generic", body=body)
 
     # -------------------------------------------------------------------------
@@ -255,6 +306,8 @@ class NXClient:
         return await self._get(f"/rest/v4/events/triggers/{trigger_id}")
 
     async def fire_trigger(self, trigger_id: str, device_id: str | None = None, state: str = "started") -> Any:
+        """POST /rest/v4/events/triggers (NX 6.1 openapi_v4: triggerId + deviceId required, deviceId = one of the
+        trigger's cameras; state started / stopped (prolonged) or instant; needs software-trigger rights on it)."""
         body: dict[str, Any] = {"triggerId": trigger_id, "state": state}
         if device_id:
             body["deviceId"] = device_id

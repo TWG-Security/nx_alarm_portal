@@ -25,12 +25,13 @@ Every change is audit-logged in TWG's own log (setting names only, never values)
 import re
 from datetime import datetime, timezone
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app import cloudflare_edge, net, platform_settings
+from app import appstore, cloudflare_edge, net, platform_settings
 from app import security_guard as guard
 from app.audit import audit
 from app.config import get_settings
@@ -84,6 +85,9 @@ def _settings_dict(row) -> dict:
                 "help_contact": row.sms_help_contact, "pictures": row.sms_pictures, "background": _sms_status(), "last_inbound_at": _iso(row.sms_last_inbound_at),
                 "webhook_url": f"{(row.portal_url or '').rstrip('/')}/twilio/sms",
                 "terms_url": f"{(row.portal_url or '').rstrip('/')}/sms-terms"},
+        "apps": {"testflight_url": row.testflight_url or "", "issuer_id": row.asc_issuer_id or "",
+                 "app_id": row.asc_app_id or "", "beta_group": row.asc_beta_group or "TWG Testers",
+                 "key": appstore.key_status()},
         "google": {"enabled": row.google_enabled, "client_id": row.google_client_id,
                    "secret_set": bool(row.google_client_secret_enc), "domains": row.google_domains,
                    "redirect_uri": f"{(row.portal_url or '').rstrip('/')}/auth/google/callback",
@@ -386,6 +390,53 @@ async def sms_log(limit: int = 100, user: User = Depends(VIEW), db: AsyncSession
     return [{"ts": _iso(r.ts), "to": r.to, "who": people.get(r.user_id, ""), "purpose": r.purpose, "outcome": r.outcome,
              "error": r.error, "attempts": r.attempts, "delay_ms": r.delay_ms, "alarm_id": r.alarm_id,
              "company": names.get(r.tenant_id, "")} for r in rows]
+
+
+class AppsIn(BaseModel):
+    testflight_url: str = Field(default="", max_length=300)
+    issuer_id: str = Field(default="", max_length=64)
+    app_id: str = Field(default="", max_length=32)
+    beta_group: str = Field(default="TWG Testers", max_length=100)
+
+
+@router.put("/api/platform/settings/apps")
+async def put_apps(body: AppsIn, request: Request, user: User = Depends(MANAGE), db: AsyncSession = Depends(get_db)):
+    """Phone apps: the TestFlight public link (the /apps page and the apps show it) and App Store Connect for invites."""
+    url, issuer, app_id = body.testflight_url.strip(), body.issuer_id.strip().lower(), body.app_id.strip()
+    if url and not re.fullmatch(r"https://testflight\.apple\.com/join/[A-Za-z0-9]+", url):
+        raise HTTPException(400, "The TestFlight public link looks like https://testflight.apple.com/join/AbC123xY.")
+    if issuer and not re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", issuer):
+        raise HTTPException(400, "The Issuer ID is a UUID (App Store Connect → Users and Access → Integrations).")
+    if app_id and not app_id.isdigit():
+        raise HTTPException(400, "The App ID is the app's Apple ID: digits only (App Store Connect → the app → App Information).")
+    row = await platform_settings.get_row(db)
+    changed = []
+    for k, col, v in (("testflight_url", "testflight_url", url), ("issuer_id", "asc_issuer_id", issuer),
+                      ("app_id", "asc_app_id", app_id), ("beta_group", "asc_beta_group", body.beta_group.strip() or "TWG Testers")):
+        if getattr(row, col) != v:
+            setattr(row, col, v)
+            changed.append(k)
+    return await _saved(db, request, user, row, "apps", changed)
+
+
+@router.post("/api/platform/apps/test")
+async def test_apps(user: User = Depends(MANAGE), db: AsyncSession = Depends(get_db)):
+    """Ask App Store Connect for the beta group: proves the key, the issuer, the app and the group name."""
+    row = await platform_settings.get_row(db)
+    c = appstore.config(row)
+    if c is None:
+        missing = [n for n, ok in (("the .p8 key (tools/install_asc_key.sh)", appstore.key_status()["installed"]),
+                                   ("the Issuer ID", row.asc_issuer_id), ("the App ID", row.asc_app_id)) if not ok]
+        raise HTTPException(400, "Missing: " + ", ".join(missing))
+    try:
+        async with appstore._client(c) as gh:
+            appstore._groups.pop((c.app_id, c.group), None)
+            gid = await appstore.group_id(gh, c)
+    except appstore.InviteError as e:
+        raise HTTPException(502, str(e)) from e
+    except httpx.HTTPError as e:
+        raise HTTPException(502, f"App Store Connect couldn't be reached ({e.__class__.__name__})") from e
+    return {"ok": True, "group_id": gid, "detail": f'Connected: beta group "{c.group}" found'}
 
 
 class GoogleIn(BaseModel):
